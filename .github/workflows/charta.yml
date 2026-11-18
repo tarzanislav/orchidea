@@ -18,6 +18,9 @@ jobs:
       - name: Charta a register zdrojov
         run: python3 -I nastroje/kontrola_zdrojov.py
 
+      - name: Vrstvy a neutralita jadra
+        run: python3 -I nastroje/kontrola_vrstiev.py
+
       - name: Podpis príspevkov (DCO)
         if: github.event_name == 'pull_request'
         env:

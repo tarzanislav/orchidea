@@ -123,9 +123,12 @@ fn zmena_sa_pouzije_cela_alebo_vobec() {
     );
 }
 
+/// Dočasný súbor pre skúšku. Na webe (WASI) sa používa sprístupnený pracovný priečinok.
 fn docasny(meno: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("orchidea-skuska-{}-{meno}", std::process::id()));
+    let mut p = if cfg!(target_family = "wasm") { PathBuf::from(".") } else { std::env::temp_dir() };
+    let cas =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    p.push(format!("orchidea-skuska-{cas}-{meno}"));
     let _ = std::fs::remove_file(&p);
     let mut z = p.clone().into_os_string();
     z.push(".zvysok");

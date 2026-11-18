@@ -1,5 +1,67 @@
 {
   "popis": "Register cudzích zdrojov ORCHIDEE: závislosti, modely, dátové sady, nástroje zostavenia. Pravidlá: CONTRIBUTING.md.",
-  "povolene_licencie_triedy_C": ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "Zlib", "ISC", "CC0-1.0"],
-  "zdroje": []
+  "povolene_licencie_triedy_C": [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "ISC",
+    "CC0-1.0"
+  ],
+  "zdroje": [
+    {
+      "meno": "Rust – prekladač rustc, nástroj cargo a štandardná knižnica std",
+      "trieda": "B",
+      "licencia": "MIT OR Apache-2.0",
+      "kde": "program aj zostavenie (std je súčasťou každého programu)",
+      "ucel": "jazyk projektu (rozhodnutie R3: Rust bez cudzích balíkov)",
+      "posudenie_charty": "slobodný jazyk bez vojenského účelu, správca Rust Foundation (nezisková)",
+      "verzia": "1.97.0 (rust-toolchain.toml)"
+    },
+    {
+      "meno": "Python 3 – štandardná knižnica",
+      "trieda": "B",
+      "licencia": "PSF-2.0",
+      "kde": "len CI (strážcovia charty, vrstiev a zdrojov)",
+      "ucel": "kontrolné skripty v priečinku nastroje/",
+      "posudenie_charty": "slobodný nástroj, správca Python Software Foundation (nezisková)"
+    },
+    {
+      "meno": "GitHub Actions – actions/checkout",
+      "trieda": "B",
+      "licencia": "MIT",
+      "kde": "len CI",
+      "ucel": "stiahnutie repozitára v CI",
+      "posudenie_charty": "nástroj služby, na ktorej je repozitár; zrkadlo na Codebergu zaručuje nezávislosť"
+    },
+    {
+      "meno": "Wasmtime",
+      "trieda": "B",
+      "licencia": "Apache-2.0 WITH LLVM-exception",
+      "kde": "len CI",
+      "ucel": "spúšťanie skúšok WebAssembly (webová verzia) – nezávislý rozhodca podľa R13",
+      "posudenie_charty": "slobodný projekt Bytecode Alliance (nezisková)"
+    },
+    {
+      "meno": "Android NDK a emulátor Androidu, reactivecircus/android-emulator-runner",
+      "trieda": "B",
+      "licencia": "Apache-2.0",
+      "kde": "len CI",
+      "ucel": "zostavenie a spustenie skúšok pre Android",
+      "posudenie_charty": "slobodné nástroje; program na nich nezávisí, len sa nimi overuje"
+    },
+    {
+      "meno": "referenčná implementácia BLAKE3 (balík blake3 pre Python)",
+      "trieda": "B",
+      "licencia": "CC0-1.0 OR Apache-2.0",
+      "kde": "jednorazovo pri písaní skúšok – nie je v repozitári ani v programe",
+      "ucel": "nezávislé overenie vlastného BLAKE3 (hodnoty v jadro/tests/data/vektory_blake3.rs)",
+      "posudenie_charty": "slobodný projekt; použitý len ako rozhodca správnosti (R13)"
+    }
+  ],
+  "triedy": {
+    "B": "platforma – jazyk, operačný systém, ovládače, nástroje CI (nie je to náš kód, ale nevyhnutné prostredie)",
+    "C": "malý cudzí kód s permisívnou licenciou v programe – len so súhlasom vlastníka"
+  }
 }

@@ -1,0 +1,100 @@
+name: Zostavenie a skúšky
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  kontrola:
+    name: Formát a kontrola kódu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --workspace --all-targets
+
+  skusky:
+    name: Skúšky – ${{ matrix.meno }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { meno: "Linux x86-64", os: ubuntu-latest }
+          - { meno: "Linux ARM64", os: ubuntu-24.04-arm }
+          - { meno: "Windows x86-64", os: windows-latest }
+          - { meno: "macOS ARM64", os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Skúšky (ladiaci preklad)
+        run: cargo test --locked --workspace
+      - name: Skúšky (optimalizovaný preklad)
+        run: cargo test --locked --workspace --release
+      - name: Meranie výkonu
+        shell: bash
+        run: |
+          echo "### Meranie – ${{ matrix.meno }}" >> "$GITHUB_STEP_SUMMARY"
+          cargo run --locked --release -p orchidea-neuron --example meranie | tee -a "$GITHUB_STEP_SUMMARY"
+
+  web:
+    name: Skúšky – web (WebAssembly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prekladač a cieľ WebAssembly
+        run: |
+          rustup toolchain install && rustup show
+          rustup target add wasm32-wasip1 wasm32-unknown-unknown
+      - name: Wasmtime (nezávislý spúšťač skúšok)
+        run: |
+          curl -sSf https://wasmtime.dev/install.sh | bash
+          echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
+      - name: Skúšky vo WebAssembly
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: "wasmtime run --dir=."
+        run: cargo test --locked --workspace --target wasm32-wasip1
+      - name: Zostavenie pre prehliadač
+        run: cargo build --locked --workspace --release --target wasm32-unknown-unknown
+
+  android:
+    name: Skúšky – Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prekladač a ciele Androidu
+        run: |
+          rustup toolchain install && rustup show
+          rustup target add aarch64-linux-android x86_64-linux-android
+      - name: Zostavenie skúšok (ARM64 a x86-64)
+        run: |
+          NDK_BIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android30-clang"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$NDK_BIN/x86_64-linux-android30-clang"
+          cargo test --locked --workspace --release --target aarch64-linux-android --no-run
+          cargo test --locked --workspace --release --target x86_64-linux-android --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .executable != null) | .executable' > binarky.txt
+          cat binarky.txt
+      - name: Povolenie KVM pre emulátor
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Skúšky v emulátore Androidu
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: sh nastroje/android_skusky.sh
