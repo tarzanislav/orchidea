@@ -17,7 +17,20 @@ zvukom, hudbou, pohybom a diskami. Spája ich jedna gramatika a jedno jadro, nie
 
 ## Stav
 
-Projekt je vo fáze návrhu. Ďalšia etapa je **E0: jadro a Neurón s CI na všetkých platformách**.
+**E0, časť 1 je hotová:** jadro (gramatika 12 prvotných pojmov a 7 pravidiel skladania) a motor Neurón
+(tenzor ako signál, presné a rýchle jadrá, 8-bitové a trojhodnotové váhy, učenie). Všetko vlastným kódom bez
+cudzích knižníc. Skúšky prechádzajú na Linuxe (x86-64, ARM64), Windows, macOS, Androide a vo WebAssembly
+s bitovo rovnakými výsledkami. Ďalej: GPU vrstva a zhoda CPU/GPU.
+
+| Balík | Vrstva | Obsah |
+|---|---|---|
+| `jadro` | 1 – gramatika | Signál, Štruktúra, Vlastnosť, Operácia, Parameter, Graf, Odkaz, Výber, Zmena, Výstup, Pohľad, Nástroj; denník; deterministická matematika; BLAKE3 |
+| `neuron` | 2 – schopnosť | výpočtový motor MYKORÍZY |
+
+```
+cargo test --workspace                                   # všetky skúšky
+cargo run --release -p orchidea-neuron --example meranie  # meranie výkonu
+```
 
 ## Kópie repozitára
 
