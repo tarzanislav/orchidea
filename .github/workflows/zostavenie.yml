@@ -16,7 +16,7 @@ jobs:
     name: Formát a kontrola kódu
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
       - run: cargo fmt --all --check
@@ -34,7 +34,7 @@ jobs:
           - { meno: "macOS ARM64", os: macos-latest }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
       - name: Skúšky (ladiaci preklad)
@@ -51,7 +51,7 @@ jobs:
     name: Skúšky – web (WebAssembly)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prekladač a cieľ WebAssembly
         run: |
           rustup toolchain install && rustup show
@@ -71,7 +71,7 @@ jobs:
     name: Skúšky – Android
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prekladač a ciele Androidu
         run: |
           rustup toolchain install && rustup show

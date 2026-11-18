@@ -1,15 +1,23 @@
 #!/bin/sh
-# Spustí zostavené skúšky v emulátore Androidu. Zoznam spustiteľných súborov je v binarky.txt.
+# Spustí všetky zostavené skúšky v emulátore Androidu (zoznam je v binarky.txt).
+# Zlyhá, ak niektorá skúška zlyhá alebo ak sa nespustili všetky – nič neprejde potichu.
 set -e
-adb wait-for-device
-chyba=0
-while read -r subor; do
-  [ -n "$subor" ] || continue
+adb wait-for-device </dev/null
+ocakavane=0
+uspesne=0
+for subor in $(cat binarky.txt); do
+  ocakavane=$((ocakavane + 1))
   meno=$(basename "$subor")
-  adb push "$subor" "/data/local/tmp/$meno" >/dev/null
-  adb shell chmod 755 "/data/local/tmp/$meno"
+  adb push "$subor" "/data/local/tmp/$meno" </dev/null >/dev/null
+  adb shell chmod 755 "/data/local/tmp/$meno" </dev/null
   echo "== $meno"
-  if ! adb shell "cd /data/local/tmp && ./$meno; echo KONIEC=\$?" | tee vystup.txt | tail -n 3; then chyba=1; fi
-  grep -q "KONIEC=0" vystup.txt || chyba=1
-done < binarky.txt
-exit $chyba
+  adb shell "cd /data/local/tmp && ./$meno; echo KONIEC=\$?" </dev/null > vystup.txt 2>&1 || true
+  grep -E "test result|panicked|FAILED" vystup.txt || true
+  if grep -q "KONIEC=0" vystup.txt; then
+    uspesne=$((uspesne + 1))
+  else
+    cat vystup.txt
+  fi
+done
+echo "Spustených a úspešných: $uspesne z $ocakavane"
+[ "$ocakavane" -gt 0 ] && [ "$uspesne" -eq "$ocakavane" ]
