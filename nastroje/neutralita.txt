@@ -1,0 +1,35 @@
+# Test neutrality jadra (zásada A1).
+# Jadro nesmie obsahovať pojmy viazané na odbor, povolanie, skupinu ľudí ani predpísaný postup.
+# Takéto pojmy patria do profilov (vrstva 4). Porovnáva sa bez diakritiky a bez ohľadu na veľkosť písmen,
+# ako začiatok slova (aj v identifikátoroch: skolsky_rezim, SkolskyRezim). Zoznam sa smie len rozširovať.
+skola
+skolsk
+ucitel
+ziak
+studen
+student
+pedagog
+fotograf
+filmov
+hudobnik
+muzikant
+redakci
+novinar
+reklam
+marketing
+archivar
+lekar
+pacient
+klient
+zakaznik
+firma
+podnik
+manazer
+domacnost
+workflow
+pracovny postup
+krok 1
+vojen
+military
+zbran
+weapon

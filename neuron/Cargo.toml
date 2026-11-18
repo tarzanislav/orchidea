@@ -1,0 +1,18 @@
+[package]
+name = "orchidea-neuron"
+description = "Neurón – výpočtový motor MYKORÍZY; tenzor je Signál s pomenovanými osami"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[dependencies]
+orchidea-jadro.workspace = true
+
+[lints]
+workspace = true

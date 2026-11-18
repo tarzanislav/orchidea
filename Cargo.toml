@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["jadro", "neuron"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+repository = "https://github.com/tarzanislav/orchidea"
+authors = ["autori projektu ORCHIDEA"]
+
+# Žiadne cudzie balíky. Každá závislosť je len medzi vlastnými balíkmi
+# a smer závislostí stráži nastroje/kontrola_vrstiev.py.
+[workspace.dependencies]
+orchidea-jadro = { path = "jadro" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[profile.test]
+opt-level = 2
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
