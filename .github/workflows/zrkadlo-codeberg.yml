@@ -1,0 +1,33 @@
+name: Zrkadlo na Codeberg
+
+# Po každej zmene skopíruje celý repozitár (všetky vetvy a značky) na Codeberg.
+# Potrebuje tajomstvo CODEBERG_TOKEN (prístupový token z Codebergu s právom zápisu).
+# Kým tajomstvo nie je nastavené, krok sa len preskočí.
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zrkadlo-codeberg
+  cancel-in-progress: false
+
+jobs:
+  zrkadlo:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skopírovať na Codeberg
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ -z "$CODEBERG_TOKEN" ]; then
+            echo "Tajomstvo CODEBERG_TOKEN nie je nastavené – zrkadlenie preskakujem."
+            exit 0
+          fi
+          git clone --mirror "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" zdroj
+          cd zdroj
+          git push --mirror "https://${GITHUB_REPOSITORY_OWNER}:${CODEBERG_TOKEN}@codeberg.org/${GITHUB_REPOSITORY}.git"
