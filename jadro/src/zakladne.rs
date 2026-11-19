@@ -6,6 +6,7 @@
 use crate::chyba::{Chyba, Vysledok};
 use crate::hodnota::{Hodnota, TypHodnoty};
 use crate::meno::m;
+use crate::oblast::Oblast;
 use crate::operacia::{
     Argumenty, KontextVypoctu, Operacia, PopisOperacie, PopisParametra, PopisPortu, PopisVystupu,
     RegisterOperacii, TypVystupu,
@@ -99,6 +100,10 @@ impl Operacia for Dvojica {
     fn vypocitaj(&self, _: &KontextVypoctu<'_>, a: &Argumenty<'_>) -> Vysledok<Vec<Hodnota>> {
         Ok(vec![po_hodnotach(a.vstup(0)?, a.vstup(1)?, self.f)?])
     }
+
+    fn oblast_vstupu(&self, _: &[Hodnota], vystup: &Oblast, _: usize) -> Option<Oblast> {
+        Some(vystup.clone())
+    }
 }
 
 fn dvojica(identita: &str, popis: &str, f: fn(f64, f64) -> f64) -> Arc<dyn Operacia> {
@@ -135,6 +140,10 @@ impl Operacia for Skaluj {
         let v: Vec<f64> = s.ako_f64().into_iter().map(|x| x * k + p).collect();
         Ok(vec![Hodnota::Signal(uloz(s, v, typ_vysledku(s.typ(), None))?)])
     }
+
+    fn oblast_vstupu(&self, _: &[Hodnota], vystup: &Oblast, _: usize) -> Option<Oblast> {
+        Some(vystup.clone())
+    }
 }
 
 #[derive(Debug)]
@@ -153,6 +162,10 @@ impl Operacia for Zmiesaj {
         let v: Vec<f64> = x.ako_f64().iter().zip(y.ako_f64()).map(|(p, q)| p + (q - p) * t).collect();
         Ok(vec![Hodnota::Signal(uloz(x, v, typ_vysledku(x.typ(), Some(y.typ())))?)])
     }
+
+    fn oblast_vstupu(&self, _: &[Hodnota], vystup: &Oblast, _: usize) -> Option<Oblast> {
+        Some(vystup.clone())
+    }
 }
 
 #[derive(Debug)]
@@ -166,6 +179,10 @@ impl Operacia for PrevodTypu {
         let t = a.text("typ")?;
         let typ = TypPrvku::z_mena(t).ok_or_else(|| Chyba::MimoRozsahu(format!("neznámy typ prvku {t}")))?;
         Ok(vec![Hodnota::Signal(a.signal(0)?.preved(typ).0)])
+    }
+
+    fn oblast_vstupu(&self, _: &[Hodnota], vystup: &Oblast, _: usize) -> Option<Oblast> {
+        Some(vystup.clone())
     }
 }
 

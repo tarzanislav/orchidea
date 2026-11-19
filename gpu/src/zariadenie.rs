@@ -147,6 +147,8 @@ pub enum TypZariadenia {
     Virtualne,
     /// Softvérový ovládač bežiaci na procesore (lavapipe, WARP) – správny, ale pomalší.
     Softverove,
+    /// Vlastný vektorový vykonávač ORCHIDEE na procesore (SIMD + všetky jadrá).
+    Procesor,
     /// Referenčný interpret ORCHIDEE.
     Referencne,
 }
@@ -181,10 +183,12 @@ pub trait Zariadenie: Send + Sync + fmt::Debug {
     ) -> Vysledok<()>;
 }
 
-/// Referenčné zariadenie – interpret na procesore. Je vždy k dispozícii.
+/// Zariadenie na procesore – je vždy k dispozícii. `Procesor::default()` je referenčný interpret (rozhodca
+/// správnosti), [`Procesor::vektorovy`] je rýchly vektorový vykonávač s bitovo rovnakými výsledkami.
 #[derive(Debug)]
 pub struct Procesor {
     popis: PopisZariadenia,
+    vektorovy: bool,
 }
 
 impl Default for Procesor {
@@ -196,6 +200,25 @@ impl Default for Procesor {
                 meno: "referenčný interpret ORCHIDEA".into(),
                 ovladac: env!("CARGO_PKG_VERSION").into(),
             },
+            vektorovy: false,
+        }
+    }
+}
+
+impl Procesor {
+    /// Vektorový vykonávač: bloky po 256 vláknach na SIMD, rozdelené medzi všetky jadrá procesora.
+    pub fn vektorovy() -> Procesor {
+        Procesor {
+            popis: PopisZariadenia {
+                druh: Druh::Procesor,
+                typ: TypZariadenia::Procesor,
+                meno: format!(
+                    "vektorový vykonávač ORCHIDEA ({} vlákien)",
+                    orchidea_jadro::paralel::pocet_vlakien()
+                ),
+                ovladac: env!("CARGO_PKG_VERSION").into(),
+            },
+            vektorovy: true,
         }
     }
 }
@@ -212,14 +235,18 @@ impl Zariadenie for Procesor {
         konstanty: &[Hodnota32],
         skupiny: [u32; 3],
     ) -> Vysledok<()> {
-        interpret::vykonaj(kernel, vazby, konstanty, skupiny)
+        if self.vektorovy {
+            crate::vektor::vykonaj(kernel, vazby, konstanty, skupiny)
+        } else {
+            interpret::vykonaj(kernel, vazby, konstanty, skupiny)
+        }
     }
 }
 
 /// Zariadenia a dôvody, prečo sa niektoré nepodarilo otvoriť.
 type ZoznamZariadeni = (Vec<Arc<dyn Zariadenie>>, Vec<String>);
 
-/// Všetky dostupné zariadenia, od najvhodnejšieho. Referenčný procesor je vždy posledný.
+/// Všetky dostupné zariadenia, od najvhodnejšieho. Vektorový vykonávač na procesore je vždy posledný.
 /// Zariadenia, ktoré sa nepodarilo otvoriť, sa vrátia ako zoznam dôvodov – nič sa nezamlčí.
 ///
 /// Zariadenia sa otvoria raz za beh programu a zdieľajú sa (ovládače neznášajú opakované vytváranie
@@ -248,7 +275,7 @@ pub fn vsetky_zariadenia() -> (Vec<Arc<dyn Zariadenie>>, Vec<String>) {
             }
         }
         z.sort_by_key(|x| x.popis().typ);
-        z.push(Arc::new(Procesor::default()));
+        z.push(Arc::new(Procesor::vektorovy()));
         (z, dovody)
     });
     (z.clone(), d.clone())

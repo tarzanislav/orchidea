@@ -9,6 +9,7 @@ use crate::chyba::{Chyba, Vysledok};
 use crate::graf::{DruhUzla, Graf, Parameter, UzolId, Zdroj, rozlis_typ_vystupu};
 use crate::hodnota::{Hodnota, TypHodnoty};
 use crate::meno::Meno;
+use crate::oblast::Oblast;
 use crate::odtlacok::{Hasovac, Odtlacok};
 use crate::operacia::{Argumenty, KontextVypoctu, Operacia, PopisOperacie, RegisterOperacii, TypVystupu};
 use crate::os::RegisterOsi;
@@ -142,14 +143,14 @@ impl Prostredie {
         self.vyhodnot_graf(graf, vstupy, parametre, polohy, 0)
     }
 
-    fn vyhodnot_graf(
+    /// Overí vstupy a parametre grafu; vráti hodnoty parametrov a zdroje výstupov.
+    fn priprav(
         &self,
         graf: &Graf,
         vstupy: &[Hodnota],
         dane: &BTreeMap<Meno, Hodnota>,
-        polohy: &BTreeMap<Meno, f64>,
         hlbka: u32,
-    ) -> Vysledok<Vec<Hodnota>> {
+    ) -> Vysledok<(BTreeMap<Meno, Hodnota>, Vec<Zdroj>)> {
         if hlbka > NAJVACSIA_HLBKA {
             return Err(Chyba::Limit(format!("grafy sú vnorené hlbšie ako {NAJVACSIA_HLBKA}")));
         }
@@ -186,6 +187,18 @@ impl Prostredie {
         for (m, z) in &graf.vystupy {
             ciele.push(z.ok_or_else(|| Chyba::Chybajuce(format!("výstup grafu {m} nie je pripojený")))?);
         }
+        Ok((parametre, ciele))
+    }
+
+    fn vyhodnot_graf(
+        &self,
+        graf: &Graf,
+        vstupy: &[Hodnota],
+        dane: &BTreeMap<Meno, Hodnota>,
+        polohy: &BTreeMap<Meno, f64>,
+        hlbka: u32,
+    ) -> Vysledok<Vec<Hodnota>> {
+        let (parametre, ciele) = self.priprav(graf, vstupy, dane, hlbka)?;
         let r = Rozsah { graf, vstupy, parametre: &parametre, polohy, hlbka };
         let mut vysledky: BTreeMap<UzolId, Arc<Vec<Hodnota>>> = BTreeMap::new();
         for id in graf.poradie(&ciele)? {
@@ -193,6 +206,158 @@ impl Prostredie {
             vysledky.insert(id, v);
         }
         ciele.iter().map(|z| hodnota_zdroja(&r, &vysledky, *z)).collect()
+    }
+
+    /// Vyhodnotí graf len pre oblasť výstupov (napr. viditeľný výrez obrazu alebo prehrávaný úsek zvuku).
+    ///
+    /// Žiadosť o oblasť sa šíri od výstupov k vstupom: operácia, ktorá to dovoľuje
+    /// ([`Operacia::oblast_vstupu`]), povie, akú časť vstupov potrebuje; ostatné uzly sa spočítajú celé.
+    /// Keď uzol potrebuje viac spotrebiteľov, spočíta sa raz pre obal ich oblastí. Výsledok je bitovo
+    /// rovnaký ako výrez z úplného vyhodnotenia (signály sa obmedzia na dostupné dáta).
+    pub fn vyhodnot_oblast(
+        &self,
+        graf: &Graf,
+        vstupy: &[Hodnota],
+        dane: &BTreeMap<Meno, Hodnota>,
+        polohy: &BTreeMap<Meno, f64>,
+        oblast: &Oblast,
+    ) -> Vysledok<Vec<Hodnota>> {
+        let (parametre, ciele) = self.priprav(graf, vstupy, dane, 0)?;
+        let r = Rozsah { graf, vstupy, parametre: &parametre, polohy, hlbka: 0 };
+        let poradie = graf.poradie(&ciele)?;
+
+        // 1. žiadosti od výstupov k vstupom: uzol → oblasť (None = celý)
+        let mut ziadosti: BTreeMap<UzolId, Option<Oblast>> = BTreeMap::new();
+        fn ziadaj(z: &mut BTreeMap<UzolId, Option<Oblast>>, zdroj: Zdroj, o: Option<Oblast>) {
+            if let Zdroj::Uzol { uzol, .. } = zdroj {
+                let nova = match (z.get(&uzol), o) {
+                    (None, o) => o,
+                    (Some(Some(a)), Some(b)) => Some(a.zjednot(&b)),
+                    _ => None,
+                };
+                z.insert(uzol, nova);
+            }
+        }
+        for c in &ciele {
+            ziadaj(&mut ziadosti, *c, Some(oblast.clone()));
+        }
+        let prazdne = BTreeMap::new();
+        let mut plan: BTreeMap<UzolId, Vec<Hodnota>> = BTreeMap::new();
+        for id in poradie.iter().rev() {
+            let u = graf.uzol(*id)?;
+            let ziadost = ziadosti.get(id).cloned().flatten();
+            let schopna = match (&ziadost, self.popis_uzla(&u.druh)?) {
+                (Some(_), PopisUzla::Op(op)) if !u.vypnuty && u.obmedzenie.is_none() => {
+                    self.parametre_bez_uzlov(&r, &prazdne, u, op.popis())?.map(|p| (op.clone(), p))
+                }
+                _ => None,
+            };
+            match (schopna, ziadost) {
+                (Some((op, par)), Some(o)) => {
+                    for (i, z) in u.vstupy.iter().enumerate() {
+                        if let Some(z) = z {
+                            ziadaj(&mut ziadosti, *z, op.oblast_vstupu(&par, &o, i));
+                        }
+                    }
+                    plan.insert(*id, par);
+                }
+                _ => {
+                    for z in u.vstupy.iter().flatten().chain(u.obmedzenie.iter()) {
+                        ziadaj(&mut ziadosti, *z, None);
+                    }
+                    for p in u.parametre.values() {
+                        if let Parameter::Vstup(z) = p {
+                            ziadaj(&mut ziadosti, *z, None);
+                        }
+                    }
+                    if let Some(sada) = u.variant.as_ref().and_then(|v| match self.popis_uzla(&u.druh) {
+                        Ok(PopisUzla::Graf(g)) => g.varianty.get(v).cloned(),
+                        _ => None,
+                    }) {
+                        for p in sada.values() {
+                            if let Parameter::Vstup(z) = p {
+                                ziadaj(&mut ziadosti, *z, None);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. výpočet od vstupov k výstupom; pri každom uzle si pamätáme, akú oblasť pokrýva
+        let mut vysledky: BTreeMap<UzolId, Arc<Vec<Hodnota>>> = BTreeMap::new();
+        let mut pokrytie: BTreeMap<UzolId, Oblast> = BTreeMap::new();
+        let pokrytie_zdroja = |p: &BTreeMap<UzolId, Oblast>, z: &Zdroj| match z {
+            Zdroj::Uzol { uzol, .. } => p.get(uzol).cloned(),
+            Zdroj::VstupGrafu(_) => None,
+        };
+        for id in &poradie {
+            let (Some(parametre), Some(Some(o))) = (plan.get(id), ziadosti.get(id)) else {
+                let v = self.vyhodnot_uzol(&r, *id, &vysledky)?;
+                vysledky.insert(*id, v);
+                continue;
+            };
+            let u = graf.uzol(*id)?;
+            let PopisUzla::Op(op) = self.popis_uzla(&u.druh)? else {
+                return Err(Chyba::Vypocet("plán oblasti pre uzol, ktorý nie je operácia".into()));
+            };
+            let mut vstupy = Vec::with_capacity(u.vstupy.len());
+            let mut pokryte = Oblast::cela();
+            for (i, z) in u.vstupy.iter().enumerate() {
+                let Some(z) = z else {
+                    vstupy.push(Hodnota::Nic);
+                    continue;
+                };
+                let h = hodnota_zdroja(&r, &vysledky, *z)?;
+                match (h, op.oblast_vstupu(parametre, o, i)) {
+                    (Hodnota::Signal(s), Some(potrebna)) => {
+                        let (v, skutocna) = potrebna.vyrez(&s, pokrytie_zdroja(&pokrytie, z).as_ref())?;
+                        for (os, rozsah) in skutocna.osi() {
+                            if pokryte.os(os.ako_text()).is_none() {
+                                pokryte = pokryte.s_osou(os.clone(), rozsah.0, rozsah.1)?;
+                            }
+                        }
+                        vstupy.push(Hodnota::Signal(v));
+                    }
+                    (h, _) => vstupy.push(h),
+                }
+            }
+            let out = self.vypocitaj_operaciu(&r, *id, op, vstupy, parametre.clone())?;
+            vysledky.insert(*id, out);
+            pokrytie.insert(*id, pokryte);
+        }
+        ciele
+            .iter()
+            .map(|z| match hodnota_zdroja(&r, &vysledky, *z)? {
+                Hodnota::Signal(s) => {
+                    Ok(Hodnota::Signal(oblast.vyrez(&s, pokrytie_zdroja(&pokrytie, z).as_ref())?.0))
+                }
+                h => Ok(h),
+            })
+            .collect()
+    }
+
+    /// Hodnoty parametrov uzla, ak nezávisia od výsledkov iných uzlov (inak `None`).
+    fn parametre_bez_uzlov(
+        &self,
+        r: &Rozsah<'_>,
+        prazdne: &BTreeMap<UzolId, Arc<Vec<Hodnota>>>,
+        u: &crate::graf::Uzol,
+        popis: &PopisOperacie,
+    ) -> Vysledok<Option<Vec<Hodnota>>> {
+        if u.parametre.values().any(|p| matches!(p, Parameter::Vstup(_))) {
+            return Ok(None);
+        }
+        let mut out = Vec::with_capacity(popis.parametre.len());
+        for p in &popis.parametre {
+            let h = match u.parametre.get(&p.meno) {
+                Some(par) => rozlis_parameter(r, prazdne, par)?,
+                None => p.predvolena.clone(),
+            };
+            p.over(&h)?;
+            out.push(h);
+        }
+        Ok(Some(out))
     }
 
     fn popis_uzla(&self, druh: &DruhUzla) -> Vysledok<PopisUzla<'_>> {
@@ -212,6 +377,33 @@ impl Prostredie {
         }
     }
 
+    /// Vstupy sú už overené a doplnené; výsledok sa hľadá a ukladá v pamäti podľa obsahu.
+    fn vypocitaj_operaciu(
+        &self,
+        r: &Rozsah<'_>,
+        id: UzolId,
+        op: &Arc<dyn Operacia>,
+        vstupy: Vec<Hodnota>,
+        parametre: Vec<Hodnota>,
+    ) -> Vysledok<Arc<Vec<Hodnota>>> {
+        let popis = op.popis();
+        let vstupy = dopln_vstupy(vstupy, popis.vstupy.len(), &popis.identita)?;
+        let kluc = kluc_pamate(popis, &vstupy, &parametre, r.polohy);
+        if let Some(v) = self.z_pamate(&kluc) {
+            return Ok(v);
+        }
+        let k = KontextVypoctu { prostredie: self, polohy: r.polohy, hlbka: r.hlbka };
+        let a = Argumenty { vstupy: &vstupy, parametre: &parametre, popis };
+        let out = op.vypocitaj(&k, &a).map_err(|e| match e {
+            Chyba::Vypocet(s) => Chyba::Vypocet(format!("uzol {}/{}: {s}", id.replika, id.cislo)),
+            ine => ine,
+        })?;
+        over_vystupy(popis, &vstupy, &out)?;
+        let out = Arc::new(out);
+        self.do_pamate(kluc, out.clone());
+        Ok(out)
+    }
+
     fn vyhodnot_uzol(
         &self,
         r: &Rozsah<'_>,
@@ -227,10 +419,6 @@ impl Prostredie {
                 None => Ok(Hodnota::Nic),
             })
             .collect::<Vysledok<_>>()?;
-        let kontext_chyby = |e: Chyba| match e {
-            Chyba::Vypocet(s) => Chyba::Vypocet(format!("uzol {}/{}: {s}", id.replika, id.cislo)),
-            ine => ine,
-        };
         let vystupy = match self.popis_uzla(&u.druh)? {
             PopisUzla::Op(op) => {
                 let popis = op.popis();
@@ -269,19 +457,7 @@ impl Prostredie {
                     p.over(&h)?;
                     parametre.push(h);
                 }
-                let kluc = kluc_pamate(popis, &vstupy, &parametre, r.polohy);
-                let vysledok = match self.z_pamate(&kluc) {
-                    Some(v) => v,
-                    None => {
-                        let k = KontextVypoctu { prostredie: self, polohy: r.polohy, hlbka: r.hlbka };
-                        let a = Argumenty { vstupy: &vstupy, parametre: &parametre, popis };
-                        let out = op.vypocitaj(&k, &a).map_err(kontext_chyby)?;
-                        over_vystupy(popis, &vstupy, &out)?;
-                        let out = Arc::new(out);
-                        self.do_pamate(kluc, out.clone());
-                        out
-                    }
-                };
+                let vysledok = self.vypocitaj_operaciu(r, id, op, vstupy.clone(), parametre)?;
                 obmedz(r, vysledky, u.obmedzenie, &vstupy, vysledok)?
             }
             PopisUzla::Graf(g) => {

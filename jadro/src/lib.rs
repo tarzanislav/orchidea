@@ -9,7 +9,7 @@
 //! | 3 Vlastnosť | [`vlastnost`] |
 //! | 4 Operácia | [`operacia`], [`zakladne`] |
 //! | 5 Parameter | [`graf::Parameter`], [`krivka`], [`vyraz`] |
-//! | 6 Graf | [`graf`], [`prostredie`] |
+//! | 6 Graf | [`graf`], [`prostredie`], [`oblast`] |
 //! | 7 Odkaz | [`graf::DruhUzla`] |
 //! | 8 Výber | [`vyber`] |
 //! | 9 Zmena | [`zmena`], [`dennik`] |
@@ -31,6 +31,7 @@ pub mod krivka;
 pub mod matematika;
 pub mod meno;
 pub mod nahoda;
+pub mod oblast;
 pub mod odtlacok;
 pub mod operacia;
 pub mod os;
@@ -52,6 +53,7 @@ pub use hodnota::{Hodnota, PoziadavkaSignalu, TypHodnoty};
 pub use jednotka::{Jednotka, Zlomok};
 pub use kodovanie::Kodovatelne;
 pub use meno::{Meno, m};
+pub use oblast::Oblast;
 pub use odtlacok::{Hasovac, Odtlacok};
 pub use operacia::{Operacia, PopisOperacie, RegisterOperacii};
 pub use os::{Os, RegisterOsi, Vzorkovanie};

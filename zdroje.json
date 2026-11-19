@@ -106,6 +106,22 @@
       "kde": "program – načítané za behu, ak existujú",
       "ucel": "rozhrania ovládačov a operačného systému; bez nich ORCHIDEA počíta na procesore",
       "posudenie_charty": "systémové rozhrania; ORCHIDEA sa s nimi nezviaže pri preklade a funguje aj bez nich"
+    },
+    {
+      "meno": "QEMU (qemu-user) a krížový prekladač GNU pre ARMv7 (gcc-arm-linux-gnueabihf)",
+      "trieda": "B",
+      "licencia": "GPL-2.0 (nástroje, nie súčasť programu)",
+      "kde": "CI – skúšky pre 32-bitový ARM (Raspberry Pi)",
+      "ucel": "spustenie skúšok 32-bitovej zostavy na počítači CI; linker pre cieľ armv7",
+      "posudenie_charty": "nástroje zostavenia; do programu ORCHIDEA sa nič neprenáša"
+    },
+    {
+      "meno": "Docker a obraz ubuntu:24.04",
+      "trieda": "B",
+      "licencia": "Apache-2.0 (Docker), licencie balíkov Ubuntu",
+      "kde": "CI – profil slabého zariadenia",
+      "ucel": "kontajner s obmedzenou pamäťou (1 GB) a počtom jadier (4) pre skúšky",
+      "posudenie_charty": "nástroje skúšok; do programu ORCHIDEA sa nič neprenáša"
     }
   ],
   "triedy": {

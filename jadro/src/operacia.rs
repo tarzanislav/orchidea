@@ -8,6 +8,7 @@ use crate::hodnota::{Hodnota, TypHodnoty};
 use crate::jednotka::Jednotka;
 use crate::kodovanie::{Citac, Kodovatelne, Zapisovac};
 use crate::meno::Meno;
+use crate::oblast::Oblast;
 use crate::prostredie::Prostredie;
 use crate::signal::Signal;
 use std::collections::BTreeMap;
@@ -182,6 +183,17 @@ pub struct KontextVypoctu<'a> {
 pub trait Operacia: Send + Sync + Debug {
     fn popis(&self) -> &PopisOperacie;
     fn vypocitaj(&self, kontext: &KontextVypoctu<'_>, argumenty: &Argumenty<'_>) -> Vysledok<Vec<Hodnota>>;
+
+    /// Oblasť vstupu `vstup`, ktorú operácia potrebuje na výpočet oblasti `vystup` svojho výsledku
+    /// (`parametre` v poradí popisu). `None` = celý vstup – bezpečná predvoľba pre každú operáciu.
+    ///
+    /// Operácia, ktorá oblasť vráti, sľubuje: (1) zachováva osi – výsledok pokrýva na každej osi rozsah,
+    /// ktorý dostal prvý vstup s touto osou; (2) hodnoty v žiadanej oblasti výsledku sú bitovo rovnaké ako
+    /// pri výpočte z celých vstupov. Bodové operácie vracajú tú istú oblasť, filtre ju rozšíria o okraj.
+    fn oblast_vstupu(&self, parametre: &[Hodnota], vystup: &Oblast, vstup: usize) -> Option<Oblast> {
+        let _ = (parametre, vystup, vstup);
+        None
+    }
 }
 
 /// Register operácií. Vstavané operácie sa registrujú rovnako ako rozšírenia.

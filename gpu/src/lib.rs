@@ -1,7 +1,8 @@
 //! # GPU vrstva ORCHIDEE
 //!
 //! - [`ir`] – vlastný jazyk výpočtových kernelov,
-//! - [`interpret`] – referenčný interpret na procesore (CPU cesta vždy, rozhodca správnosti),
+//! - [`interpret`] – referenčný interpret na procesore (rozhodca správnosti),
+//! - [`vektor`] – rýchly vektorový vykonávač na procesore (SIMD + všetky jadrá, CPU cesta vždy),
 //! - [`spirv`] – vlastný prekladač do SPIR-V (Vulkan), [`texty`] – do HLSL, MSL a WGSL,
 //! - [`zariadenie`] – spoločné rozhranie; [`vulkan`], [`d3d12`] a [`metal`] – zariadenia cez vlastné väzby.
 //!
@@ -17,6 +18,7 @@ mod kniznica;
 pub mod metal;
 pub mod spirv;
 pub mod texty;
+pub mod vektor;
 pub mod vulkan;
 pub mod zariadenie;
 
