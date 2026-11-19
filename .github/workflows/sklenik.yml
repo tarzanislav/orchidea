@@ -1,0 +1,111 @@
+name: SKLENÍK – obraz pre Raspberry Pi
+
+on:
+  push:
+    paths:
+      - "sklenik/**"
+      - "nastroje/initramfs.py"
+      - ".github/workflows/sklenik.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  # oficiálne jadro a firmvér Raspberry Pi – pevné verzie, aby bol obraz vždy rovnaký
+  JADRO_TAG: stable_20250916
+  FIRMVER_TAG: "1.20250915"
+
+jobs:
+  obraz64:
+    name: Obraz 64-bit (RPi 3, 4, 5, Zero 2) a skúška v QEMU
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+      - name: Nástroje
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison flex libssl-dev make gcc dosfstools mtools fdisk qemu-system-arm
+          rustup toolchain install && rustup target add aarch64-unknown-linux-musl
+      - name: KLÍČ (statický program, musl)
+        run: |
+          cargo build --locked --release -p sklenik-klic --target aarch64-unknown-linux-musl
+          file target/aarch64-unknown-linux-musl/release/klic
+          ls -l target/aarch64-unknown-linux-musl/release/klic
+      - name: Pamäť zostaveného jadra
+        id: pamat
+        uses: actions/cache@v4
+        with:
+          path: jadro-vystup
+          key: jadro-rpi64-${{ env.JADRO_TAG }}-${{ hashFiles('sklenik/jadro.config') }}
+      - name: Jadro Raspberry Pi (oficiálne zdrojové kódy + nastavenie SKLENÍKA)
+        if: steps.pamat.outputs.cache-hit != 'true'
+        run: |
+          curl -sSfL "https://github.com/raspberrypi/linux/archive/refs/tags/${JADRO_TAG}.tar.gz" | tar xz
+          cd "linux-${JADRO_TAG}"
+          make -s bcm2711_defconfig
+          scripts/kconfig/merge_config.sh -m .config ../sklenik/jadro.config
+          make -s olddefconfig
+          make -s -j"$(nproc)" Image dtbs
+          mkdir -p ../jadro-vystup
+          cp arch/arm64/boot/Image ../jadro-vystup/kernel8.img
+          cp .config ../jadro-vystup/jadro.config
+          for d in bcm2710-rpi-3-b bcm2710-rpi-3-b-plus bcm2710-rpi-zero-2-w bcm2711-rpi-4-b bcm2711-rpi-400 \
+                   bcm2712-rpi-5-b bcm2712d0-rpi-5-b; do
+            cp "arch/arm64/boot/dts/broadcom/$d.dtb" ../jadro-vystup/ || echo "chýba $d.dtb"
+          done
+      - name: Kontrola nastavenia jadra
+        run: |
+          echo "### Nastavenie jadra SKLENÍKA" >> "$GITHUB_STEP_SUMMARY"
+          chyby=0
+          grep -E '^(CONFIG_|# CONFIG_)' sklenik/jadro.config | while read -r riadok; do
+            if grep -qxF "$riadok" jadro-vystup/jadro.config; then echo "✅ $riadok"; else echo "⚠️ $riadok"; fi
+          done | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Firmvér Raspberry Pi
+        run: |
+          mkdir -p firmver
+          for f in bootcode.bin start.elf fixup.dat start4.elf fixup4.dat LICENCE.broadcom; do
+            curl -sSfL -o "firmver/$f" "https://raw.githubusercontent.com/raspberrypi/firmware/${FIRMVER_TAG}/boot/$f"
+          done
+          ls -l firmver
+      - name: Systém v pamäti (initramfs) a obraz SD karty
+        run: |
+          mkdir -p obraz
+          python3 nastroje/initramfs.py target/aarch64-unknown-linux-musl/release/klic obraz/initramfs.cpio.gz
+          printf 'SKLENÍK %s\njadro: https://github.com/raspberrypi/linux/tree/%s + sklenik/jadro.config (úplné nastavenie v jadro.config)\nfirmvér: https://github.com/raspberrypi/firmware/tree/%s/boot (LICENCE.broadcom)\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
+            "$GITHUB_SHA" "$JADRO_TAG" "$FIRMVER_TAG" > obraz/ZDROJE.txt
+          mkfs.vfat -F 32 -n SKLENIK -C obraz/boot.img 262144 > /dev/null
+          mcopy -i obraz/boot.img firmver/* jadro-vystup/*.dtb jadro-vystup/kernel8.img jadro-vystup/jadro.config \
+            sklenik/boot/config.txt sklenik/boot/cmdline.txt obraz/initramfs.cpio.gz obraz/ZDROJE.txt ::
+          mdir -i obraz/boot.img ::
+          truncate -s 260M obraz/sklenik-rpi-64bit.img
+          printf 'label: dos\nstart=2048, type=c, bootable\n' | sfdisk -q obraz/sklenik-rpi-64bit.img
+          dd if=obraz/boot.img of=obraz/sklenik-rpi-64bit.img bs=512 seek=2048 conv=notrunc status=none
+          sfdisk -l obraz/sklenik-rpi-64bit.img
+      - name: Skúška štartu v emulovanom Raspberry Pi 3 (QEMU)
+        run: |
+          qemu-system-aarch64 -M raspi3b -m 1G -kernel jadro-vystup/kernel8.img \
+            -dtb jadro-vystup/bcm2710-rpi-3-b.dtb -initrd obraz/initramfs.cpio.gz \
+            -append "console=ttyAMA0,115200 rdinit=/init sklenik.skuska=1 loglevel=6" \
+            -nographic -no-reboot > qemu.log 2>&1 &
+          qemu=$!
+          for i in $(seq 1 120); do
+            grep -q "SKLENÍK pripravený" qemu.log && break
+            kill -0 $qemu 2>/dev/null || break
+            sleep 2
+          done
+          kill $qemu 2>/dev/null || true
+          grep -E "KLÍČ|Kernel panic|Run /init|Freeing unused" qemu.log | head -40
+          echo "### Štart v QEMU (Raspberry Pi 3)" >> "$GITHUB_STEP_SUMMARY"
+          grep "KLÍČ" qemu.log >> "$GITHUB_STEP_SUMMARY" || true
+          grep -q "SKLENÍK pripravený" qemu.log || { tail -60 qemu.log; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sklenik-rpi-64bit
+          path: |
+            obraz/sklenik-rpi-64bit.img
+            qemu.log
+          if-no-files-found: warn

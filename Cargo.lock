@@ -20,3 +20,7 @@ dependencies = [
  "orchidea-gpu",
  "orchidea-jadro",
 ]
+
+[[package]]
+name = "sklenik-klic"
+version = "0.1.0"

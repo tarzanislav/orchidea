@@ -130,6 +130,38 @@
       "kde": "CI – balíky skúšok a meraní pre skutočné Raspberry Pi",
       "ucel": "uloženie zostavených balíkov na stiahnutie z GitHubu",
       "posudenie_charty": "nástroj zostavenia; do programu ORCHIDEA sa nič neprenáša"
+    },
+    {
+      "meno": "jadro Linux Raspberry Pi (raspberrypi/linux, značka stable_20250916)",
+      "trieda": "B",
+      "licencia": "GPL-2.0",
+      "kde": "obraz SKLENÍKA – samostatný program (jadro systému), zostavený bez úprav zdrojového kódu, len s vlastným nastavením sklenik/jadro.config",
+      "ucel": "ovládače všetkých modelov Raspberry Pi",
+      "posudenie_charty": "platforma; ORCHIDEA a KLÍČ sa s jadrom nezlučujú (hranica jadro – používateľský priestor); zdroje a nastavenie sú uvedené v obraze (ZDROJE.txt, jadro.config)"
+    },
+    {
+      "meno": "firmvér Raspberry Pi (raspberrypi/firmware, značka 1.20250915: bootcode.bin, start*.elf, fixup*.dat)",
+      "trieda": "B",
+      "licencia": "LICENCE.broadcom (šírenie povolené, súbor licencie je v obraze)",
+      "kde": "obraz SKLENÍKA – oddiel na štart",
+      "ucel": "štart grafického jadra a procesora Raspberry Pi – nenahraditeľný",
+      "posudenie_charty": "platforma výrobcu hardvéru"
+    },
+    {
+      "meno": "QEMU (qemu-system-arm), dosfstools, mtools, fdisk",
+      "trieda": "B",
+      "licencia": "GPL (nástroje, nie súčasť programu)",
+      "kde": "CI – zostavenie obrazu SD karty a skúška štartu v emulovanom Raspberry Pi 3",
+      "ucel": "vytvorenie oddielu FAT32 a tabuľky oddielov, emulácia",
+      "posudenie_charty": "nástroje zostavenia; do programu sa nič neprenáša"
+    },
+    {
+      "meno": "actions/cache",
+      "trieda": "B",
+      "licencia": "MIT (nástroj CI)",
+      "kde": "CI – pamäť zostaveného jadra",
+      "ucel": "jadro sa nezostavuje znova, kým sa nezmení jeho nastavenie",
+      "posudenie_charty": "nástroj zostavenia"
     }
   ],
   "triedy": {

@@ -1,0 +1,19 @@
+[package]
+name = "sklenik-klic"
+description = "KLÍČ – prvý program systému SKLENÍK (PID 1): štart, tepelný strážca, stav"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[[bin]]
+name = "klic"
+path = "src/main.rs"
+
+[lints]
+workspace = true

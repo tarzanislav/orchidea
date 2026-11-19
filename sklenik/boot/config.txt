@@ -1,0 +1,19 @@
+# SKLENÍK – nastavenie firmvéru Raspberry Pi
+# 64-bitové jadro SKLENÍKA a celý systém v pamäti
+arm_64bit=1
+kernel=kernel8.img
+initramfs initramfs.cpio.gz followkernel
+
+# rýchly štart: bez čakania a dúhovej obrazovky
+boot_delay=0
+disable_splash=1
+disable_overscan=1
+
+# teplo (R81): nikdy nepretaktovať; poistka firmvéru pod hranicou škrtenia (strážca KLÍČ drží teplotu nižšie)
+temp_limit=75
+# RPi 3 B+: firmvér zníži takt 1,4 → 1,2 GHz už pri 60 °C
+temp_soft_limit=60
+
+# grafika od firmvéru (jednoduchý framebuffer); sériová linka pre ladenie (adaptér USB–TTL)
+gpu_mem=64
+enable_uart=1
