@@ -279,12 +279,15 @@ impl Supis {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let ulozisko = self
-            .ulozisko
-            .iter()
-            .map(|u| format!("{} {} {}", u.meno, u.popis, velkost(u.bajtov)).replace("  ", " "))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let ulozisko = if self.ulozisko.is_empty() {
+            "žiadne".into()
+        } else {
+            self.ulozisko
+                .iter()
+                .map(|u| format!("{} {} {}", u.meno, u.popis, velkost(u.bajtov)).replace("  ", " "))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let zvuk = if self.zvuk.is_empty() { "–".into() } else { self.zvuk.join(", ") };
         format!(
             "periférie – obrazovka: {obrazovka}; vstupy: {vstupy}; sieť: {siet}; úložisko: {ulozisko}; zvuk: {zvuk}; USB: {}",

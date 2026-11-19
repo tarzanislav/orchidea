@@ -49,8 +49,7 @@ jobs:
       - name: Jadro Raspberry Pi (oficiálne zdrojové kódy + nastavenie SKLENÍKA)
         if: steps.pamat.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get -o Acquire::Retries=5 update -qq
-          sudo apt-get -o Acquire::Retries=5 install -y -qq bc bison flex libssl-dev make gcc ${CROSS_COMPILE:+gcc-arm-linux-gnueabihf}
+          sh nastroje/balicky.sh bc bison flex libssl-dev make gcc ${CROSS_COMPILE:+gcc-arm-linux-gnueabihf}
           curl -sSfL "https://github.com/raspberrypi/linux/archive/refs/tags/${JADRO_TAG}.tar.gz" | tar xz
           cd "linux-${JADRO_TAG}"
           make -s ${{ matrix.defconfig }}
@@ -103,8 +102,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: Nástroje
         run: |
-          sudo apt-get -o Acquire::Retries=5 update -qq
-          sudo apt-get -o Acquire::Retries=5 install -y -qq qemu-user ${{ matrix.linker && 'gcc-arm-linux-gnueabihf' || '' }}
+          sh nastroje/balicky.sh qemu-user ${{ matrix.linker && 'gcc-arm-linux-gnueabihf' || '' }}
           rustup toolchain install && rustup target add ${{ matrix.ciel }}
       - name: Zostavenie a skúšky na emulovanom procesore ${{ matrix.cpu }}
         run: |
@@ -130,8 +128,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: Nástroje
         run: |
-          sudo apt-get -o Acquire::Retries=5 update -qq
-          sudo apt-get -o Acquire::Retries=5 install -y -qq dosfstools mtools fdisk qemu-system-arm device-tree-compiler
+          sh nastroje/balicky.sh dosfstools mtools fdisk qemu-system-arm device-tree-compiler
       - uses: actions/download-artifact@v4
         with:
           pattern: jadro-*

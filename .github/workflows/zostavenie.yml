@@ -43,8 +43,7 @@ jobs:
       - name: Softvérový Vulkan (lavapipe) pre skúšky GPU
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get -o Acquire::Retries=5 update -qq
-          sudo apt-get -o Acquire::Retries=5 install -y -qq mesa-vulkan-drivers libvulkan1
+          sh nastroje/balicky.sh mesa-vulkan-drivers libvulkan1
       - name: Dostupné výpočtové zariadenia
         shell: bash
         run: |
@@ -112,8 +111,7 @@ jobs:
           rustup target add armv7-unknown-linux-gnueabihf
       - name: Krížový linker a QEMU
         run: |
-          sudo apt-get -o Acquire::Retries=5 update -qq
-          sudo apt-get -o Acquire::Retries=5 install -y -qq gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user
+          sh nastroje/balicky.sh gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user
       - name: Skúšky (32-bitový ARM, bitová zhoda s ostatnými platformami)
         run: cargo test --locked --workspace --release --target armv7-unknown-linux-gnueabihf
       - name: Balík pre skutočné Raspberry Pi (32-bit ARMv7 – RPi 2, 3, 4)
@@ -142,9 +140,8 @@ jobs:
           rustup target add arm-unknown-linux-musleabihf
       - name: Krížový linker a QEMU
         run: |
-          sudo apt-get -o Acquire::Retries=5 update -qq
-          sudo apt-get -o Acquire::Retries=5 install -y -qq gcc-arm-linux-gnueabihf
-          printf 'FROM ubuntu:24.04\nRUN apt-get -o Acquire::Retries=5 update -qq && apt-get -o Acquire::Retries=5 install -y -qq qemu-user\n' | docker build -q -t rpi1 -
+          sh nastroje/balicky.sh gcc-arm-linux-gnueabihf
+          printf 'FROM ubuntu:24.04\nCOPY balicky.sh /\nRUN sh /balicky.sh qemu-user\n' | docker build -q -t rpi1 -f - nastroje
       - name: Zostavenie skúšok pre ARMv6
         run: |
           cargo test --locked --workspace --release --target arm-unknown-linux-musleabihf --no-run --message-format=json \
@@ -240,8 +237,7 @@ jobs:
       - name: SPIR-V (spirv-val) a WGSL (naga)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get -o Acquire::Retries=5 update -qq
-          sudo apt-get -o Acquire::Retries=5 install -y -qq spirv-tools
+          sh nastroje/balicky.sh spirv-tools
           for f in shadery/*.spv; do echo "$f"; spirv-val --target-env vulkan1.1 "$f"; done
           cargo install naga-cli --locked --root "$HOME/naga"
           for f in shadery/*.wgsl; do echo "$f"; "$HOME/naga/bin/naga" "$f"; done
