@@ -14,8 +14,9 @@ const ROZPOCET: &str = "/run/sklenik/teplo";
 /// Zápis do sériovej linky, na obrazovku (konzola jadra) aj do denníka jadra.
 fn hlas(sprava: &str) {
     println!("KLÍČ: {sprava}");
+    // jeden zápis = jeden záznam denníka jadra
     if let Ok(mut k) = fs::OpenOptions::new().write(true).open("/dev/kmsg") {
-        let _ = writeln!(k, "<6>KLÍČ: {sprava}");
+        let _ = k.write_all(format!("<6>KLÍČ: {sprava}\n").as_bytes());
     }
 }
 
