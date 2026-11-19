@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["jadro", "gpu", "neuron", "pismo", "sklenik/karta", "sklenik/klic", "sklenik/sadic"]
+members = ["jadro", "gpu", "neuron", "pismo", "sklenik/karta", "sklenik/klic", "sklenik/korene", "sklenik/sadic"]
 
 [workspace.package]
 version = "0.1.0"

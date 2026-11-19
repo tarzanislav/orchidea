@@ -1,0 +1,15 @@
+[package]
+name = "sklenik-korene"
+description = "KORENE – spojenie zariadení SKLENÍKA s počítačom: vlastná kryptografia podľa noriem (X25519, ChaCha20-Poly1305)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[lints]
+workspace = true
