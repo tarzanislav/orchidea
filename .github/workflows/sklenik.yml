@@ -27,13 +27,26 @@ jobs:
       - name: Nástroje
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bc bison flex libssl-dev make gcc dosfstools mtools fdisk qemu-system-arm
+          sudo apt-get install -y -qq bc bison flex libssl-dev make gcc dosfstools mtools fdisk qemu-system-arm qemu-user
           rustup toolchain install && rustup target add aarch64-unknown-linux-musl
-      - name: KLÍČ (statický program, musl)
+      - name: KLÍČ (statický program) a skúška na procesore Cortex-A53 (RPi 3)
         run: |
           cargo build --locked --release -p sklenik-klic --target aarch64-unknown-linux-musl
-          file target/aarch64-unknown-linux-musl/release/klic
-          ls -l target/aarch64-unknown-linux-musl/release/klic
+          RUSTFLAGS="$RUSTFLAGS -C target-feature=+crt-static" \
+            cargo build --locked --release -p sklenik-klic --target aarch64-unknown-linux-gnu
+          vybrany=""
+          for t in aarch64-unknown-linux-musl aarch64-unknown-linux-gnu; do
+            b="target/$t/release/klic"
+            file "$b"
+            if "$b" --skuska && qemu-aarch64 -cpu cortex-a53 "$b" --skuska; then
+              echo "✅ $t"; [ -z "$vybrany" ] && vybrany="$b"
+            else
+              echo "❌ $t (kód $?)"
+            fi
+          done
+          test -n "$vybrany"
+          cp "$vybrany" klic-vybrany
+          echo "KLÍČ pre obraz: $vybrany"
       - name: Pamäť zostaveného jadra
         id: pamat
         uses: actions/cache/restore@v4
@@ -79,7 +92,7 @@ jobs:
       - name: Systém v pamäti (initramfs) a obraz SD karty
         run: |
           mkdir -p obraz
-          python3 nastroje/initramfs.py target/aarch64-unknown-linux-musl/release/klic obraz/initramfs.cpio.gz
+          python3 nastroje/initramfs.py klic-vybrany obraz/initramfs.cpio.gz
           printf 'SKLENÍK %s\njadro: https://github.com/raspberrypi/linux/tree/%s + sklenik/jadro.config (úplné nastavenie v jadro.config)\nfirmvér: https://github.com/raspberrypi/firmware/tree/%s/boot (LICENCE.broadcom)\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
             "$GITHUB_SHA" "$JADRO_TAG" "$FIRMVER_TAG" > obraz/ZDROJE.txt
           mkfs.vfat -F 32 -n SKLENIK -C obraz/boot.img 262144 > /dev/null
@@ -103,7 +116,8 @@ jobs:
             sleep 2
           done
           kill $qemu 2>/dev/null || true
-          grep -E "KLÍČ|Kernel panic|Run /init|Freeing unused" qemu.log | head -40
+          grep -E -A12 "Run /init" qemu.log | head -40
+          grep -E "KLÍČ|console|Kernel panic" qemu.log | head -40
           echo "### Štart v QEMU (Raspberry Pi 3)" >> "$GITHUB_STEP_SUMMARY"
           grep "KLÍČ" qemu.log >> "$GITHUB_STEP_SUMMARY" || true
           grep -q "SKLENÍK pripravený" qemu.log || { echo "--- začiatok"; head -80 qemu.log; echo "--- koniec"; tail -40 qemu.log; exit 1; }
