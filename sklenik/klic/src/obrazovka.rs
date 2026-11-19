@@ -66,6 +66,8 @@ pub struct Stav<'a> {
     pub pripravene_s: Option<f64>,
     /// Verzia SKLENÍKA na karte (dátum a odtlačok zostavenia).
     pub verzia: &'a str,
+    /// Rýchlosť karty: súvislé čítanie MB/s a náhodné čítania 4 KB za sekundu (po zmeraní).
+    pub rychlost_karty: Option<(f64, f64)>,
 }
 
 /// Teplota slovom a farbou.
@@ -267,7 +269,18 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
             j.t("disk USB", "disk USB", "USB disk")
         };
         let text = format!("{druh} {}", velkost_disku(u.bajtov, j));
-        riadok(&mut p, &mut y, if i == 0 { popisy[5] } else { "" }, &[(&text, TEXT)]);
+        let rychlost = match (u.meno.starts_with("mmcblk"), s.rychlost_karty) {
+            (true, Some((mb, iops))) => format!(
+                "· {} {} MB/s · {} {}/s",
+                j.t("čítanie", "čtení", "read"),
+                j.cislo(mb, 1),
+                j.t("náhodne", "náhodně", "random 4K"),
+                iops.round()
+            ),
+            (true, None) => j.t("· meriam rýchlosť…", "· měřím rychlost…", "· measuring speed…").to_string(),
+            _ => String::new(),
+        };
+        riadok(&mut p, &mut y, if i == 0 { popisy[5] } else { "" }, &[(&text, TEXT), (&rychlost, TLMENY)]);
     }
     let usb = format!("{} {}", j.t("zariadení:", "zařízení:", "devices:"), s.supis.usb.len());
     riadok(&mut p, &mut y, popisy[6], &[(&usb, TEXT)]);
@@ -397,6 +410,7 @@ mod skusky {
             supis,
             pripravene_s: Some(2.4),
             verzia: "19. 11. 2026 · f26272c",
+            rychlost_karty: Some((22.4, 1830.0)),
             vykon: 1.0,
             podpatie: Some(false),
             podpatie_bolo: false,
