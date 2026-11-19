@@ -1,7 +1,7 @@
 //! KLÍČ na Linuxe: štart systému, periférie a sieť, tepelný strážca nad súbormi jadra (`/sys`) a stav na
 //! obrazovke.
 
-use crate::obrazovka::{self, FormatBodu, Jazyk, Stav};
+use crate::obrazovka::{self, FormatBodu, Jazyk, MeranieKarty, Stav};
 use crate::periferie::Supis;
 use crate::strazca::{Hardver, Profil, Regulator, Uroven, stupen_ventilatora, urovne};
 use crate::sys;
@@ -243,23 +243,23 @@ fn nacitaj_nastavenie(supis: &Supis) -> Option<(String, NastavenieZariadenia)> {
 }
 
 /// Rýchlosť karty: súvislé čítanie (MB/s) a náhodné čítanie po 4 KB (operácií za sekundu).
-/// Len číta – z oblasti, ktorú systém pri štarte nečítal (nie je v pamäti jadra), na karte nič nemení.
-fn zmeraj_kartu(zariadenie: &str, bajtov: u64) -> std::io::Result<(f64, f64)> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = fs::File::open(zariadenie)?;
-    const KUS: usize = 4 << 20;
+/// Len číta – z oblasti, ktorú systém pri štarte nečítal, na karte nič nemení.
+/// Každá časť má časový strop, takže aj pomalá karta sa zmeria za pár sekúnd.
+fn zmeraj_kartu(zariadenie: &str, bajtov: u64, priebeh: &dyn Fn(u64)) -> std::io::Result<(f64, f64)> {
+    let f = fs::File::open(zariadenie)?;
+    const KUS: usize = 1 << 20;
     let celkom: u64 = (64u64 << 20).min(bajtov / 4);
     let start = (bajtov / 2) & !0xFFFFF;
     let mut buf = vec![0u8; KUS];
-    f.seek(SeekFrom::Start(start))?;
     let t = Instant::now();
     let mut precitane = 0u64;
-    while precitane < celkom {
-        let n = f.read(&mut buf)?;
+    while precitane < celkom && t.elapsed() < Duration::from_secs(4) {
+        let n = f.read_at(&mut buf, start + precitane)?;
         if n == 0 {
             break;
         }
         precitane += n as u64;
+        priebeh(precitane >> 20);
     }
     let suvisle = precitane as f64 / 1e6 / t.elapsed().as_secs_f64().max(1e-6);
     // náhodné 4 KB v hornej štvrtine karty
@@ -268,12 +268,11 @@ fn zmeraj_kartu(zariadenie: &str, bajtov: u64) -> std::io::Result<(f64, f64)> {
     let zaciatok = bajtov - oblast * 4096;
     let t = Instant::now();
     let mut pocet = 0u32;
-    while t.elapsed().as_secs_f64() < 2.0 && pocet < 4000 {
+    while t.elapsed() < Duration::from_secs(2) && pocet < 4000 {
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
-        f.seek(SeekFrom::Start(zaciatok + (x % oblast) * 4096))?;
-        f.read_exact(&mut buf[..4096])?;
+        f.read_exact_at(&mut buf[..4096], zaciatok + (x % oblast) * 4096)?;
         pocet += 1;
     }
     Ok((suvisle, pocet as f64 / t.elapsed().as_secs_f64().max(1e-6)))
@@ -361,23 +360,35 @@ pub fn spusti() {
     hlas(&supis.riadok());
     let pripravene = uptime();
     // meranie rýchlosti karty na pozadí (pár sekúnd po štarte, aby nebrzdilo štart)
-    let rychlost: std::sync::Arc<std::sync::Mutex<Option<(f64, f64)>>> = Default::default();
-    if let Some(u) = supis.ulozisko.iter().find(|u| u.meno.starts_with("mmcblk")).cloned() {
-        let r = rychlost.clone();
+    let meranie = std::sync::Arc::new(std::sync::Mutex::new(MeranieKarty::Caka));
+    let karta = supis.ulozisko.iter().find(|u| u.meno.starts_with("mmcblk")).cloned();
+    let ma_kartu = karta.is_some();
+    if let Some(u) = karta {
+        let m = meranie.clone();
+        let nastav = move |v: MeranieKarty| {
+            if let Ok(mut g) = m.lock() {
+                *g = v;
+            }
+        };
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(3));
-            match zmeraj_kartu(&format!("/dev/{}", u.meno), u.bajtov) {
+            hlas(&format!("meriam rýchlosť karty {}", u.meno));
+            nastav(MeranieKarty::Bezi(0));
+            match zmeraj_kartu(&format!("/dev/{}", u.meno), u.bajtov, &|mb| nastav(MeranieKarty::Bezi(mb))) {
                 Ok(v) => {
                     hlas(&format!("karta {}: čítanie {:.1} MB/s, náhodne 4 KB {:.0}/s", u.meno, v.0, v.1));
-                    if let Ok(mut g) = r.lock() {
-                        *g = Some(v);
-                    }
+                    nastav(MeranieKarty::Hotovo(v.0, v.1));
                 }
-                Err(e) => hlas(&format!("meranie karty sa nepodarilo: {e}")),
+                Err(e) => {
+                    hlas(&format!("meranie karty sa nepodarilo: {e}"));
+                    nastav(MeranieKarty::Chyba(e.to_string()));
+                }
             }
         });
     }
-    let mut zobrazena_rychlost = None;
+    let mut zobrazene_meranie = MeranieKarty::Caka;
+    let mut zmena_merania = Instant::now();
+    let mut posledne_mb = None;
 
     let mut posledny = Instant::now();
     let mut zobrazene: Option<(i64, usize)> = None;
@@ -416,10 +427,23 @@ pub fn spusti() {
             }
         }
         let stav = (teplota.map_or(-1000, |t| (t * 2.0).round() as i64), regulator.index());
-        let rychlost_karty = rychlost.lock().ok().and_then(|g| *g);
-        let nova_rychlost = rychlost_karty.is_some() && zobrazena_rychlost.is_none();
-        zobrazena_rychlost = rychlost_karty;
-        if zobrazene != Some(stav) || zmena_periferii || nova_rychlost {
+        let mut meranie_karty = meranie.lock().map(|g| g.clone()).unwrap_or(MeranieKarty::Caka);
+        if let MeranieKarty::Bezi(mb) = meranie_karty {
+            // ak karta 20 s neposunie meranie ďalej, povieme to otvorene
+            if posledne_mb != Some(mb) {
+                posledne_mb = Some(mb);
+                zmena_merania = Instant::now();
+            } else if zmena_merania.elapsed() > Duration::from_secs(20) {
+                meranie_karty = MeranieKarty::Zaseknute(mb);
+            }
+        }
+        if let MeranieKarty::Zaseknute(mb) = meranie_karty
+            && !matches!(zobrazene_meranie, MeranieKarty::Zaseknute(_))
+        {
+            hlas(&format!("meranie karty stojí pri {mb} MB – karta neodpovedá"));
+        }
+        let nove_meranie = meranie_karty != zobrazene_meranie;
+        if zobrazene != Some(stav) || zmena_periferii || nove_meranie {
             match displej.as_mut() {
                 Some(d) => {
                     let n = nastavenie.as_ref().map(|(_, n)| n);
@@ -435,7 +459,7 @@ pub fn spusti() {
                         supis: &supis,
                         pripravene_s: pripravene,
                         verzia: crate::VERZIA,
-                        rychlost_karty,
+                        meranie_karty: &meranie_karty,
                     };
                     let jazyk = Jazyk::z_kodu(n.and_then(|n| n.jazyk.as_deref()));
                     let platno = obrazovka::nakresli(&pismo, d.sirka, d.vyska, &stav, jazyk);
@@ -460,9 +484,12 @@ pub fn spusti() {
                 ));
             }
             zobrazene = Some(stav);
+            zobrazene_meranie = meranie_karty.clone();
         }
         krokov += 1;
-        if skuska && krokov >= 3 {
+        // v skúške sa počká aj na koniec merania karty (najviac 60 s)
+        let meranie_bezi = matches!(meranie_karty, MeranieKarty::Caka | MeranieKarty::Bezi(_)) && ma_kartu;
+        if skuska && krokov >= 3 && (!meranie_bezi || start.elapsed() > Duration::from_secs(60)) {
             hlas(&format!(
                 "SKLENÍK pripravený (štart KLÍČA {:.2} s, verzia {})",
                 cas_startu.as_secs_f64(),

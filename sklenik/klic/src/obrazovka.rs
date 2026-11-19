@@ -47,6 +47,21 @@ impl Jazyk {
     }
 }
 
+/// Priebeh merania rýchlosti karty.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MeranieKarty {
+    /// Meranie ešte nezačalo.
+    Caka,
+    /// Meria sa – koľko MB je už prečítaných.
+    Bezi(u64),
+    /// Súvislé čítanie MB/s a náhodné čítania 4 KB za sekundu.
+    Hotovo(f64, f64),
+    /// Karta dlho neodpovedá – pri koľkých MB sa meranie zastavilo.
+    Zaseknute(u64),
+    /// Chyba systému pri čítaní.
+    Chyba(String),
+}
+
 /// Všetko, čo obrazovka ukazuje.
 #[derive(Debug)]
 pub struct Stav<'a> {
@@ -66,8 +81,8 @@ pub struct Stav<'a> {
     pub pripravene_s: Option<f64>,
     /// Verzia SKLENÍKA na karte (dátum a odtlačok zostavenia).
     pub verzia: &'a str,
-    /// Rýchlosť karty: súvislé čítanie MB/s a náhodné čítania 4 KB za sekundu (po zmeraní).
-    pub rychlost_karty: Option<(f64, f64)>,
+    /// Meranie rýchlosti karty, z ktorej systém štartoval.
+    pub meranie_karty: &'a MeranieKarty,
 }
 
 /// Teplota slovom a farbou.
@@ -269,18 +284,48 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
             j.t("disk USB", "disk USB", "USB disk")
         };
         let text = format!("{druh} {}", velkost_disku(u.bajtov, j));
-        let rychlost = match (u.meno.starts_with("mmcblk"), s.rychlost_karty) {
-            (true, Some((mb, iops))) => format!(
-                "· {} {} MB/s · {} {}/s",
-                j.t("čítanie", "čtení", "read"),
-                j.cislo(mb, 1),
-                j.t("náhodne", "náhodně", "random 4K"),
-                iops.round()
-            ),
-            (true, None) => j.t("· meriam rýchlosť…", "· měřím rychlost…", "· measuring speed…").to_string(),
-            _ => String::new(),
+        let (rychlost, farba) = if !u.meno.starts_with("mmcblk") {
+            (String::new(), TLMENY)
+        } else {
+            match s.meranie_karty {
+                MeranieKarty::Hotovo(mb, iops) => (
+                    format!(
+                        "· {} {} MB/s · {} {}/s",
+                        j.t("čítanie", "čtení", "read"),
+                        j.cislo(*mb, 1),
+                        j.t("náhodne", "náhodně", "random 4K"),
+                        iops.round()
+                    ),
+                    TLMENY,
+                ),
+                MeranieKarty::Caka => {
+                    (j.t("· meriam rýchlosť…", "· měřím rychlost…", "· measuring speed…").into(), TLMENY)
+                }
+                MeranieKarty::Bezi(mb) => (
+                    format!(
+                        "{} {mb} MB",
+                        j.t("· meriam rýchlosť…", "· měřím rychlost…", "· measuring speed…")
+                    ),
+                    TLMENY,
+                ),
+                MeranieKarty::Zaseknute(mb) => (
+                    format!(
+                        "· {} ({mb} MB)",
+                        j.t(
+                            "karta pri meraní neodpovedá",
+                            "karta při měření neodpovídá",
+                            "card stopped responding"
+                        )
+                    ),
+                    JANTAROVA,
+                ),
+                MeranieKarty::Chyba(e) => (
+                    format!("· {} {e}", j.t("meranie zlyhalo:", "měření selhalo:", "test failed:")),
+                    JANTAROVA,
+                ),
+            }
         };
-        riadok(&mut p, &mut y, if i == 0 { popisy[5] } else { "" }, &[(&text, TEXT), (&rychlost, TLMENY)]);
+        riadok(&mut p, &mut y, if i == 0 { popisy[5] } else { "" }, &[(&text, TEXT), (&rychlost, farba)]);
     }
     let usb = format!("{} {}", j.t("zariadení:", "zařízení:", "devices:"), s.supis.usb.len());
     riadok(&mut p, &mut y, popisy[6], &[(&usb, TEXT)]);
@@ -410,7 +455,7 @@ mod skusky {
             supis,
             pripravene_s: Some(2.4),
             verzia: "19. 11. 2026 · f26272c",
-            rychlost_karty: Some((22.4, 1830.0)),
+            meranie_karty: &MeranieKarty::Hotovo(22.4, 1830.0),
             vykon: 1.0,
             podpatie: Some(false),
             podpatie_bolo: false,

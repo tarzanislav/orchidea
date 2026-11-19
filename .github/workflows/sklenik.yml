@@ -223,6 +223,11 @@ jobs:
           else
             echo "❌ KLÍČ neprečítal nastavenie z karty" | tee -a "$GITHUB_STEP_SUMMARY"; grep -iE "mmc|nastavenie" qemu-rpi3.log | head -20; chyby=$((chyby+1))
           fi
+          if grep -q "KLÍČ: karta mmcblk0: čítanie" qemu-rpi3.log; then
+            echo "✅ KLÍČ zmeral rýchlosť karty: $(grep -o 'karta mmcblk0: čítanie.*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ KLÍČ nezmeral rýchlosť karty" | tee -a "$GITHUB_STEP_SUMMARY"; grep -iE "meri|meranie|mmc" qemu-rpi3.log | tail -20; chyby=$((chyby+1))
+          fi
           skusaj "Raspberry Pi 2 (ARMv7)" qemu-rpi2.log qm-rpi2.sock qemu-system-arm -M raspi2b -m 1G \
             -kernel boot/kernel7.img -dtb boot/bcm2709-rpi-2-b.dtb -initrd boot/initramfs7.cpio.gz \
             -append "earlycon=pl011,mmio32,0x3f201000 console=ttyAMA0,115200 $spolocne" || chyby=$((chyby+1))
