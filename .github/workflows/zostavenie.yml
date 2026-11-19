@@ -90,6 +90,12 @@ jobs:
             docker run --rm --memory=1g --memory-swap=1g --cpus=4 -e ORCHIDEA_BEZ_GPU=1 \
               -v "$PWD:$PWD" -w "$PWD" ubuntu:24.04 "target/release/examples/$e" | tee -a "$GITHUB_STEP_SUMMARY"
           done
+      - name: Balík pre skutočné Raspberry Pi (64-bit – RPi 3, 4, 5, Zero 2)
+        run: sh nastroje/rpi_balik.sh orchidea-rpi-64bit target/release/examples < binarky.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchidea-rpi-64bit
+          path: orchidea-rpi-64bit
 
   rpi32:
     name: Skúšky – Raspberry Pi 32-bit (ARMv7, QEMU)
@@ -110,6 +116,16 @@ jobs:
           sudo apt-get install -y -qq gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user
       - name: Skúšky (32-bitový ARM, bitová zhoda s ostatnými platformami)
         run: cargo test --locked --workspace --release --target armv7-unknown-linux-gnueabihf
+      - name: Balík pre skutočné Raspberry Pi (32-bit ARMv7 – RPi 2, 3, 4)
+        run: |
+          cargo test --locked --workspace --release --target armv7-unknown-linux-gnueabihf --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .executable != null) | .executable' > binarky.txt
+          cargo build --locked --workspace --release --examples --target armv7-unknown-linux-gnueabihf
+          sh nastroje/rpi_balik.sh orchidea-rpi-32bit-armv7 target/armv7-unknown-linux-gnueabihf/release/examples < binarky.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchidea-rpi-32bit-armv7
+          path: orchidea-rpi-32bit-armv7
 
   rpi1:
     name: Skúšky – Raspberry Pi 1 a Zero (ARMv6, 1 jadro, 512 MB, QEMU)
@@ -140,6 +156,14 @@ jobs:
               -e ORCHIDEA_BEZ_GPU=1 -v /usr/arm-linux-gnueabihf:/usr/arm-linux-gnueabihf:ro \
               -v "$PWD:$PWD" -w "$PWD" rpi1 qemu-arm -L /usr/arm-linux-gnueabihf "$b" || exit 1
           done
+      - name: Balík pre skutočné Raspberry Pi (32-bit ARMv6 – RPi 1, Zero, Zero W)
+        run: |
+          cargo build --locked --workspace --release --examples --target arm-unknown-linux-gnueabihf
+          sh nastroje/rpi_balik.sh orchidea-rpi-32bit-armv6 target/arm-unknown-linux-gnueabihf/release/examples < binarky.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchidea-rpi-32bit-armv6
+          path: orchidea-rpi-32bit-armv6
 
   shadery:
     name: Overenie shaderov – ${{ matrix.meno }}

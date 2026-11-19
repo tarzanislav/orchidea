@@ -122,6 +122,14 @@
       "kde": "CI – profil slabého zariadenia",
       "ucel": "kontajner s obmedzenou pamäťou (1 GB) a počtom jadier (4) pre skúšky",
       "posudenie_charty": "nástroje skúšok; do programu ORCHIDEA sa nič neprenáša"
+    },
+    {
+      "meno": "actions/upload-artifact",
+      "trieda": "B",
+      "licencia": "MIT (nástroj CI, nie súčasť programu)",
+      "kde": "CI – balíky skúšok a meraní pre skutočné Raspberry Pi",
+      "ucel": "uloženie zostavených balíkov na stiahnutie z GitHubu",
+      "posudenie_charty": "nástroj zostavenia; do programu ORCHIDEA sa nič neprenáša"
     }
   ],
   "triedy": {

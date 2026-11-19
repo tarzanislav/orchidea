@@ -1,0 +1,32 @@
+#!/bin/sh
+# Skúšky a merania ORCHIDEE na skutočnom zariadení (Raspberry Pi, kancelárske PC s Linuxom).
+# Spustenie: sh spusti.sh   – výsledok sa zapíše do súboru vysledky.txt vedľa tohto skriptu.
+cd "$(dirname "$0")"
+vystup=vysledky.txt
+{
+  echo "=== ORCHIDEA – výsledky na zariadení ($(date '+%Y-%m-%d %H:%M'))"
+  uname -m
+  grep -m1 -E "^(Model|model name)" /proc/cpuinfo || true
+  grep -c ^processor /proc/cpuinfo | sed 's/^/jadier: /'
+  grep MemTotal /proc/meminfo || true
+  grep -h PRETTY_NAME /etc/os-release || true
+  echo
+  echo "=== Zariadenia"
+  ./zariadenia 2>&1
+  zlyhali=0
+  for s in skusky/*; do
+    echo
+    echo "=== Skúška $(basename "$s")"
+    ORCHIDEA_GPU_STOPA=1 "$s" --test-threads=1 2>&1 || zlyhali=$((zlyhali + 1))
+  done
+  echo
+  echo "=== Meranie – Neurón"
+  ./meranie 2>&1
+  echo
+  echo "=== Meranie – vektorový vykonávač"
+  ./vektor 2>&1
+  echo
+  echo "=== Zlyhaných skúšok: $zlyhali"
+} > "$vystup" 2>&1
+tail -n 1 "$vystup"
+echo "Hotovo – výsledky sú v súbore $(pwd)/$vystup"
