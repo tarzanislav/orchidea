@@ -316,6 +316,39 @@ pub fn platne_meno(m: &str) -> bool {
         && !m.ends_with('-')
 }
 
+/// Z ľubovoľného textu urobí platné meno zariadenia: malé písmená bez diakritiky, medzery na pomlčky
+/// („Dielňa č. 1“ → „dielna-c-1“). Prázdny výsledok = žiadne meno.
+pub fn navrhni_meno(text: &str) -> String {
+    let mut m = String::new();
+    for c in text.trim().to_lowercase().chars() {
+        let z = match c {
+            'á' | 'ä' => 'a',
+            'č' => 'c',
+            'ď' => 'd',
+            'é' | 'ě' => 'e',
+            'í' => 'i',
+            'ĺ' | 'ľ' => 'l',
+            'ň' => 'n',
+            'ó' | 'ô' | 'ö' => 'o',
+            'ŕ' | 'ř' => 'r',
+            'š' => 's',
+            'ť' => 't',
+            'ú' | 'ů' | 'ü' => 'u',
+            'ý' => 'y',
+            'ž' => 'z',
+            'a'..='z' | '0'..='9' => c,
+            _ => '-',
+        };
+        if z == '-' && (m.is_empty() || m.ends_with('-')) {
+            continue;
+        }
+        m.push(z);
+    }
+    let mut m = m.trim_end_matches('-').to_string();
+    m.truncate(32);
+    m.trim_end_matches('-').to_string()
+}
+
 fn hex32(v: &str) -> Option<[u8; 32]> {
     if v.len() != 64 || !v.is_ascii() {
         return None;
@@ -581,5 +614,19 @@ mod skusky {
         assert_eq!(z.wifi_psk, None);
         assert_eq!(u.len(), 2, "{u:?}");
         assert!(!platne_meno("-pi") && !platne_meno("pi-") && platne_meno("pi-1"));
+    }
+
+    #[test]
+    fn navrh_mena_zariadenia() {
+        assert_eq!(navrhni_meno("Dielňa č. 1"), "dielna-c-1");
+        assert_eq!(navrhni_meno("  Ťažký kôň_ŽLTÝ  "), "tazky-kon-zlty");
+        assert_eq!(navrhni_meno("---"), "");
+        assert_eq!(navrhni_meno("pi5"), "pi5");
+        let dlhe = navrhni_meno(&"a".repeat(40));
+        assert_eq!(dlhe.len(), 32);
+        for t in ["Dielňa č. 1", "x y", "Ů", &"ab-".repeat(20)] {
+            let m = navrhni_meno(t);
+            assert!(m.is_empty() || platne_meno(&m), "{t} → {m}");
+        }
     }
 }

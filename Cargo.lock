@@ -46,5 +46,6 @@ name = "sklenik-sadic"
 version = "0.1.0"
 dependencies = [
  "orchidea-jadro",
+ "orchidea-pismo",
  "sklenik-karta",
 ]
