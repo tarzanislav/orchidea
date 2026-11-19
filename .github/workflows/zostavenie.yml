@@ -125,7 +125,8 @@ jobs:
       - name: Krížový linker a QEMU
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user-static
+          sudo apt-get install -y -qq gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+          printf 'FROM ubuntu:24.04\nRUN apt-get update -qq && apt-get install -y -qq qemu-user\n' | docker build -q -t rpi1 -
       - name: Zostavenie skúšok pre ARMv6
         run: |
           cargo test --locked --workspace --release --target arm-unknown-linux-gnueabihf --no-run --message-format=json \
@@ -136,9 +137,8 @@ jobs:
           for b in $(cat binarky.txt); do
             echo "== $b"
             docker run --rm --memory=512m --memory-swap=512m --cpus=1 \
-              -e ORCHIDEA_BEZ_GPU=1 -e QEMU_LD_PREFIX=/usr/arm-linux-gnueabihf \
-              -v /usr/arm-linux-gnueabihf:/usr/arm-linux-gnueabihf:ro \
-              -v "$PWD:$PWD" -w "$PWD" ubuntu:24.04 "$b" || exit 1
+              -e ORCHIDEA_BEZ_GPU=1 -v /usr/arm-linux-gnueabihf:/usr/arm-linux-gnueabihf:ro \
+              -v "$PWD:$PWD" -w "$PWD" rpi1 qemu-arm -L /usr/arm-linux-gnueabihf "$b" || exit 1
           done
 
   shadery:
