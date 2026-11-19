@@ -9,6 +9,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod d3d12;
 pub mod interpret;
 pub mod ir;
 pub mod kernely;

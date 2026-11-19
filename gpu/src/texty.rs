@@ -216,7 +216,8 @@ impl Pisar<'_> {
 /// Preloží kernel do zvoleného textového jazyka. Vstupný bod sa volá `hlavna`.
 ///
 /// Rozloženie väzieb:
-/// - HLSL: buffery `u0`, `u1`, … (RWStructuredBuffer), konštanty v `b0` (32-bitové koreňové konštanty);
+/// - HLSL: buffery `u0`, `u1`, … (RWStructuredBuffer), v `b0` 32-bitové koreňové konštanty kernelu a za nimi
+///   dĺžky bufferov;
 /// - MSL: buffery `[[buffer(0…n−1)]]`, dĺžky bufferov `[[buffer(n)]]`, konštanty `[[buffer(n+1)]]`;
 /// - WGSL: buffery `@group(0) @binding(0…n−1)`, konštanty `@binding(n)` (uniform).
 pub fn do_textu(k: &Kernel, j: Jazyk) -> Vysledok<String> {
@@ -231,13 +232,15 @@ pub fn do_textu(k: &Kernel, j: Jazyk) -> Vysledok<String> {
                 let _ =
                     writeln!(w.vystup, "RWStructuredBuffer<{}> v{i} : register(u{i});", meno_typu(j, v.typ));
             }
-            if !k.konstanty.is_empty() {
-                w.vystup.push_str("cbuffer Konstanty : register(b0) {\n");
-                for (i, c) in k.konstanty.iter().enumerate() {
-                    let _ = writeln!(w.vystup, "    {} k{i};", meno_typu(j, c.typ));
-                }
-                w.vystup.push_str("};\n");
+            // koreňové 32-bitové konštanty: najprv konštanty kernelu, potom dĺžky bufferov
+            w.vystup.push_str("cbuffer Konstanty : register(b0) {\n");
+            for (i, c) in k.konstanty.iter().enumerate() {
+                let _ = writeln!(w.vystup, "    {} k{i};", meno_typu(j, c.typ));
             }
+            for i in 0..n {
+                let _ = writeln!(w.vystup, "    uint dlzka{i};");
+            }
+            w.vystup.push_str("};\n");
             let _ = writeln!(w.vystup, "[numthreads({x}, {y}, {z})]");
             w.vystup.push_str("void hlavna(uint3 id_vlakna : SV_DispatchThreadID) {\n");
         }
@@ -291,11 +294,6 @@ pub fn do_textu(k: &Kernel, j: Jazyk) -> Vysledok<String> {
             _ => format!("{} p{i} = {};", meno_typu(j, *t), nula(j, *t)),
         };
         w.riadok(&r);
-    }
-    if j == Jazyk::Hlsl {
-        for i in 0..n {
-            w.riadok(&format!("uint dlzka{i}; {{ uint krok; v{i}.GetDimensions(dlzka{i}, krok); }}"));
-        }
     }
     w.prikazy(&k.telo)?;
     w.vystup.push_str("}\n");

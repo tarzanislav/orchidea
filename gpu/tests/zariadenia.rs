@@ -89,7 +89,7 @@ fn spusti_skusku_jazyka(z: &dyn Zariadenie) -> (Vec<f32>, Vec<u32>, Vec<i32>) {
     (of, ou, oi)
 }
 
-fn gpu_zariadenia() -> Vec<Box<dyn Zariadenie>> {
+fn gpu_zariadenia() -> Vec<std::sync::Arc<dyn Zariadenie>> {
     let (vsetky, dovody) = vsetky_zariadenia();
     for d in &dovody {
         eprintln!("nedostupné: {d}");

@@ -4,6 +4,7 @@ use crate::interpret;
 use crate::ir::{Kernel, Typ};
 use orchidea_jadro::{Chyba, Vysledok};
 use std::fmt;
+use std::sync::{Arc, OnceLock};
 
 /// Hodnota konštanty kernelu.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -214,21 +215,35 @@ impl Zariadenie for Procesor {
     }
 }
 
+/// Zariadenia a dôvody, prečo sa niektoré nepodarilo otvoriť.
+type ZoznamZariadeni = (Vec<Arc<dyn Zariadenie>>, Vec<String>);
+
 /// Všetky dostupné zariadenia, od najvhodnejšieho. Referenčný procesor je vždy posledný.
 /// Zariadenia, ktoré sa nepodarilo otvoriť, sa vrátia ako zoznam dôvodov – nič sa nezamlčí.
-pub fn vsetky_zariadenia() -> (Vec<Box<dyn Zariadenie>>, Vec<String>) {
-    let mut z: Vec<Box<dyn Zariadenie>> = Vec::new();
-    let mut dovody = Vec::new();
-    match crate::vulkan::Vulkan::otvor_vsetky() {
-        Ok(v) => z.extend(v.into_iter().map(|x| Box::new(x) as Box<dyn Zariadenie>)),
-        Err(e) => dovody.push(format!("Vulkan: {e}")),
-    }
-    #[cfg(windows)]
-    match crate::d3d12::D3d12::otvor_vsetky() {
-        Ok(v) => z.extend(v.into_iter().map(|x| Box::new(x) as Box<dyn Zariadenie>)),
-        Err(e) => dovody.push(format!("Direct3D 12: {e}")),
-    }
-    z.sort_by_key(|x| x.popis().typ);
-    z.push(Box::new(Procesor::default()));
-    (z, dovody)
+///
+/// Zariadenia sa otvoria raz za beh programu a zdieľajú sa (ovládače neznášajú opakované vytváranie
+/// a rušenie inštancií z viacerých vlákien naraz; každé zariadenie má vlastný zámok).
+pub fn vsetky_zariadenia() -> (Vec<Arc<dyn Zariadenie>>, Vec<String>) {
+    static ZARIADENIA: OnceLock<ZoznamZariadeni> = OnceLock::new();
+    let (z, d) = ZARIADENIA.get_or_init(|| {
+        let mut z: Vec<Arc<dyn Zariadenie>> = Vec::new();
+        let mut dovody = Vec::new();
+        if std::env::var("ORCHIDEA_BEZ_GPU").is_ok_and(|v| !v.is_empty()) {
+            dovody.push("GPU vypnuté premennou ORCHIDEA_BEZ_GPU".into());
+        } else {
+            match crate::vulkan::Vulkan::otvor_vsetky() {
+                Ok(v) => z.extend(v.into_iter().map(|x| Arc::new(x) as Arc<dyn Zariadenie>)),
+                Err(e) => dovody.push(format!("Vulkan: {e}")),
+            }
+            #[cfg(windows)]
+            match crate::d3d12::D3d12::otvor_vsetky() {
+                Ok(v) => z.extend(v.into_iter().map(|x| Arc::new(x) as Arc<dyn Zariadenie>)),
+                Err(e) => dovody.push(format!("Direct3D 12: {e}")),
+            }
+        }
+        z.sort_by_key(|x| x.popis().typ);
+        z.push(Arc::new(Procesor::default()));
+        (z, dovody)
+    });
+    (z.clone(), d.clone())
 }
