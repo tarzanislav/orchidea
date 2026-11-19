@@ -36,7 +36,7 @@ jobs:
           ls -l target/aarch64-unknown-linux-musl/release/klic
       - name: Pamäť zostaveného jadra
         id: pamat
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: jadro-vystup
           key: jadro-rpi64-${{ env.JADRO_TAG }}-${{ hashFiles('sklenik/jadro.config') }}
@@ -56,6 +56,12 @@ jobs:
                    bcm2712-rpi-5-b bcm2712d0-rpi-5-b; do
             cp "arch/arm64/boot/dts/broadcom/$d.dtb" ../jadro-vystup/ || echo "chýba $d.dtb"
           done
+      - name: Uloženie zostaveného jadra do pamäte
+        if: steps.pamat.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: jadro-vystup
+          key: ${{ steps.pamat.outputs.cache-primary-key }}
       - name: Kontrola nastavenia jadra
         run: |
           echo "### Nastavenie jadra SKLENÍKA" >> "$GITHUB_STEP_SUMMARY"
@@ -88,7 +94,7 @@ jobs:
         run: |
           qemu-system-aarch64 -M raspi3b -m 1G -kernel jadro-vystup/kernel8.img \
             -dtb jadro-vystup/bcm2710-rpi-3-b.dtb -initrd obraz/initramfs.cpio.gz \
-            -append "console=ttyAMA0,115200 rdinit=/init sklenik.skuska=1 loglevel=6" \
+            -append "earlycon=pl011,mmio32,0x3f201000 console=ttyAMA0,115200 rdinit=/init sklenik.skuska=1 loglevel=7" \
             -nographic -no-reboot > qemu.log 2>&1 &
           qemu=$!
           for i in $(seq 1 120); do
@@ -100,7 +106,7 @@ jobs:
           grep -E "KLÍČ|Kernel panic|Run /init|Freeing unused" qemu.log | head -40
           echo "### Štart v QEMU (Raspberry Pi 3)" >> "$GITHUB_STEP_SUMMARY"
           grep "KLÍČ" qemu.log >> "$GITHUB_STEP_SUMMARY" || true
-          grep -q "SKLENÍK pripravený" qemu.log || { tail -60 qemu.log; exit 1; }
+          grep -q "SKLENÍK pripravený" qemu.log || { echo "--- začiatok"; head -80 qemu.log; echo "--- koniec"; tail -40 qemu.log; exit 1; }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
