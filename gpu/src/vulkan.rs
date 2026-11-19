@@ -418,7 +418,16 @@ sada_funkcii!(FunkcieZariadenia,
     vkResetFences: fn(Disp, u32, *const Nd) -> VkResult,
 );
 
+/// Podrobná stopa krokov pre hľadanie chýb ovládačov (premenná prostredia ORCHIDEA_GPU_STOPA).
+fn stopa(krok: &str) {
+    static ZAPNUTA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ZAPNUTA.get_or_init(|| std::env::var("ORCHIDEA_GPU_STOPA").is_ok_and(|v| !v.is_empty())) {
+        eprintln!("[vulkan] {krok}");
+    }
+}
+
 fn over(vysledok: VkResult, co: &str) -> Vysledok<()> {
+    stopa(co);
     if vysledok == 0 {
         Ok(())
     } else {
@@ -602,6 +611,7 @@ impl Vulkan {
     fn otvor(inst: Arc<Instancia>, fyzicke: Disp) -> Vysledok<Vulkan> {
         let fi = &inst.f;
         // Vlastnosti: čítajú sa len začiatočné polia, preto stačí dostatočne veľký zarovnaný priestor.
+        stopa("vlastnosti fyzického zariadenia");
         let mut vlastnosti = vec![0u64; 256];
         // SAFETY: 2 KiB je viac ako VkPhysicalDeviceProperties (824 B).
         unsafe { (fi.vkGetPhysicalDeviceProperties)(fyzicke, vlastnosti.as_mut_ptr() as *mut u8) };
@@ -665,6 +675,7 @@ impl Vulkan {
         let f = unsafe { FunkcieZariadenia::nacitaj(get_dev, zariadenie)? };
         let mut fronta: Disp = null_mut();
         unsafe { (f.vkGetDeviceQueue)(zariadenie, rodina, 0, &mut fronta) };
+        stopa("vlastnosti pamäte");
         let mut pamat: MemoryProperties = unsafe { std::mem::zeroed() };
         unsafe { (fi.vkGetPhysicalDeviceMemoryProperties)(fyzicke, &mut pamat) };
 
@@ -876,6 +887,7 @@ impl<'a> Buffer<'a> {
         over(unsafe { (f.vkAllocateMemory)(d, &alloc, null(), &mut b.pamat) }, "pamäť")?;
         over(unsafe { (f.vkBindBufferMemory)(d, b.buffer, b.pamat, 0) }, "pripojenie pamäte")?;
         over(unsafe { (f.vkMapMemory)(d, b.pamat, 0, bajtov, 0, &mut b.mapa) }, "mapovanie pamäte")?;
+        stopa("kopírovanie dát do bufferu");
         let zdroj = data.ako_bajty();
         // SAFETY: mapa ukazuje na aspoň `bajtov` bajtov súvislej pamäte viditeľnej procesorom.
         unsafe { std::ptr::copy_nonoverlapping(zdroj.as_ptr(), b.mapa as *mut u8, zdroj.len()) };
@@ -883,6 +895,7 @@ impl<'a> Buffer<'a> {
     }
 
     fn citaj(&self, data: &mut DataVazby<'_>) -> Vysledok<()> {
+        stopa("čítanie výsledku");
         let mut b = vec![0u8; data.bajtov()];
         // SAFETY: mapa je platná a koherentná; GPU skončilo (plot) a bariéra sprístupnila zápisy procesoru.
         unsafe { std::ptr::copy_nonoverlapping(self.mapa as *const u8, b.as_mut_ptr(), b.len()) };
@@ -973,6 +986,7 @@ impl Zariadenie for Vulkan {
                 p_texel_buffer_view: null(),
             })
             .collect();
+        stopa("aktualizácia sady deskriptorov");
         unsafe { (f.vkUpdateDescriptorSets)(d, zapisy.len() as u32, zapisy.as_ptr(), 0, null()) };
 
         // záznam príkazov
@@ -994,6 +1008,7 @@ impl Zariadenie for Vulkan {
         unsafe {
             over((f.vkResetCommandBuffer)(cb, 0), "reset príkazov")?;
             over((f.vkBeginCommandBuffer)(cb, &zaciatok), "začiatok príkazov")?;
+            stopa("záznam: pipeline, sada, konštanty, dispatch, bariéra");
             (f.vkCmdBindPipeline)(cb, BIND_POINT_COMPUTE, pipeline);
             (f.vkCmdBindDescriptorSets)(cb, BIND_POINT_COMPUTE, rozlozenie, 0, 1, &sada, 0, null());
             if !bity.is_empty() {

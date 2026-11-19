@@ -30,7 +30,7 @@ jobs:
         include:
           - { meno: "Linux x86-64", os: ubuntu-latest, gpu: Vulkan }
           - { meno: "Linux ARM64", os: ubuntu-24.04-arm, gpu: Vulkan }
-          - { meno: "Windows x86-64", os: windows-latest, gpu: "" }
+          - { meno: "Windows x86-64", os: windows-latest, gpu: D3d12 }
           - { meno: "macOS ARM64", os: macos-latest, gpu: "" }
     runs-on: ${{ matrix.os }}
     env:
@@ -45,6 +45,11 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1
+      - name: Dostupné výpočtové zariadenia
+        shell: bash
+        run: |
+          echo "### Zariadenia – ${{ matrix.meno }}" >> "$GITHUB_STEP_SUMMARY"
+          cargo run --locked -p orchidea-gpu --example zariadenia | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Skúšky (ladiaci preklad)
         run: cargo test --locked --workspace
       - name: Skúšky (optimalizovaný preklad)
