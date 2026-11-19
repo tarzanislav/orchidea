@@ -38,6 +38,8 @@ pub struct Rozhranie {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ulozisko {
     pub meno: String,
+    /// Druh pamäťovej karty podľa jadra („SD“ alebo „MMC“ = eMMC); pri iných diskoch prázdne.
+    pub druh: String,
     pub popis: String,
     pub bajtov: u64,
     pub vymenitelne: bool,
@@ -206,6 +208,7 @@ impl Supis {
                 .find_map(|f| citaj(b.join(f)).filter(|t| !t.is_empty()))
                 .unwrap_or_default();
             s.ulozisko.push(Ulozisko {
+                druh: citaj(b.join("device/type")).unwrap_or_default(),
                 vymenitelne: citaj(b.join("removable")).as_deref() == Some("1"),
                 meno,
                 popis,
@@ -450,6 +453,7 @@ mod skusky {
             .subor("sys/block/mmcblk0/size", "62333952")
             .subor("sys/block/mmcblk0/removable", "0")
             .subor("sys/block/mmcblk0/device/name", "SD32G")
+            .subor("sys/block/mmcblk0/device/type", "SD")
             .subor("sys/block/mmcblk0boot0/size", "8192")
             .subor("sys/block/ram0/size", "8192")
             .subor("sys/block/sda/size", "0")
@@ -490,6 +494,7 @@ mod skusky {
         assert_eq!(p.siet[1].spojenie, None);
         assert_eq!(p.ulozisko.len(), 1);
         assert_eq!(p.ulozisko[0].popis, "SD32G");
+        assert_eq!(p.ulozisko[0].druh, "SD");
         assert_eq!(p.ulozisko[0].bajtov, 62333952 * 512);
         assert_eq!(p.zvuk, vec!["bcm2835 Headphones"]);
         assert_eq!(p.usb, vec!["0424:ec00", "USB Receiver"]);

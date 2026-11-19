@@ -255,7 +255,11 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         riadok(&mut p, &mut y, popisy[5], &[("–", TLMENY)]);
     }
     for (i, u) in s.supis.ulozisko.iter().take(2).enumerate() {
-        let druh = if u.meno.starts_with("mmcblk") {
+        let druh = if u.meno.starts_with("mmcblk") && u.druh == "MMC" {
+            j.t("vstavaná pamäť eMMC", "vestavěná paměť eMMC", "built-in eMMC")
+        } else if u.meno.starts_with("mmcblk") && u.druh == "SD" {
+            j.t("SD karta", "SD karta", "SD card")
+        } else if u.meno.starts_with("mmcblk") {
             j.t("karta SD/eMMC", "karta SD/eMMC", "SD/eMMC card")
         } else if u.meno.starts_with("nvme") {
             "NVMe"
@@ -370,6 +374,7 @@ mod skusky {
                 spojenie: Some(true),
             }],
             ulozisko: vec![Ulozisko {
+                druh: "SD".into(),
                 meno: "mmcblk0".into(),
                 popis: "SD32G".into(),
                 bajtov: 31_914_983_424,
