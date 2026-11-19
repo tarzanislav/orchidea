@@ -175,7 +175,8 @@ impl Supis {
 
         // sieť
         let siet = sys.join("class/net");
-        for meno in polozky(&siet).into_iter().filter(|n| n != "lo") {
+        // len skutočné sieťové karty (majú zariadenie) – nie lo ani virtuálne tunely jadra (sit0, tunl0 …)
+        for meno in polozky(&siet).into_iter().filter(|n| siet.join(n).join("device").exists()) {
             let r = siet.join(&meno);
             s.siet.push(Rozhranie {
                 adresa: citaj(r.join("address")).unwrap_or_default(),
@@ -448,6 +449,10 @@ mod skusky {
             .subor("sys/class/net/lo/address", "00:00:00:00:00:00")
             .subor("sys/class/net/eth0/address", "b8:27:eb:00:00:01")
             .subor("sys/class/net/eth0/carrier", "1")
+            .subor("sys/class/net/eth0/device/.x", "")
+            .subor("sys/class/net/wlan0/device/.x", "")
+            .subor("sys/class/net/sit0/address", "00:00:00:00")
+            .subor("sys/class/net/sit0/carrier", "1")
             .subor("sys/class/net/wlan0/address", "b8:27:eb:00:00:02")
             .subor("sys/class/net/wlan0/wireless/.x", "")
             .subor("sys/block/mmcblk0/size", "62333952")

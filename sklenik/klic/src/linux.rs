@@ -161,7 +161,10 @@ fn pripoj_systemove() {
 /// Zapne všetky sieťové rozhrania (ovládače sú v jadre, rozhrania však jadro necháva vypnuté).
 fn zapni_siet() {
     for z in fs::read_dir("/sys/class/net").into_iter().flatten().flatten() {
-        if let Some(meno) = z.file_name().to_str() {
+        // lo a skutočné sieťové karty; virtuálne tunely jadra (sit0 …) sa nezapínajú
+        if let Some(meno) = z.file_name().to_str()
+            && (meno == "lo" || z.path().join("device").exists())
+        {
             match sys::zapni_rozhranie(meno) {
                 Ok(true) => hlas(&format!("sieť: rozhranie {meno} zapnuté")),
                 Ok(false) => {}
