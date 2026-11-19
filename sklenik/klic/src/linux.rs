@@ -376,6 +376,7 @@ pub fn spusti() {
                         podpatie_bolo,
                         supis: &supis,
                         pripravene_s: pripravene,
+                        verzia: crate::VERZIA,
                     };
                     let jazyk = Jazyk::z_kodu(n.and_then(|n| n.jazyk.as_deref()));
                     let platno = obrazovka::nakresli(&pismo, d.sirka, d.vyska, &stav, jazyk);
@@ -403,7 +404,11 @@ pub fn spusti() {
         }
         krokov += 1;
         if skuska && krokov >= 3 {
-            hlas(&format!("SKLENÍK pripravený (štart KLÍČA {:.2} s)", cas_startu.as_secs_f64()));
+            hlas(&format!(
+                "SKLENÍK pripravený (štart KLÍČA {:.2} s, verzia {})",
+                cas_startu.as_secs_f64(),
+                crate::VERZIA
+            ));
             if pid1 {
                 // čas na snímku obrazovky v skúške (emulátor)
                 if displej.is_some() {

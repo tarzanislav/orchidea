@@ -108,6 +108,8 @@ jobs:
           rustup toolchain install && rustup target add ${{ matrix.ciel }}
       - name: Zostavenie a skúšky na emulovanom procesore ${{ matrix.cpu }}
         run: |
+          # verzia na obrazovke: dátum a odtlačok zostavenia (aby bolo vidieť, ktorá karta beží)
+          export SKLENIK_VERZIA="$(date -u +'%-d. %-m. %Y') · ${GITHUB_SHA::7}"
           T=$(echo "${{ matrix.ciel }}" | tr 'a-z-' 'A-Z_')
           export "CARGO_TARGET_${T}_RUNNER=${{ matrix.qemu }} -cpu ${{ matrix.cpu }}"
           if [ -n "${{ matrix.linker }}" ]; then export "CARGO_TARGET_${T}_LINKER=${{ matrix.linker }}"; fi

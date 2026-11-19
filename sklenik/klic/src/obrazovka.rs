@@ -64,6 +64,8 @@ pub struct Stav<'a> {
     pub supis: &'a Supis,
     /// Za koľko sekúnd od zapnutia jadra bol systém pripravený.
     pub pripravene_s: Option<f64>,
+    /// Verzia SKLENÍKA na karte (dátum a odtlačok zostavenia).
+    pub verzia: &'a str,
 }
 
 /// Teplota slovom a farbou.
@@ -111,6 +113,10 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     let model = pismo.skrat(s.model, pravy - koniec - 2.0 * v, 0.8 * v, h * 0.8);
     let w = pismo.sirka(&model, 0.8 * v, h * 0.8);
     p.text(pismo, &model, pravy - w, y, 0.8 * v, h * 0.8, TLMENY);
+    // verzia karty pod modelom – aby bolo hneď vidieť, ktorá karta beží
+    let verzia = format!("{} {}", j.t("verzia", "verze", "version"), s.verzia);
+    let wv = pismo.sirka(&verzia, 0.65 * v, h * 0.7);
+    p.text(pismo, &verzia, pravy - wv, y + 1.2 * v, 0.65 * v, h * 0.7, TLMENY);
 
     // meno zariadenia
     y += 3.0 * v;
@@ -302,6 +308,7 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         j.t("strop", "strop", "limit"),
         j.cislo(s.strop, 0)
     );
+
     p.text(pismo, &pismo.skrat(&info, pravy - m, maly, h * 0.8), m, yp - 1.5 * maly, maly, h * 0.8, TLMENY);
     p
 }
@@ -384,6 +391,7 @@ mod skusky {
             strop: 70.0,
             supis,
             pripravene_s: Some(2.4),
+            verzia: "19. 11. 2026 · f26272c",
             vykon: 1.0,
             podpatie: Some(false),
             podpatie_bolo: false,

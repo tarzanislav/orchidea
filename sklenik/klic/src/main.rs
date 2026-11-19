@@ -23,6 +23,13 @@ mod linux;
 #[cfg(target_os = "linux")]
 mod sys;
 
+/// Verzia SKLENÍKA (dátum a odtlačok zostavenia z CI) – na obrazovke, aby bolo vidieť, ktorá karta beží.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+const VERZIA: &str = match option_env!("SKLENIK_VERZIA") {
+    Some(v) => v,
+    None => "vývojová",
+};
+
 #[cfg(target_os = "linux")]
 fn main() {
     linux::spusti();
