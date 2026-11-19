@@ -17,19 +17,22 @@ zvukom, hudbou, pohybom a diskami. Spája ich jedna gramatika a jedno jadro, nie
 
 ## Stav
 
-**E0, časť 1 je hotová:** jadro (gramatika 12 prvotných pojmov a 7 pravidiel skladania) a motor Neurón
-(tenzor ako signál, presné a rýchle jadrá, 8-bitové a trojhodnotové váhy, učenie). Všetko vlastným kódom bez
-cudzích knižníc. Skúšky prechádzajú na Linuxe (x86-64, ARM64), Windows, macOS, Androide a vo WebAssembly
-s bitovo rovnakými výsledkami. Ďalej: GPU vrstva a zhoda CPU/GPU.
+**Etapa E0 je hotová** – jadro, motor Neurón a GPU vrstva, všetko vlastným kódom bez cudzích knižníc:
 
 | Balík | Vrstva | Obsah |
 |---|---|---|
 | `jadro` | 1 – gramatika | Signál, Štruktúra, Vlastnosť, Operácia, Parameter, Graf, Odkaz, Výber, Zmena, Výstup, Pohľad, Nástroj; denník; deterministická matematika; BLAKE3 |
-| `neuron` | 2 – schopnosť | výpočtový motor MYKORÍZY |
+| `gpu` | 2 – schopnosť | jazyk kernelov, prekladače do SPIR-V, HLSL, MSL a WGSL; zariadenia Vulkan, Direct3D 12, Metal a referenčný procesor |
+| `neuron` | 2 – schopnosť | výpočtový motor MYKORÍZY: tenzor ako signál, presné a rýchle jadrá, 8-bitové a trojhodnotové váhy, učenie |
+
+Skúšky prechádzajú na Linuxe (x86-64, ARM64), Windows, macOS, Androide a vo WebAssembly s bitovo rovnakými
+výsledkami; násobenie matíc na GPU (Vulkan, Direct3D 12, Metal) je bitovo rovnaké ako na procesore.
+Ďalej: **E1 – Pohľad**.
 
 ```
 cargo test --workspace                                   # všetky skúšky
 cargo run --release -p orchidea-neuron --example meranie  # meranie výkonu
+cargo run -p orchidea-gpu --example zariadenia            # dostupné výpočtové zariadenia
 ```
 
 ## Kópie repozitára
