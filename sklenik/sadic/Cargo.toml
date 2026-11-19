@@ -1,0 +1,23 @@
+[package]
+name = "sklenik-sadic"
+description = "SADIČ – vlastný zapisovač obrazov SKLENÍKA na SD karty a USB disky (s poistkami a overením)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+build = "build.rs"
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[[bin]]
+name = "sadic"
+path = "src/main.rs"
+
+[dependencies]
+orchidea-jadro.workspace = true
+
+[lints]
+workspace = true

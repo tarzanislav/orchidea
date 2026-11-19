@@ -165,6 +165,59 @@ jobs:
           name: orchidea-rpi-32bit-armv6
           path: orchidea-rpi-32bit-armv6
 
+  sadic:
+    name: SADIČ – zápis na virtuálny disk (Windows)
+    runs-on: windows-latest
+    env:
+      SADIC_SKUSKA: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Zostavenie
+        run: cargo build --locked --release -p sklenik-sadic
+      - name: Zápis, poistky, overenie, záloha a obnova na virtuálnom disku
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $s = "target\release\sadic.exe"
+          $t = $env:RUNNER_TEMP
+          $img = "$t\skuska.img"; $vhd = "$t\skuska.vhd"
+          & $s skusobny-obraz $img 64; if ($LASTEXITCODE) { throw "skúšobný obraz" }
+          "create vdisk file=`"$vhd`" maximum=96 type=fixed`r`nattach vdisk" | Out-File -Encoding ascii "$t\dp1.txt"
+          diskpart /s "$t\dp1.txt" | Out-Null
+          $n = (Get-DiskImage -ImagePath $vhd | Get-Disk).Number
+          Write-Output "virtuálny disk: $n"
+          & $s zoznam --dovol-virtualny
+          $sys = (Get-Partition -DriveLetter C | Get-Disk).Number
+          & $s zapis $img $sys --potvrdzujem $sys --dovol-virtualny
+          if ($LASTEXITCODE -ne 2) { throw "POISTKA: systémový disk nebol odmietnutý (kód $LASTEXITCODE)" }
+          & $s zapis $img $n --potvrdzujem $n
+          if ($LASTEXITCODE -ne 2) { throw "POISTKA: virtuálny disk bez povolenia nebol odmietnutý ($LASTEXITCODE)" }
+          & $s zapis $img $n --potvrdzujem 999 --dovol-virtualny
+          if ($LASTEXITCODE -ne 2) { throw "POISTKA: zlé potvrdenie nebolo odmietnuté ($LASTEXITCODE)" }
+          & $s zapis $img $n --potvrdzujem $n --dovol-virtualny meno=skuska wifi=Domov wifi_heslo=tajneheslo jazyk=sk
+          if ($LASTEXITCODE) { throw "zápis zlyhal" }
+          Update-Disk -Number $n
+          Start-Sleep -Seconds 3
+          $p = Get-Partition -DiskNumber $n | Select-Object -First 1
+          if (-not $p.DriveLetter -or $p.DriveLetter -eq [char]0) {
+            $p | Add-PartitionAccessPath -AssignDriveLetter
+            $p = Get-Partition -DiskNumber $n -PartitionNumber $p.PartitionNumber
+          }
+          $obsah = Get-Content "$($p.DriveLetter):\SKLENIK.TXT" -Raw
+          Write-Output $obsah
+          if ($obsah -notmatch 'meno=skuska' -or $obsah -match 'tajneheslo') { throw "nastavenie na karte nesedí" }
+          & $s over $img $n --dovol-virtualny meno=skuska wifi=Domov wifi_heslo=tajneheslo jazyk=sk
+          if ($LASTEXITCODE) { throw "overenie zlyhalo" }
+          & $s zaloha $n "$t\zaloha.img" --dovol-virtualny
+          if ($LASTEXITCODE) { throw "záloha zlyhala" }
+          & $s obnov $img $n --potvrdzujem $n --dovol-virtualny
+          if ($LASTEXITCODE) { throw "obnova na pripojený oddiel zlyhala" }
+          "select vdisk file=`"$vhd`"`r`ndetach vdisk" | Out-File -Encoding ascii "$t\dp2.txt"
+          diskpart /s "$t\dp2.txt" | Out-Null
+          Write-Output "✅ SADIČ: zápis, poistky, overenie, záloha a obnova"
+
   shadery:
     name: Overenie shaderov – ${{ matrix.meno }}
     strategy:
