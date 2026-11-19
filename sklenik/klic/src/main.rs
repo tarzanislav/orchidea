@@ -6,6 +6,8 @@
 
 #![deny(unsafe_code)]
 
+// na iných systémoch sa strážca len skúša (simuláciou), riadi ho až Linux
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod strazca;
 
 #[cfg(target_os = "linux")]
