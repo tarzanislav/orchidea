@@ -31,7 +31,7 @@ jobs:
           - { meno: "Linux x86-64", os: ubuntu-latest, gpu: Vulkan }
           - { meno: "Linux ARM64", os: ubuntu-24.04-arm, gpu: Vulkan }
           - { meno: "Windows x86-64", os: windows-latest, gpu: D3d12 }
-          - { meno: "macOS ARM64", os: macos-latest, gpu: "" }
+          - { meno: "macOS ARM64", os: macos-latest, gpu: Metal }
     runs-on: ${{ matrix.os }}
     env:
       # skúšky GPU zlyhajú, ak sa zariadenie nenájde – nič neprejde potichu
