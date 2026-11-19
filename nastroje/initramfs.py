@@ -36,6 +36,10 @@ def main() -> int:
     # konzola musí existovať skôr, než jadro spustí KLÍČ (inak by nemal kam písať)
     obsah += zaznam("dev/console", 0o020600, ino=ino, zariadenie=(5, 1))
     ino += 1
+    # ak konzola nie je k dispozícii (napr. bez sériovej linky), štandardné vstupy a výstupy KLÍČA
+    # dostanú /dev/null – program beží ďalej a hlási sa do denníka jadra
+    obsah += zaznam("dev/null", 0o020666, ino=ino, zariadenie=(1, 3))
+    ino += 1
     obsah += zaznam("init", 0o100755, klic.read_bytes(), ino=ino)
     ino += 1
     for par in sys.argv[3:]:

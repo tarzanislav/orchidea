@@ -153,6 +153,29 @@ impl Regulator {
     }
 }
 
+/// Krivka ventilátora (ak zariadenie nejaký má, napr. skrinka Pironman 5 alebo oficiálny chladič RPi 5).
+/// Šetrí energiu a predlžuje životnosť: pod `ciel − 5 °C` je ventilátor vypnutý, potom sa po krokoch
+/// zrýchľuje až po plný výkon 5 °C pod stropom. Vypína sa až o 4 °C nižšie, než sa zapol (bez cvakania).
+/// Vráti stupeň 0..=`najvyssi`.
+pub fn stupen_ventilatora(teplota: f64, profil: Profil, najvyssi: u32, terajsi: u32) -> u32 {
+    if najvyssi == 0 {
+        return 0;
+    }
+    let zaciatok = profil.ciel - 5.0;
+    let plny = profil.strop - 5.0;
+    let ziadany = |t: f64| -> u32 {
+        if t < zaciatok {
+            0
+        } else if t >= plny {
+            najvyssi
+        } else {
+            1 + ((t - zaciatok) / (plny - zaciatok) * (najvyssi - 1) as f64).floor() as u32
+        }
+    };
+    let novy = ziadany(teplota);
+    if novy >= terajsi { novy } else { ziadany(teplota + 4.0).min(terajsi) }
+}
+
 /// Rozhranie hardvéru, ktorý strážca riadi.
 pub trait Hardver {
     /// Najvyššia teplota zo všetkých snímačov (°C), ak nejaký je.
@@ -254,6 +277,18 @@ mod skusky {
         let (maximum, _, _, _) = simuluj(25.0, |_| 0.0, 3600);
         eprintln!("nečinnosť, 25 °C: maximum {maximum:.1} °C");
         assert!(maximum < 48.0, "v nečinnosti {maximum:.1} °C");
+    }
+
+    #[test]
+    fn ventilator_setri_energiu_a_necvaka() {
+        let p = Profil::pre_model("Raspberry Pi 5 Model B");
+        assert_eq!(stupen_ventilatora(50.0, p, 4, 0), 0, "v pokoji vypnutý");
+        assert_eq!(stupen_ventilatora(61.0, p, 4, 0), 1);
+        assert_eq!(stupen_ventilatora(70.0, p, 4, 1), 4, "5 °C pod stropom naplno");
+        // zapol sa pri 61 °C, pri 59 °C ešte beží, pod 56 °C sa vypne
+        assert_eq!(stupen_ventilatora(59.0, p, 4, 1), 1);
+        assert_eq!(stupen_ventilatora(55.5, p, 4, 1), 0);
+        assert_eq!(stupen_ventilatora(80.0, p, 0, 0), 0, "bez ventilátora nič");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! KLÍČ na Linuxe: štart systému, tepelný strážca nad súbormi jadra (`/sys`) a stav na obrazovke.
 
-use crate::strazca::{Hardver, Profil, Regulator, Uroven, urovne};
+use crate::strazca::{Hardver, Profil, Regulator, Uroven, stupen_ventilatora, urovne};
 use crate::sys;
 use std::fs;
 use std::io::Write;
@@ -34,6 +34,8 @@ struct Sysfs {
     jadier: u32,
     vypinatelne: Vec<PathBuf>,
     uplatnena: Option<(u32, u32)>,
+    /// Ventilátory jadra (`cooling_device` typu *fan*): cesta a najvyšší stupeň; riadi ich strážca.
+    ventilatory: Vec<(PathBuf, u32, u32)>,
 }
 
 impl Sysfs {
@@ -71,7 +73,32 @@ impl Sysfs {
                 }
             }
         }
-        Sysfs { snimace, takty, jadier, vypinatelne, uplatnena: None }
+        // ventilátory: strážca ich riadi sám (zóny prepne na user_space, aby ich jadro nezapínalo naplno)
+        let ventilatory: Vec<(PathBuf, u32, u32)> = fs::read_dir("/sys/class/thermal")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|z| z.path())
+            .filter(|p| citaj(p.join("type")).is_some_and(|t| t.contains("fan")))
+            .filter_map(|p| Some((p.join("cur_state"), citaj(p.join("max_state"))?.parse().ok()?, 0)))
+            .collect();
+        if !ventilatory.is_empty() {
+            for z in &snimace {
+                if let Some(zona) = z.parent() {
+                    zapis(zona.join("policy"), "user_space");
+                }
+            }
+        }
+        Sysfs { snimace, takty, jadier, vypinatelne, uplatnena: None, ventilatory }
+    }
+
+    fn ventiluj(&mut self, teplota: f64, profil: Profil) {
+        for (cesta, najvyssi, terajsi) in &mut self.ventilatory {
+            let novy = stupen_ventilatora(teplota, profil, *najvyssi, *terajsi);
+            if novy != *terajsi && zapis(&*cesta, &novy.to_string()) {
+                *terajsi = novy;
+            }
+        }
     }
 }
 
@@ -158,11 +185,12 @@ pub fn spusti() {
     let mut regulator = Regulator::novy(urovne(&hw.takty(), hw.jadier()), profil);
     let cas_startu = start.elapsed();
     hlas(&format!(
-        "{model}; jadier {}, takty {:?} kHz, snímačov teploty {}, vypínateľných jadier {}; cieľ {:.0} °C, strop {:.0} °C{}",
+        "{model}; jadier {}, takty {:?} kHz, snímačov teploty {}, vypínateľných jadier {}, ventilátorov {}; cieľ {:.0} °C, strop {:.0} °C{}",
         hw.jadier(),
         hw.takty(),
         hw.snimace.len(),
         hw.vypinatelne.len(),
+        hw.ventilatory.len(),
         profil.ciel,
         profil.strop,
         if len_sledovanie { " (len sledovanie)" } else { "" }
@@ -181,6 +209,9 @@ pub fn spusti() {
         };
         if !len_sledovanie {
             hw.uplatni(&uroven);
+            if let Some(t) = teplota {
+                hw.ventiluj(t, profil);
+            }
         }
         if pid1 {
             sys::zber_procesov();
