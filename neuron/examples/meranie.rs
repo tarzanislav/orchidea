@@ -43,6 +43,17 @@ fn main() {
         println!("| násobenie f32 512³, {rezim:?} | {:.1} GFLOP/s |", 2.0 * (m * k * p) as f64 / s / 1e9);
     }
 
+    let (zariadenia, _) = orchidea_gpu::vsetky_zariadenia();
+    for z in zariadenia.iter().filter(|z| z.popis().druh != orchidea_gpu::zariadenie::Druh::Procesor) {
+        let s = zmeraj(|| jadra::nasob_na_zariadeni(z.as_ref(), m, p, k, &a, &b, &mut c).expect("GPU"));
+        println!(
+            "| násobenie f32 512³ na {:?} – {} (s prenosom dát) | {:.1} GFLOP/s |",
+            z.popis().druh,
+            z.popis().meno,
+            2.0 * (m * k * p) as f64 / s / 1e9
+        );
+    }
+
     let (davka, vstupy, vystupy) = (64, 2048, 2048);
     let x: Vec<f32> = (0..davka * vstupy).map(|_| n.f32() * 2.0 - 1.0).collect();
     let w: Vec<f32> = (0..vystupy * vstupy).map(|_| n.f32() * 2.0 - 1.0).collect();

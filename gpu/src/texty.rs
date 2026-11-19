@@ -245,6 +245,8 @@ pub fn do_textu(k: &Kernel, j: Jazyk) -> Vysledok<String> {
             w.vystup.push_str("void hlavna(uint3 id_vlakna : SV_DispatchThreadID) {\n");
         }
         Jazyk::Msl => {
+            // zákaz spájania násobenia a sčítania do FMA (bezpečný režim matematiky ho sám nevypne)
+            w.vystup.push_str("#pragma METAL fp contract(off)\n#pragma STDC FP_CONTRACT OFF\n");
             w.vystup.push_str("#include <metal_stdlib>\nusing namespace metal;\n");
             if !k.konstanty.is_empty() {
                 w.vystup.push_str("struct Konstanty {\n");
