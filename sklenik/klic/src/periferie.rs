@@ -55,6 +55,8 @@ pub struct Supis {
     pub usb: Vec<String>,
     /// Prídavné dosky a skrinky s identifikačným čipom (HAT), ktoré našiel firmvér Raspberry Pi.
     pub dosky: Vec<String>,
+    /// Podpätie (slabý zdroj) podľa firmvéru: `Some(true)` teraz, `Some(false)` v poriadku, `None` bez snímača.
+    pub podpatie: Option<bool>,
 }
 
 // čísla udalostí a tlačidiel jadra Linux (include/uapi/linux/input-event-codes.h)
@@ -242,6 +244,14 @@ impl Supis {
             s.dosky.push(opis);
         }
 
+        // napájanie: snímač podpätia firmvéru Raspberry Pi (hwmon „rpi_volt“)
+        let hwmon = sys.join("class/hwmon");
+        for h in polozky(&hwmon) {
+            if citaj(hwmon.join(&h).join("name")).as_deref() == Some("rpi_volt") {
+                s.podpatie = citaj(hwmon.join(&h).join("in0_lcrit_alarm")).map(|v| v == "1");
+            }
+        }
+
         // USB: skutočné zariadenia (nie koreňové rozbočovače, rozhrania ani rozbočovače)
         let usb = sys.join("bus/usb/devices");
         for meno in polozky(&usb) {
@@ -312,8 +322,13 @@ impl Supis {
         };
         let zvuk = if self.zvuk.is_empty() { "–".into() } else { self.zvuk.join(", ") };
         let dosky = if self.dosky.is_empty() { "žiadna".into() } else { self.dosky.join(", ") };
+        let napajanie = match self.podpatie {
+            Some(true) => "PODPÄTIE – slabý zdroj",
+            Some(false) => "v poriadku",
+            None => "–",
+        };
         format!(
-            "periférie – obrazovka: {obrazovka}; vstupy: {vstupy}; sieť: {siet}; úložisko: {ulozisko}; zvuk: {zvuk}; USB: {}; prídavná doska: {dosky}",
+            "periférie – obrazovka: {obrazovka}; vstupy: {vstupy}; sieť: {siet}; úložisko: {ulozisko}; zvuk: {zvuk}; USB: {}; prídavná doska: {dosky}; napájanie: {napajanie}",
             self.usb.len()
         )
     }
@@ -450,7 +465,10 @@ mod skusky {
             .subor("sys/bus/usb/devices/1-1.2/bDeviceClass", "00")
             .subor("proc/device-tree/hat/vendor", "Vyrobca s.r.o.\0")
             .subor("proc/device-tree/hat/product", "Skrinka 5\0")
-            .subor("proc/device-tree/hat/product_id", "0x0316\0");
+            .subor("proc/device-tree/hat/product_id", "0x0316\0")
+            .subor("sys/class/hwmon/hwmon0/name", "cpu_thermal")
+            .subor("sys/class/hwmon/hwmon1/name", "rpi_volt")
+            .subor("sys/class/hwmon/hwmon1/in0_lcrit_alarm", "1");
         // rozhranie zariadenia USB (dvojbodka v mene – na Windows taký súbor nemôže byť)
         if cfg!(unix) {
             s.subor("sys/bus/usb/devices/1-1.1:1.0/idVendor", "0424");
@@ -476,6 +494,7 @@ mod skusky {
         assert_eq!(p.zvuk, vec!["bcm2835 Headphones"]);
         assert_eq!(p.usb, vec!["0424:ec00", "USB Receiver"]);
         assert_eq!(p.dosky, vec!["Vyrobca s.r.o. Skrinka 5 (výrobok 0x0316)"]);
+        assert_eq!(p.podpatie, Some(true));
         let r = p.riadok();
         assert!(r.contains("klávesnica (Klavesnica USB)"), "{r}");
         assert!(r.contains("eth0 kábel b8:27:eb:00:00:01 – spojené"), "{r}");

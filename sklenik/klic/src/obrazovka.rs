@@ -55,8 +55,12 @@ pub struct Stav<'a> {
     pub teplota: Option<f64>,
     pub ciel: f64,
     pub strop: f64,
-    /// (aktuálna úroveň od 1, počet úrovní)
-    pub uroven: (usize, usize),
+    /// Výkon v pomere k plnému (0–1), ktorý tepelný strážca práve dovoľuje.
+    pub vykon: f64,
+    /// Napájanie: `Some(true)` = podpätie teraz, `Some(false)` = v poriadku, `None` = bez snímača.
+    pub podpatie: Option<bool>,
+    /// Bolo od štartu aspoň raz podpätie?
+    pub podpatie_bolo: bool,
     pub supis: &'a Supis,
     /// Za koľko sekúnd od zapnutia jadra bol systém pripravený.
     pub pripravene_s: Option<f64>,
@@ -96,11 +100,13 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     let mut p = Platno::nove(sirka, vyska, POZADIE);
     let v = (vyska as f32 / 30.0).clamp(10.0, 64.0);
     let h = (v * 0.11).max(1.3);
-    let m = (1.5 * v).min(sirka as f32 * 0.05).max(6.0);
+    // okraj aj pre televízory, ktoré obraz na krajoch orezávajú (asi 4–5 %)
+    let m = (sirka as f32 * 0.045).max(1.2 * v).max(6.0);
+    let mv = (vyska as f32 * 0.04).max(v).max(6.0);
     let pravy = sirka as f32 - m;
 
     // hlavička: SKLENÍK a model
-    let mut y = m + 1.6 * v;
+    let mut y = mv + 1.6 * v;
     let koniec = p.text(pismo, "SKLENÍK", m, y, 1.6 * v, (v * 0.17).max(2.0), ZELENA);
     let model = pismo.skrat(s.model, pravy - koniec - 2.0 * v, 0.8 * v, h * 0.8);
     let w = pismo.sirka(&model, 0.8 * v, h * 0.8);
@@ -128,7 +134,7 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     // riadky: popis vľavo, hodnota v stĺpci
     let popisy = [
         j.t("Teplota", "Teplota", "Temperature"),
-        j.t("Výkon", "Výkon", "Performance"),
+        j.t("Napájanie", "Napájení", "Power"),
         j.t("Obrazovka", "Obrazovka", "Display"),
         j.t("Vstupy", "Vstupy", "Input"),
         j.t("Sieť", "Síť", "Network"),
@@ -140,7 +146,7 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     let krok = 1.8 * v;
     let riadok = |p: &mut Platno, y: &mut f32, popis: &str, casti: &[(&str, Farba)]| {
         *y += krok;
-        if *y > vyska as f32 - m - 2.6 * v {
+        if *y > vyska as f32 - mv - 3.4 * v {
             return;
         }
         p.text(pismo, popis, m, *y, v, h, TLMENY);
@@ -159,9 +165,38 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         }
         None => ("–".to_string(), j.t("bez snímača", "bez čidla", "no sensor"), TLMENY),
     };
-    riadok(&mut p, &mut y, popisy[0], &[(&teplota.0, TEXT), ("–", TLMENY), (teplota.1, teplota.2)]);
-    let vykon = format!("{} {} {}", s.uroven.0, j.t("zo", "ze", "of"), s.uroven.1);
-    riadok(&mut p, &mut y, popisy[1], &[(&vykon, TEXT)]);
+    let vykon = if s.vykon >= 0.995 {
+        j.t("plný výkon", "plný výkon", "full power").to_string()
+    } else {
+        format!("{} {:.0} %", j.t("výkon", "výkon", "power"), s.vykon * 100.0)
+    };
+    riadok(
+        &mut p,
+        &mut y,
+        popisy[0],
+        &[(&teplota.0, TEXT), ("–", TLMENY), (teplota.1, teplota.2), ("·", TLMENY), (&vykon, TLMENY)],
+    );
+    let napajanie = match (s.podpatie, s.podpatie_bolo) {
+        (Some(true), _) => (
+            j.t(
+                "slabé – použite oficiálny zdroj Raspberry Pi",
+                "slabé – použijte oficiální zdroj Raspberry Pi",
+                "weak – use the official Raspberry Pi power supply",
+            ),
+            CERVENA,
+        ),
+        (Some(false), true) => (
+            j.t(
+                "chvíľami slabé – skúste iný zdroj alebo kratší kábel",
+                "chvílemi slabé – zkuste jiný zdroj nebo kratší kabel",
+                "sometimes weak – try another supply or a shorter cable",
+            ),
+            JANTAROVA,
+        ),
+        (Some(false), false) => (j.t("v poriadku", "v pořádku", "OK"), ZELENA),
+        (None, _) => ("–", TLMENY),
+    };
+    riadok(&mut p, &mut y, popisy[1], &[napajanie]);
 
     let obrazovka = s
         .supis
@@ -237,8 +272,22 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         "The system runs from memory – you can unplug the power at any time.",
     );
     let maly = 0.75 * v;
-    let yp = vyska as f32 - m;
+    let yp = vyska as f32 - mv;
     p.text(pismo, &pismo.skrat(paticka, pravy - m, maly, h * 0.8), m, yp, maly, h * 0.8, TLMENY);
+    let co_dalej = j.t(
+        "SKLENÍK beží správne. Programy ORCHIDEA pribudnú v ďalšej verzii.",
+        "SKLENÍK běží správně. Programy ORCHIDEA přibudou v další verzi.",
+        "SKLENÍK is running. ORCHIDEA programs will come in a later version.",
+    );
+    p.text(
+        pismo,
+        &pismo.skrat(co_dalej, pravy - m, maly, h * 0.8),
+        m,
+        yp - 3.0 * maly,
+        maly,
+        h * 0.8,
+        ZELENA,
+    );
     let mut info = match s.pripravene_s {
         Some(t) => format!("{} {} s", j.t("Pripravené za", "Připraveno za", "Ready in"), j.cislo(t, 1)),
         None => String::new(),
@@ -322,6 +371,7 @@ mod skusky {
             zvuk: vec![],
             usb: vec!["x".into()],
             dosky: vec![],
+            podpatie: Some(false),
         }
     }
 
@@ -332,9 +382,11 @@ mod skusky {
             teplota,
             ciel: 60.0,
             strop: 70.0,
-            uroven: (3, 4),
             supis,
             pripravene_s: Some(2.4),
+            vykon: 1.0,
+            podpatie: Some(false),
+            podpatie_bolo: false,
         }
     }
 
@@ -366,6 +418,10 @@ mod skusky {
         assert!(ma(&a, ZELENA));
         let horuce = nakresli(&pismo, 800, 480, &stav(&s, Some(69.0)), Jazyk::Sk);
         assert!(ma(&horuce, CERVENA) && !ma(&a, CERVENA));
+        // slabé napájanie je červené aj pri chladnom zariadení
+        let mut slabe = stav(&s, Some(45.0));
+        slabe.podpatie = Some(true);
+        assert!(ma(&nakresli(&pismo, 800, 480, &slabe, Jazyk::Sk), CERVENA));
         assert_ne!(a, nakresli(&pismo, 800, 480, &stav(&s, None), Jazyk::Sk));
         assert_eq!(teplota_slovom(62.0, 60.0, 70.0, Jazyk::En).0, "warm – the guard holds it");
         assert_eq!(Jazyk::Cs.cislo(48.54, 1), "48,5");

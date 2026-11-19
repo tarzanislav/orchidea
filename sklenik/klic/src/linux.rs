@@ -285,6 +285,7 @@ pub fn spusti() {
         zapni_siet();
     }
     let mut supis = Supis::nacitaj(Path::new("/"));
+    let mut podpatie_bolo = supis.podpatie == Some(true);
     let mut nastavenie = nacitaj_nastavenie(&supis);
     let nastav_zariadenie = |n: &Option<(String, NastavenieZariadenia)>| {
         if let Some((cesta, n)) = n {
@@ -352,6 +353,7 @@ pub fn spusti() {
             }
             hlas(&novy.riadok());
             supis = novy;
+            podpatie_bolo |= supis.podpatie == Some(true);
             // karta sa môže objaviť až chvíľu po štarte
             if nastavenie.is_none() {
                 nastavenie = nacitaj_nastavenie(&supis);
@@ -369,7 +371,9 @@ pub fn spusti() {
                         teplota,
                         ciel: profil.ciel,
                         strop: profil.strop,
-                        uroven: (regulator.index() + 1, regulator.pocet_urovni()),
+                        vykon: regulator.uroven().vykon,
+                        podpatie: supis.podpatie,
+                        podpatie_bolo,
                         supis: &supis,
                         pripravene_s: pripravene,
                     };
