@@ -27,8 +27,8 @@ zvukom, hudbou, pohybom a diskami. Spája ich jedna gramatika a jedno jadro, nie
 
 Skúšky prechádzajú na Linuxe (x86-64, ARM64), Windows, macOS, Androide a vo WebAssembly s bitovo rovnakými
 výsledkami; násobenie matíc na GPU (Vulkan, Direct3D 12, Metal) je bitovo rovnaké ako na procesore.
-ORCHIDEA je pre **všetky zariadenia od Raspberry Pi 3** – CI overuje aj profil slabého zariadenia (4 jadrá, 1 GB,
-bez GPU) a 32-bitový ARM. Model efektívnosti **FOTOSYNTÉZA**: rýchlosť bez straty kvality odstránením práce,
+ORCHIDEA je pre **všetky zariadenia od Raspberry Pi 1** – CI overuje aj profil slabého zariadenia (4 jadrá, 1 GB,
+bez GPU), 32-bitový ARMv7 a ARMv6 (Raspberry Pi 1 a Zero). Model efektívnosti **FOTOSYNTÉZA**: rýchlosť bez straty kvality odstránením práce,
 ktorá výsledok nemení. Ďalej: **E1 – Pohľad**.
 
 ```
@@ -36,6 +36,24 @@ cargo test --workspace                                   # všetky skúšky
 cargo run --release -p orchidea-neuron --example meranie  # meranie výkonu
 cargo run -p orchidea-gpu --example zariadenia            # dostupné výpočtové zariadenia
 cargo run --release -p orchidea-gpu --example vektor      # interpret vs. vektorový vykonávač
+```
+
+## SKLENÍK – vlastný systém pre Raspberry Pi
+
+Heslo: **Chladné RPi.** Oficiálne jadro Raspberry Pi s vlastným nastavením a nad ním všetko vlastné:
+
+| Balík | Obsah |
+|---|---|
+| `sklenik/klic` | KLÍČ – prvý proces systému; tepelný strážca drží Raspberry Pi chladné aj bez chladiča (cieľ 60 °C, strop 70 °C na RPi 3), ventilátor zapne až vtedy, keď treba |
+| `sklenik/sadic` | SADIČ – zapisovač obrazov pre Windows 11: zapíše a overí kartu, pripraví meno, Wi-Fi a jazyk, zálohuje a obnovuje; ponúkne len SD karty a USB disky, nikdy disk so systémom |
+| `sklenik/jadro.config`, `sklenik/boot` | nastavenie jadra a zavádzania (systém beží z pamäte, karta sa takmer nepoužíva) |
+
+Obraz `sklenik-rpi-64bit.img` (Raspberry Pi 3, 4, 5, Zero 2 W) a `sadic.exe` zostavuje CI; obraz sa pri každej
+zmene naštartuje v emulovanom Raspberry Pi 3.
+
+```
+sadic zoznam                                        # disky, na ktoré sa smie zapisovať
+sadic zapis sklenik-rpi-64bit.img 3 meno=pi1 wifi=Domov wifi_heslo=… jazyk=sk
 ```
 
 ## Kópie repozitára
