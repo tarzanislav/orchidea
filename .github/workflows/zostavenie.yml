@@ -111,6 +111,36 @@ jobs:
       - name: Skúšky (32-bitový ARM, bitová zhoda s ostatnými platformami)
         run: cargo test --locked --workspace --release --target armv7-unknown-linux-gnueabihf
 
+  rpi1:
+    name: Skúšky – Raspberry Pi 1 a Zero (ARMv6, 1 jadro, 512 MB, QEMU)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač a cieľ ARMv6
+        run: |
+          rustup toolchain install && rustup show
+          rustup target add arm-unknown-linux-gnueabihf
+      - name: Krížový linker a QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-linux-gnueabihf libc6-dev-armhf-cross qemu-user-static
+      - name: Zostavenie skúšok pre ARMv6
+        run: |
+          cargo test --locked --workspace --release --target arm-unknown-linux-gnueabihf --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .executable != null) | .executable' > binarky.txt
+          cat binarky.txt
+      - name: Skúšky v kontajneri – 1 jadro, 512 MB, bez GPU
+        run: |
+          for b in $(cat binarky.txt); do
+            echo "== $b"
+            docker run --rm --memory=512m --memory-swap=512m --cpus=1 \
+              -e ORCHIDEA_BEZ_GPU=1 -e QEMU_LD_PREFIX=/usr/arm-linux-gnueabihf \
+              -v /usr/arm-linux-gnueabihf:/usr/arm-linux-gnueabihf:ro \
+              -v "$PWD:$PWD" -w "$PWD" ubuntu:24.04 "$b" || exit 1
+          done
+
   shadery:
     name: Overenie shaderov – ${{ matrix.meno }}
     strategy:
