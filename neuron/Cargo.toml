@@ -13,6 +13,7 @@ vrstva = 2
 
 [dependencies]
 orchidea-jadro.workspace = true
+orchidea-gpu.workspace = true
 
 [lints]
 workspace = true

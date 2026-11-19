@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["jadro", "neuron"]
+members = ["jadro", "gpu", "neuron"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +14,7 @@ authors = ["autori projektu ORCHIDEA"]
 # a smer závislostí stráži nastroje/kontrola_vrstiev.py.
 [workspace.dependencies]
 orchidea-jadro = { path = "jadro" }
+orchidea-gpu = { path = "gpu" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -28,15 +28,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { meno: "Linux x86-64", os: ubuntu-latest }
-          - { meno: "Linux ARM64", os: ubuntu-24.04-arm }
-          - { meno: "Windows x86-64", os: windows-latest }
-          - { meno: "macOS ARM64", os: macos-latest }
+          - { meno: "Linux x86-64", os: ubuntu-latest, gpu: Vulkan }
+          - { meno: "Linux ARM64", os: ubuntu-24.04-arm, gpu: Vulkan }
+          - { meno: "Windows x86-64", os: windows-latest, gpu: "" }
+          - { meno: "macOS ARM64", os: macos-latest, gpu: "" }
     runs-on: ${{ matrix.os }}
+    env:
+      # skúšky GPU zlyhajú, ak sa zariadenie nenájde – nič neprejde potichu
+      ORCHIDEA_VYZADUJ_GPU: ${{ matrix.gpu }}
     steps:
       - uses: actions/checkout@v5
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
+      - name: Softvérový Vulkan (lavapipe) pre skúšky GPU
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mesa-vulkan-drivers libvulkan1
       - name: Skúšky (ladiaci preklad)
         run: cargo test --locked --workspace
       - name: Skúšky (optimalizovaný preklad)
@@ -46,6 +54,50 @@ jobs:
         run: |
           echo "### Meranie – ${{ matrix.meno }}" >> "$GITHUB_STEP_SUMMARY"
           cargo run --locked --release -p orchidea-neuron --example meranie | tee -a "$GITHUB_STEP_SUMMARY"
+
+  shadery:
+    name: Overenie shaderov – ${{ matrix.meno }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { meno: "SPIR-V a WGSL", os: ubuntu-latest }
+          - { meno: "HLSL", os: windows-latest }
+          - { meno: "MSL", os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Vygenerovanie shaderov vlastným prekladačom
+        run: cargo run --locked -p orchidea-gpu --example shadery -- shadery
+      - name: SPIR-V (spirv-val) a WGSL (naga)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq spirv-tools
+          for f in shadery/*.spv; do echo "$f"; spirv-val --target-env vulkan1.1 "$f"; done
+          cargo install naga-cli --locked --root "$HOME/naga"
+          for f in shadery/*.wgsl; do echo "$f"; "$HOME/naga/bin/naga" "$f"; done
+      - name: HLSL (dxc – Shader Model 6.0, fxc – Shader Model 5.1)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sdk = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
+          $dxc = (Get-ChildItem $sdk -Recurse -Filter dxc.exe | Where-Object FullName -match '\\x64\\' | Select-Object -Last 1).FullName
+          $fxc = (Get-ChildItem $sdk -Recurse -Filter fxc.exe | Where-Object FullName -match '\\x64\\' | Select-Object -Last 1).FullName
+          Write-Output "dxc: $dxc"; Write-Output "fxc: $fxc"
+          foreach ($f in Get-ChildItem shadery -Filter *.hlsl) {
+            Write-Output $f.Name
+            & $dxc -nologo -T cs_6_0 -E hlavna $f.FullName -Fo "$($f.FullName).dxil"
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            & $fxc /nologo /T cs_5_1 /E hlavna $f.FullName /Fo "$($f.FullName).dxbc"
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+      - name: MSL (xcrun metal)
+        if: runner.os == 'macOS'
+        run: |
+          for f in shadery/*.metal; do echo "$f"; xcrun -sdk macosx metal -c "$f" -o "$f.air"; done
 
   web:
     name: Skúšky – web (WebAssembly)

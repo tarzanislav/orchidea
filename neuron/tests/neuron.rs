@@ -247,3 +247,28 @@ fn ucenie_je_bitovo_opakovatelne_na_kazdej_platforme() {
 }
 
 const ODTLACOK_UCENIA: &str = "ee8ef42cbe36935d7f991312d836484b70a0903b8d7908c41c7b00682777dcf0";
+
+#[test]
+fn gpu_sa_zhoduje_s_presnym_rezimom_bit_po_bite() {
+    let (zariadenia, dovody) = orchidea_gpu::vsetky_zariadenia();
+    for d in &dovody {
+        eprintln!("nedostupné: {d}");
+    }
+    let mut n = Nahoda::zo_semienka(19);
+    let (m, k, p) = (64, 96, 48);
+    let a = nahodne(&mut n, m * k);
+    let b = nahodne(&mut n, k * p);
+    let mut presne = vec![0.0; m * p];
+    jadra::nasob(Rezim::Presny, m, p, k, &a, &b, &mut presne);
+    for z in &zariadenia {
+        let mut c = vec![f32::NAN; m * p];
+        jadra::nasob_na_zariadeni(z.as_ref(), m, p, k, &a, &b, &mut c).unwrap();
+        assert_eq!(
+            c.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            presne.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            "{}: výsledok sa musí zhodovať s presným režimom procesora",
+            z.popis()
+        );
+        eprintln!("zhoda bit po bite: {}", z.popis());
+    }
+}

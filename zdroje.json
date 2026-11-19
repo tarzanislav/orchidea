@@ -58,6 +58,54 @@
       "kde": "jednorazovo pri písaní skúšok – nie je v repozitári ani v programe",
       "ucel": "nezávislé overenie vlastného BLAKE3 (hodnoty v jadro/tests/data/vektory_blake3.rs)",
       "posudenie_charty": "slobodný projekt; použitý len ako rozhodca správnosti (R13)"
+    },
+    {
+      "meno": "Mesa – softvérový ovládač Vulkanu lavapipe",
+      "trieda": "B",
+      "licencia": "MIT",
+      "kde": "len CI",
+      "ucel": "spúšťanie skúšok GPU vrstvy na skutočnom rozhraní Vulkan bez grafickej karty",
+      "posudenie_charty": "slobodný projekt; program na ňom nezávisí – ORCHIDEA použije ovládač, ktorý má zariadenie"
+    },
+    {
+      "meno": "SPIRV-Tools (spirv-val)",
+      "trieda": "B",
+      "licencia": "Apache-2.0",
+      "kde": "len CI",
+      "ucel": "nezávislé overenie SPIR-V z vlastného prekladača (R13)",
+      "posudenie_charty": "slobodný nástroj Khronos Group"
+    },
+    {
+      "meno": "naga (naga-cli)",
+      "trieda": "B",
+      "licencia": "MIT OR Apache-2.0",
+      "kde": "len CI",
+      "ucel": "nezávislé overenie WGSL z vlastného prekladača (R13)",
+      "posudenie_charty": "slobodný nástroj projektu gfx-rs"
+    },
+    {
+      "meno": "DirectX Shader Compiler (dxc) zo Windows SDK",
+      "trieda": "B",
+      "licencia": "NCSA (LLVM)",
+      "kde": "len CI",
+      "ucel": "nezávislé overenie HLSL z vlastného prekladača (R13)",
+      "posudenie_charty": "slobodný nástroj; súčasť nástrojov platformy Windows"
+    },
+    {
+      "meno": "prekladač Metal (xcrun metal) z Xcode",
+      "trieda": "B",
+      "licencia": "nástroj platformy Apple",
+      "kde": "len CI",
+      "ucel": "nezávislé overenie MSL z vlastného prekladača (R13)",
+      "posudenie_charty": "nástroj operačného systému; v programe nie je – za behu MSL preloží systém (rozhranie OS, trieda B)"
+    },
+    {
+      "meno": "knižnice ovládačov GPU (Vulkan loader, d3d12.dll, d3dcompiler_47.dll)",
+      "trieda": "B",
+      "licencia": "podľa výrobcu ovládača / operačného systému",
+      "kde": "program – načítané za behu, ak existujú",
+      "ucel": "rozhrania ovládačov a operačného systému; bez nich ORCHIDEA počíta na procesore",
+      "posudenie_charty": "systémové rozhrania; ORCHIDEA sa s nimi nezviaže pri preklade a funguje aj bez nich"
     }
   ],
   "triedy": {

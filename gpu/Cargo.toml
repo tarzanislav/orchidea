@@ -1,0 +1,18 @@
+[package]
+name = "orchidea-gpu"
+description = "GPU vrstva ORCHIDEE – vlastný jazyk kernelov, prekladače do SPIR-V, HLSL, MSL, WGSL a zariadenia Vulkan, Direct3D 12 a CPU"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[dependencies]
+orchidea-jadro.workspace = true
+
+[lints]
+workspace = true

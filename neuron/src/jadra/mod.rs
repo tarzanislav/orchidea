@@ -90,6 +90,42 @@ fn nasob_rychlo(m: usize, n: usize, k: usize, a: &[f32], b: &[f32], c: &mut [f32
     referencne::nasob(m, n, k, a, b, c)
 }
 
+/// C (m×n) = A (m×k) · B (k×n) na výpočtovom zariadení (GPU alebo referenčný procesor).
+///
+/// Kernel sčítava v rovnakom poradí ako presný režim a bez FMA, takže na zariadeniach so správne
+/// zaokrúhľovaným sčítaním a násobením (Vulkan, Direct3D 12) je výsledok bitovo rovnaký ako
+/// `nasob(Rezim::Presny, …)`.
+pub fn nasob_na_zariadeni(
+    zariadenie: &dyn orchidea_gpu::Zariadenie,
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[f32],
+    c: &mut [f32],
+) -> orchidea_jadro::Vysledok<()> {
+    use orchidea_gpu::{DataVazby, Hodnota32};
+    assert!(a.len() >= m * k && b.len() >= k * n && c.len() >= m * n, "rozmery matíc nesedia");
+    if m == 0 || n == 0 {
+        return Ok(());
+    }
+    if k == 0 {
+        c[..m * n].fill(0.0);
+        return Ok(());
+    }
+    let rozmer =
+        |x: usize| u32::try_from(x).map_err(|_| orchidea_jadro::Chyba::Limit("rozmer matice".into()));
+    let (mu, nu, ku) = (rozmer(m)?, rozmer(n)?, rozmer(k)?);
+    let mut a = a[..m * k].to_vec();
+    let mut b = b[..k * n].to_vec();
+    zariadenie.spusti(
+        &orchidea_gpu::kernely::nasobenie_presne(),
+        &mut [DataVazby::F32(&mut a), DataVazby::F32(&mut b), DataVazby::F32(&mut c[..m * n])],
+        &[Hodnota32::U32(mu), Hodnota32::U32(nu), Hodnota32::U32(ku)],
+        [nu.div_ceil(16), mu.div_ceil(16), 1],
+    )
+}
+
 /// Transpozícia (r×s → s×r).
 pub fn transponuj(r: usize, s: usize, a: &[f32]) -> Vec<f32> {
     let mut t = vec![0.0f32; r * s];
