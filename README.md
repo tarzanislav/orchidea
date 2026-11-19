@@ -46,8 +46,11 @@ nájde svoje jadro a svoj systém; klávesnica, myš, USB a Ethernet fungujú hn
 
 | Balík | Obsah |
 |---|---|
-| `sklenik/klic` | KLÍČ – prvý proces systému; súpis periférií a zapnutie siete; tepelný strážca drží Raspberry Pi chladné aj bez chladiča (cieľ 60 °C, strop 70 °C na RPi 3), ventilátor zapne až vtedy, keď treba |
+| `sklenik/klic` | KLÍČ – prvý proces systému; grafická stavová obrazovka (sk/cs/en), meno zariadenia zo SADIČA, súpis periférií a zapnutie siete; tepelný strážca drží Raspberry Pi chladné aj bez chladiča (cieľ 60 °C, strop 70 °C na RPi 3), ventilátor zapne až vtedy, keď treba |
 | `sklenik/sadic` | SADIČ – zapisovač obrazov pre Windows 11: zapíše a overí kartu, pripraví meno, Wi-Fi a jazyk, zálohuje a obnovuje; ponúkne len SD karty a USB disky, nikdy disk so systémom |
+| `sklenik/karta` | spoločný kód karty: oddiel FAT32 a nastavenie `SKLENIK.TXT` (meno, Wi-Fi, jazyk) – SADIČ ho zapíše, KLÍČ prečíta |
+| `sklenik/korene` | KORENE – spojenie s počítačom; zatiaľ vlastná kryptografia X25519 a ChaCha20-Poly1305 overená testovacími vektormi RFC 7748 a RFC 8439 |
+| `pismo` | STONKA – vlastné ťahové písmo s diakritikou (slovenčina, čeština), ľubovoľná veľkosť, vyhladené kreslenie |
 | `sklenik/jadro.config`, `sklenik/boot` | nastavenie jadra a zavádzania podľa modelu (systém beží z pamäte, karta sa takmer nepoužíva) |
 
 Obraz `sklenik-rpi.img` a `sadic.exe` zostavuje CI. Pri každej zmene sa overí výber jadra a systému za každý
