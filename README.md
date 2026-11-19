@@ -40,20 +40,22 @@ cargo run --release -p orchidea-gpu --example vektor      # interpret vs. vektor
 
 ## SKLENÍK – vlastný systém pre Raspberry Pi
 
-Heslo: **Chladné RPi.** Oficiálne jadro Raspberry Pi s vlastným nastavením a nad ním všetko vlastné:
+Heslo: **Chladné RPi.** Oficiálne jadro Raspberry Pi s vlastným nastavením a nad ním všetko vlastné.
+**Jedna univerzálna karta** štartuje na RPi 1, 2, 3, 4, 5, Zero, Zero W a Zero 2 W – firmvér každého modelu si
+nájde svoje jadro a svoj systém; klávesnica, myš, USB a Ethernet fungujú hneď po štarte.
 
 | Balík | Obsah |
 |---|---|
-| `sklenik/klic` | KLÍČ – prvý proces systému; tepelný strážca drží Raspberry Pi chladné aj bez chladiča (cieľ 60 °C, strop 70 °C na RPi 3), ventilátor zapne až vtedy, keď treba |
+| `sklenik/klic` | KLÍČ – prvý proces systému; súpis periférií a zapnutie siete; tepelný strážca drží Raspberry Pi chladné aj bez chladiča (cieľ 60 °C, strop 70 °C na RPi 3), ventilátor zapne až vtedy, keď treba |
 | `sklenik/sadic` | SADIČ – zapisovač obrazov pre Windows 11: zapíše a overí kartu, pripraví meno, Wi-Fi a jazyk, zálohuje a obnovuje; ponúkne len SD karty a USB disky, nikdy disk so systémom |
-| `sklenik/jadro.config`, `sklenik/boot` | nastavenie jadra a zavádzania (systém beží z pamäte, karta sa takmer nepoužíva) |
+| `sklenik/jadro.config`, `sklenik/boot` | nastavenie jadra a zavádzania podľa modelu (systém beží z pamäte, karta sa takmer nepoužíva) |
 
-Obraz `sklenik-rpi-64bit.img` (Raspberry Pi 3, 4, 5, Zero 2 W) a `sadic.exe` zostavuje CI; obraz sa pri každej
-zmene naštartuje v emulovanom Raspberry Pi 3.
+Obraz `sklenik-rpi.img` a `sadic.exe` zostavuje CI. Pri každej zmene sa overí výber jadra a systému za každý
+model a karta sa naštartuje v emulovanom RPi Zero, RPi 2 a RPi 3 (jadro pre RPi 5 na procesore Cortex-A76).
 
 ```
 sadic zoznam                                        # disky, na ktoré sa smie zapisovať
-sadic zapis sklenik-rpi-64bit.img 3 meno=pi1 wifi=Domov wifi_heslo=… jazyk=sk
+sadic zapis sklenik-rpi.img 3 meno=pi1 wifi=Domov wifi_heslo=… jazyk=sk
 ```
 
 ## Kópie repozitára
