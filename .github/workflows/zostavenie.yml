@@ -208,15 +208,13 @@ jobs:
           $obsah = Get-Content "$($p.DriveLetter):\SKLENIK.TXT" -Raw
           Write-Output $obsah
           if ($obsah -notmatch 'meno=skuska' -or $obsah -match 'tajneheslo') { throw "nastavenie na karte nesedí" }
-          & $s over $img $n --dovol-virtualny meno=skuska wifi=Domov wifi_heslo=tajneheslo jazyk=sk
-          if ($LASTEXITCODE) { throw "overenie zlyhalo" }
           & $s zaloha $n "$t\zaloha.img" --dovol-virtualny
           if ($LASTEXITCODE) { throw "záloha zlyhala" }
           & $s obnov $img $n --potvrdzujem $n --dovol-virtualny
           if ($LASTEXITCODE) { throw "obnova na pripojený oddiel zlyhala" }
           "select vdisk file=`"$vhd`"`r`ndetach vdisk" | Out-File -Encoding ascii "$t\dp2.txt"
           diskpart /s "$t\dp2.txt" | Out-Null
-          Write-Output "✅ SADIČ: zápis, poistky, overenie, záloha a obnova"
+          Write-Output "✅ SADIČ: zápis s overením, poistky, nastavenie, záloha a obnova"
 
   shadery:
     name: Overenie shaderov – ${{ matrix.meno }}

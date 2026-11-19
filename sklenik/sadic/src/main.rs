@@ -253,44 +253,50 @@ mod platforma {
             return Err(Chyba(2, "disk sa medzitým zmenil (vymenená karta?) – nič sa nezapísalo".into()));
         }
         let mut kus = vec![0u8; KUS];
+        // odtlačok každého kusu – pri chybe povie, kde na karte je problém
+        let mut kusy = Vec::new();
         let mut h = Hasovac::novy();
-        if zapisovat {
-            let mut p = Priebeh::novy("zápis", dlzka);
-            let mut posun = 0;
-            while posun < dlzka {
-                let n = KUS.min((dlzka - posun) as usize);
-                kus_obrazu(&mut f, &zaplaty, posun, &mut kus[..n])?;
-                h.pridaj(&kus[..n]);
+        let mut p = Priebeh::novy(if zapisovat { "zápis" } else { "čítanie obrazu" }, dlzka);
+        let mut posun = 0;
+        while posun < dlzka {
+            let n = KUS.min((dlzka - posun) as usize);
+            kus_obrazu(&mut f, &zaplaty, posun, &mut kus[..n])?;
+            h.pridaj(&kus[..n]);
+            kusy.push(Hasovac::novy().pridaj(&kus[..n]).dokonci());
+            if zapisovat {
                 zariadenie.zapis(posun, &kus[..n])?;
-                posun += n as u64;
-                p.krok(posun);
             }
+            posun += n as u64;
+            p.krok(posun);
+        }
+        if zapisovat {
             zariadenie.dokonci()?;
-        } else {
-            let mut posun = 0;
-            while posun < dlzka {
-                let n = KUS.min((dlzka - posun) as usize);
-                kus_obrazu(&mut f, &zaplaty, posun, &mut kus[..n])?;
-                h.pridaj(&kus[..n]);
-                posun += n as u64;
-            }
         }
         let ocakavany = h.dokonci();
         let mut h2 = Hasovac::novy();
         let mut p = Priebeh::novy("overenie", dlzka);
         let mut posun = 0;
-        while posun < dlzka {
+        let mut prva_chyba = None;
+        for ocakavany_kus in &kusy {
             let n = KUS.min((dlzka - posun) as usize);
             zariadenie.citaj(posun, &mut kus[..n])?;
             h2.pridaj(&kus[..n]);
+            if prva_chyba.is_none() && Hasovac::novy().pridaj(&kus[..n]).dokonci() != *ocakavany_kus {
+                prva_chyba = Some(posun);
+            }
             posun += n as u64;
             p.krok(posun);
         }
         let skutocny = h2.dokonci();
+        if zapisovat {
+            zariadenie.ohlas_nove_oddiely();
+        }
         if skutocny != ocakavany {
+            let kde = prva_chyba
+                .map_or(String::new(), |o| format!(" – prvý rozdiel v oblasti {} MB", o / 1_000_000));
             return Err(Chyba(
                 1,
-                format!("OVERENIE ZLYHALO: na disku je iný obsah ({skutocny} ≠ {ocakavany})"),
+                format!("OVERENIE ZLYHALO: na disku je iný obsah{kde} (karta môže byť poškodená)"),
             ));
         }
         println!(
