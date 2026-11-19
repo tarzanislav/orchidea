@@ -21,18 +21,21 @@ zvukom, hudbou, pohybom a diskami. Spája ich jedna gramatika a jedno jadro, nie
 
 | Balík | Vrstva | Obsah |
 |---|---|---|
-| `jadro` | 1 – gramatika | Signál, Štruktúra, Vlastnosť, Operácia, Parameter, Graf, Odkaz, Výber, Zmena, Výstup, Pohľad, Nástroj; denník; deterministická matematika; BLAKE3 |
-| `gpu` | 2 – schopnosť | jazyk kernelov, prekladače do SPIR-V, HLSL, MSL a WGSL; zariadenia Vulkan, Direct3D 12, Metal a referenčný procesor |
+| `jadro` | 1 – gramatika | Signál, Štruktúra, Vlastnosť, Operácia, Parameter, Graf, Odkaz, Výber, Zmena, Výstup, Pohľad, Nástroj; denník; deterministická matematika; BLAKE3; vyhodnotenie len potrebnej oblasti |
+| `gpu` | 2 – schopnosť | jazyk kernelov, prekladače do SPIR-V, HLSL, MSL a WGSL; zariadenia Vulkan, Direct3D 12, Metal; vektorový vykonávač na procesore (SIMD + všetky jadrá) a referenčný interpret |
 | `neuron` | 2 – schopnosť | výpočtový motor MYKORÍZY: tenzor ako signál, presné a rýchle jadrá, 8-bitové a trojhodnotové váhy, učenie |
 
 Skúšky prechádzajú na Linuxe (x86-64, ARM64), Windows, macOS, Androide a vo WebAssembly s bitovo rovnakými
 výsledkami; násobenie matíc na GPU (Vulkan, Direct3D 12, Metal) je bitovo rovnaké ako na procesore.
-Ďalej: **E1 – Pohľad**.
+ORCHIDEA je pre **všetky zariadenia od Raspberry Pi 3** – CI overuje aj profil slabého zariadenia (4 jadrá, 1 GB,
+bez GPU) a 32-bitový ARM. Model efektívnosti **FOTOSYNTÉZA**: rýchlosť bez straty kvality odstránením práce,
+ktorá výsledok nemení. Ďalej: **E1 – Pohľad**.
 
 ```
 cargo test --workspace                                   # všetky skúšky
 cargo run --release -p orchidea-neuron --example meranie  # meranie výkonu
 cargo run -p orchidea-gpu --example zariadenia            # dostupné výpočtové zariadenia
+cargo run --release -p orchidea-gpu --example vektor      # interpret vs. vektorový vykonávač
 ```
 
 ## Kópie repozitára
