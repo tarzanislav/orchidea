@@ -330,13 +330,18 @@ impl Disk {
         Ok(())
     }
 
-    /// Dokončí zápis a povie Windows, aby znovu prečítal tabuľku oddielov.
+    /// Dokončí zápis (všetko je fyzicky na médiu).
     pub fn dokonci(&mut self) -> io::Result<()> {
         // SAFETY: platná rukoväť.
         if unsafe { FlushFileBuffers(self.h.0) } == 0 {
             return Err(io::Error::last_os_error());
         }
-        let _ = ioctl(&self.h, IOCTL_DISK_UPDATE_PROPERTIES, &[], &mut []);
         Ok(())
+    }
+
+    /// Povie Windows, aby znovu prečítal tabuľku oddielov – až po overení, lebo Windows po pripojení
+    /// oddielu FAT32 doň sám zapisuje (napr. priečinok System Volume Information).
+    pub fn ohlas_nove_oddiely(&mut self) {
+        let _ = ioctl(&self.h, IOCTL_DISK_UPDATE_PROPERTIES, &[], &mut []);
     }
 }
