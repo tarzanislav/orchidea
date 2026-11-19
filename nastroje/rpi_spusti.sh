@@ -2,6 +2,8 @@
 # Skúšky a merania ORCHIDEE na skutočnom zariadení (Raspberry Pi, kancelárske PC s Linuxom).
 # Spustenie: sh spusti.sh   – výsledok sa zapíše do súboru vysledky.txt vedľa tohto skriptu.
 cd "$(dirname "$0")"
+# balík z GitHubu (zip) nezachová príznak spustiteľnosti
+chmod +x zariadenia meranie vektor skusky/* 2>/dev/null
 vystup=vysledky.txt
 {
   echo "=== ORCHIDEA – výsledky na zariadení ($(date '+%Y-%m-%d %H:%M'))"
