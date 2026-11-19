@@ -128,38 +128,39 @@ jobs:
           path: orchidea-rpi-32bit-armv7
 
   rpi1:
-    name: Skúšky – Raspberry Pi 1 a Zero (ARMv6, 1 jadro, 512 MB, QEMU)
+    name: Skúšky – Raspberry Pi 1 a Zero (ARMv6 – procesor ARM1176, 1 jadro, 512 MB, QEMU)
     runs-on: ubuntu-latest
     env:
-      CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+      # statický program s knižnicou musl pre ARMv6: knižnice a štartovací kód Ubuntu sú pre ARMv7
+      # a na RPi 1 a Zero by program spadol hneď pri štarte (neplatná inštrukcia)
+      CARGO_TARGET_ARM_UNKNOWN_LINUX_MUSLEABIHF_LINKER: arm-linux-gnueabihf-gcc
     steps:
       - uses: actions/checkout@v5
       - name: Prekladač a cieľ ARMv6
         run: |
           rustup toolchain install && rustup show
-          rustup target add arm-unknown-linux-gnueabihf
+          rustup target add arm-unknown-linux-musleabihf
       - name: Krížový linker a QEMU
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-arm-linux-gnueabihf libc6-dev-armhf-cross
+          sudo apt-get install -y -qq gcc-arm-linux-gnueabihf
           printf 'FROM ubuntu:24.04\nRUN apt-get update -qq && apt-get install -y -qq qemu-user\n' | docker build -q -t rpi1 -
       - name: Zostavenie skúšok pre ARMv6
         run: |
-          cargo test --locked --workspace --release --target arm-unknown-linux-gnueabihf --no-run --message-format=json \
+          cargo test --locked --workspace --release --target arm-unknown-linux-musleabihf --no-run --message-format=json \
             | jq -r 'select(.profile.test == true and .executable != null) | .executable' > binarky.txt
           cat binarky.txt
-      - name: Skúšky v kontajneri – 1 jadro, 512 MB, bez GPU
+      - name: Skúšky v kontajneri – procesor ARM1176 (ako RPi 1 a Zero), 1 jadro, 512 MB, bez GPU
         run: |
           for b in $(cat binarky.txt); do
             echo "== $b"
-            docker run --rm --memory=512m --memory-swap=512m --cpus=1 \
-              -e ORCHIDEA_BEZ_GPU=1 -v /usr/arm-linux-gnueabihf:/usr/arm-linux-gnueabihf:ro \
-              -v "$PWD:$PWD" -w "$PWD" rpi1 qemu-arm -L /usr/arm-linux-gnueabihf "$b" || exit 1
+            docker run --rm --memory=512m --memory-swap=512m --cpus=1 -e ORCHIDEA_BEZ_GPU=1 \
+              -v "$PWD:$PWD" -w "$PWD" rpi1 qemu-arm -cpu arm1176 "$b" || exit 1
           done
-      - name: Balík pre skutočné Raspberry Pi (32-bit ARMv6 – RPi 1, Zero, Zero W)
+      - name: Balík pre skutočné Raspberry Pi (32-bit ARMv6 – RPi 1, Zero, Zero W; statický, beží na každom systéme)
         run: |
-          cargo build --locked --workspace --release --examples --target arm-unknown-linux-gnueabihf
-          sh nastroje/rpi_balik.sh orchidea-rpi-32bit-armv6 target/arm-unknown-linux-gnueabihf/release/examples < binarky.txt
+          cargo build --locked --workspace --release --examples --target arm-unknown-linux-musleabihf
+          sh nastroje/rpi_balik.sh orchidea-rpi-32bit-armv6 target/arm-unknown-linux-musleabihf/release/examples < binarky.txt
       - uses: actions/upload-artifact@v4
         with:
           name: orchidea-rpi-32bit-armv6

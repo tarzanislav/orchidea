@@ -9,7 +9,8 @@ use orchidea_jadro::{Chyba, Vysledok};
 use std::ffi::{CStr, c_void};
 
 #[cfg(unix)]
-#[cfg_attr(any(target_os = "linux", target_os = "android"), link(name = "dl"))]
+// v musl je dlopen priamo v knižnici C (statický program na Raspberry Pi 1 a Zero ho má len ako náhradu)
+#[cfg_attr(all(any(target_os = "linux", target_os = "android"), not(target_env = "musl")), link(name = "dl"))]
 unsafe extern "C" {
     fn dlopen(subor: *const std::ffi::c_char, priznaky: i32) -> *mut c_void;
     fn dlsym(kniznica: *mut c_void, meno: *const std::ffi::c_char) -> *mut c_void;

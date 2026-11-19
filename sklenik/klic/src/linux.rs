@@ -1,5 +1,7 @@
-//! KLÍČ na Linuxe: štart systému, tepelný strážca nad súbormi jadra (`/sys`) a stav na obrazovke.
+//! KLÍČ na Linuxe: štart systému, periférie a sieť, tepelný strážca nad súbormi jadra (`/sys`) a stav na
+//! obrazovke.
 
+use crate::periferie::Supis;
 use crate::strazca::{Hardver, Profil, Regulator, Uroven, stupen_ventilatora, urovne};
 use crate::sys;
 use std::fs;
@@ -151,8 +153,21 @@ fn pripoj_systemove() {
     }
 }
 
+/// Zapne všetky sieťové rozhrania (ovládače sú v jadre, rozhrania však jadro necháva vypnuté).
+fn zapni_siet() {
+    for z in fs::read_dir("/sys/class/net").into_iter().flatten().flatten() {
+        if let Some(meno) = z.file_name().to_str() {
+            match sys::zapni_rozhranie(meno) {
+                Ok(true) => hlas(&format!("sieť: rozhranie {meno} zapnuté")),
+                Ok(false) => {}
+                Err(e) => hlas(&format!("sieť: rozhranie {meno} sa nepodarilo zapnúť: {e}")),
+            }
+        }
+    }
+}
+
 /// Stavová obrazovka – prekreslí sa len pri zmene (žiadne zbytočné prebúdzanie).
-fn ukaz_stav(model: &str, teplota: Option<f64>, r: &Regulator, cas_startu: Duration) {
+fn ukaz_stav(model: &str, teplota: Option<f64>, r: &Regulator, cas_startu: Duration, p: &Supis) {
     let t = teplota.map_or("bez snímača".to_string(), |t| format!("{t:.1} °C"));
     let u = r.uroven();
     let text = format!(
@@ -165,6 +180,11 @@ fn ukaz_stav(model: &str, teplota: Option<f64>, r: &Regulator, cas_startu: Durat
         u.jadra,
         u.takt_khz / 1000
     );
+    let mut text = text;
+    text.push('\n');
+    for riadok in p.obrazovka() {
+        text.push_str(&format!("  {riadok}\n"));
+    }
     if let Ok(mut tty) = fs::OpenOptions::new().write(true).open("/dev/tty1") {
         let _ = tty.write_all(text.as_bytes());
     }
@@ -181,6 +201,10 @@ pub fn spusti() {
         || std::env::args().any(|a| a == "--skuska");
     let len_sledovanie = !pid1 && !std::env::args().any(|a| a == "--riadit");
     let model = citaj("/proc/device-tree/model").unwrap_or_else(|| "neznáme zariadenie".into());
+    if pid1 {
+        zapni_siet();
+    }
+    let mut supis = Supis::nacitaj(Path::new("/"));
     let profil = Profil::pre_model(&model);
     let mut hw = Sysfs::najdi();
     let mut regulator = Regulator::novy(urovne(&hw.takty(), hw.jadier()), profil);
@@ -196,6 +220,7 @@ pub fn spusti() {
         profil.strop,
         if len_sledovanie { " (len sledovanie)" } else { "" }
     ));
+    hlas(&supis.riadok());
 
     let mut posledny = Instant::now();
     let mut zobrazene: Option<(i64, usize)> = None;
@@ -217,9 +242,19 @@ pub fn spusti() {
         if pid1 {
             sys::zber_procesov();
         }
+        // pripojená klávesnica, myš, kábel alebo karta sa objaví bez reštartu
+        let novy = Supis::nacitaj(Path::new("/"));
+        let zmena_periferii = novy != supis;
+        if zmena_periferii {
+            if pid1 && novy.siet.len() != supis.siet.len() {
+                zapni_siet();
+            }
+            hlas(&novy.riadok());
+            supis = novy;
+        }
         let stav = (teplota.map_or(-1000, |t| (t * 2.0).round() as i64), regulator.index());
-        if zobrazene != Some(stav) {
-            ukaz_stav(&model, teplota, &regulator, cas_startu);
+        if zobrazene != Some(stav) || zmena_periferii {
+            ukaz_stav(&model, teplota, &regulator, cas_startu, &supis);
             if !pid1 || skuska {
                 hlas(&format!(
                     "teplota {}, úroveň {}/{} (jadrá {}, takt {} MHz)",

@@ -1,19 +1,58 @@
 # SKLENÍK – nastavenie firmvéru Raspberry Pi
-# 64-bitové jadro SKLENÍKA a celý systém v pamäti
-arm_64bit=1
-kernel=kernel8.img
-initramfs initramfs.cpio.gz followkernel
+# Univerzálna karta (R86): firmvér každého modelu si tu nájde svoje jadro a svoj systém v pamäti.
+# Časti [pi…] platia len pre daný model; neskoršie nastavenie prepíše skoršie.
 
+[all]
 # rýchly štart: bez čakania a dúhovej obrazovky
 boot_delay=0
 disable_splash=1
 disable_overscan=1
-
 # teplo (R81): nikdy nepretaktovať; poistka firmvéru pod hranicou škrtenia (strážca KLÍČ drží teplotu nižšie)
 temp_limit=75
-# RPi 3 B+: firmvér zníži takt 1,4 → 1,2 GHz už pri 60 °C
-temp_soft_limit=60
-
 # grafika od firmvéru (jednoduchý framebuffer); sériová linka pre ladenie (adaptér USB–TTL)
 gpu_mem=64
 enable_uart=1
+
+# RPi 1, Zero, Zero W – 32-bit ARMv6 (časť [pi0] platí aj pre Zero 2 W, tú prepíše [pi02] nižšie)
+[pi1]
+kernel=kernel.img
+initramfs initramfs6.cpio.gz followkernel
+[pi0]
+kernel=kernel.img
+initramfs initramfs6.cpio.gz followkernel
+
+# RPi 2 – 32-bit ARMv7
+[pi2]
+kernel=kernel7.img
+initramfs initramfs7.cpio.gz followkernel
+
+# RPi 3, 3+, Zero 2 W a RPi 4, 400 – 64-bit
+[pi3]
+arm_64bit=1
+kernel=kernel8.img
+initramfs initramfs8.cpio.gz followkernel
+[pi3+]
+# RPi 3 B+: firmvér zníži takt 1,4 → 1,2 GHz už pri 60 °C
+temp_soft_limit=60
+[pi02]
+arm_64bit=1
+kernel=kernel8.img
+initramfs initramfs8.cpio.gz followkernel
+[pi4]
+arm_64bit=1
+kernel=kernel8.img
+initramfs initramfs8.cpio.gz followkernel
+[pi400]
+arm_64bit=1
+kernel=kernel8.img
+initramfs initramfs8.cpio.gz followkernel
+
+# RPi 5, 500 – 64-bit jadro optimalizované pre BCM2712 (stránky 16 kB), systém rovnaký ako pre RPi 3/4
+[pi5]
+kernel=kernel_2712.img
+initramfs initramfs8.cpio.gz followkernel
+[pi500]
+kernel=kernel_2712.img
+initramfs initramfs8.cpio.gz followkernel
+
+[all]

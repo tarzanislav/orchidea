@@ -162,6 +162,22 @@
       "kde": "CI – pamäť zostaveného jadra",
       "ucel": "jadro sa nezostavuje znova, kým sa nezmení jeho nastavenie",
       "posudenie_charty": "nástroj zostavenia"
+    },
+    {
+      "meno": "musl – knižnica C, ktorú Rust pribalí k statickým programom (ciele *-linux-musl*)",
+      "trieda": "B",
+      "licencia": "MIT",
+      "kde": "KLÍČ v obraze SKLENÍKA (statický program), skúšky ARMv6",
+      "ucel": "statický program bez závislosti od systému – beží na každom Raspberry Pi vrátane RPi 1 a Zero (ARMv6)",
+      "posudenie_charty": "súčasť platformy Rust (ako std); permisívna licencia"
+    },
+    {
+      "meno": "actions/download-artifact",
+      "trieda": "B",
+      "licencia": "MIT (nástroj CI)",
+      "kde": "CI – zostavenie univerzálnej karty z jadier a programov zostavených súbežne",
+      "ucel": "odovzdanie výstupov medzi krokmi CI",
+      "posudenie_charty": "nástroj zostavenia"
     }
   ],
   "triedy": {
