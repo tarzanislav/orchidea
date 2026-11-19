@@ -178,6 +178,33 @@
       "kde": "CI – zostavenie univerzálnej karty z jadier a programov zostavených súbežne",
       "ucel": "odovzdanie výstupov medzi krokmi CI",
       "posudenie_charty": "nástroj zostavenia"
+    },
+    {
+      "meno": "jadro Linux (kernel.org, dlhodobá verzia 6.18) pre Odroid C4",
+      "trieda": "B",
+      "licencia": "GPL-2.0",
+      "verzia": "6.18.64 (ODROID_JADRO v .github/workflows/sklenik.yml)",
+      "kde": "obraz SKLENÍKA – odroid/Image, zostavené bez úprav zdrojového kódu, len s vlastným nastavením sklenik/jadro.config a sklenik/jadro-odroid.config",
+      "ucel": "ovládače dosky Odroid C4 (Amlogic S905X3) – R88",
+      "posudenie_charty": "platforma; KLÍČ sa s jadrom nezlučuje (hranica jadro – používateľský priestor); zdroje a nastavenie sú v obraze (ZDROJE.txt, odroid/jadro-c4.config)"
+    },
+    {
+      "meno": "U-Boot – zavádzač (u-boot/u-boot, odroid-c4_defconfig)",
+      "trieda": "B",
+      "licencia": "GPL-2.0+",
+      "verzia": "v2026.10 (UBOOT_TAG)",
+      "kde": "obraz SKLENÍKA – prvé 4 MiB karty pred oddielom (len pre Odroid C4)",
+      "ucel": "štart Odroidu C4 – nájde extlinux/extlinux.conf a spustí jadro; neskôr ho môže nahradiť vlastný SPÚŠŤAČ (R88)",
+      "posudenie_charty": "slobodný projekt; samostatný program pred štartom systému, so SKLENÍKOM sa nezlučuje"
+    },
+    {
+      "meno": "podpísané časti zavádzača Amlogic pre Odroid C4 (LibreELEC/amlogic-boot-fip: bl2, bl30, bl31, firmvér pamäte DDR, nástroj aml_encrypt_g12a)",
+      "trieda": "B",
+      "licencia": "binárne súbory výrobcu Amlogic a Hardkernel (šírené projektmi LibreELEC a U-Boot)",
+      "verzia": "b54e3bbbcf5613d451230d359d264844eeda7166 (FIP_COMMIT)",
+      "kde": "obraz SKLENÍKA – prvé 4 MiB karty (spolu s U-Boot); nástroj na podpis len v CI",
+      "ucel": "procesor S905X3 spustí len zavádzač podpísaný výrobcom – nenahraditeľné (ako firmvér Raspberry Pi)",
+      "posudenie_charty": "platforma výrobcu hardvéru"
     }
   ],
   "triedy": {

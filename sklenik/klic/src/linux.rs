@@ -361,7 +361,14 @@ pub fn spusti() {
     let pripravene = uptime();
     // meranie rýchlosti karty na pozadí (pár sekúnd po štarte, aby nebrzdilo štart)
     let meranie = std::sync::Arc::new(std::sync::Mutex::new(MeranieKarty::Caka));
-    let karta = supis.ulozisko.iter().find(|u| u.meno.starts_with("mmcblk")).cloned();
+    // meria sa karta, z ktorej SKLENÍK štartoval (má SKLENIK.TXT); inak prvá karta SD/eMMC
+    let karta = nastavenie
+        .as_ref()
+        .and_then(|(cesta, _)| supis.ulozisko.iter().find(|u| format!("/dev/{}", u.meno) == *cesta))
+        .or_else(|| supis.ulozisko.iter().find(|u| u.meno.starts_with("mmcblk")))
+        .filter(|u| u.meno.starts_with("mmcblk"))
+        .cloned();
+    let merana_karta = karta.as_ref().map(|u| u.meno.clone()).unwrap_or_default();
     let ma_kartu = karta.is_some();
     if let Some(u) = karta {
         let m = meranie.clone();
@@ -417,6 +424,10 @@ pub fn spusti() {
             if pid1 && novy.siet.len() != supis.siet.len() {
                 zapni_siet();
             }
+            // obrazovka sa môže objaviť až po štarte (ovládač grafiky Odroidu) alebo zmeniť rozlíšenie
+            if !len_sledovanie && novy.obrazovky != supis.obrazovky {
+                displej = Displej::otvor();
+            }
             hlas(&novy.riadok());
             supis = novy;
             podpatie_bolo |= supis.podpatie == Some(true);
@@ -460,6 +471,7 @@ pub fn spusti() {
                         pripravene_s: pripravene,
                         verzia: crate::VERZIA,
                         meranie_karty: &meranie_karty,
+                        merana_karta: &merana_karta,
                     };
                     let jazyk = Jazyk::z_kodu(n.and_then(|n| n.jazyk.as_deref()));
                     let platno = obrazovka::nakresli(&pismo, d.sirka, d.vyska, &stav, jazyk);

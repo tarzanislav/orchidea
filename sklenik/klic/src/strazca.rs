@@ -30,6 +30,8 @@ pub struct Profil {
 impl Profil {
     /// Profil podľa modelu (text z `/proc/device-tree/model`). Schválené R81: RPi 3 – strop 70 °C,
     /// RPi 4 a 5 – 75 °C; cieľ je o 10 °C nižšie (vlastník: minimalizovať teplotu).
+    /// Teplotný profil podľa modelu. Odroid C4 (Amlogic S905X3, 12 nm) má rovnaký opatrný profil ako
+    /// RPi 3 – na doske bez chladiča je to bezpečná voľba, kým sa nezmeria na skutočnom zariadení.
     pub fn pre_model(model: &str) -> Profil {
         if model.contains("Raspberry Pi 4")
             || model.contains("Raspberry Pi 5")

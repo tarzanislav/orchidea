@@ -83,6 +83,8 @@ pub struct Stav<'a> {
     pub verzia: &'a str,
     /// Meranie rýchlosti karty, z ktorej systém štartoval.
     pub meranie_karty: &'a MeranieKarty,
+    /// Meno zariadenia, ktoré sa meria (napr. mmcblk0).
+    pub merana_karta: &'a str,
 }
 
 /// Teplota slovom a farbou.
@@ -284,7 +286,7 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
             j.t("disk USB", "disk USB", "USB disk")
         };
         let text = format!("{druh} {}", velkost_disku(u.bajtov, j));
-        let (rychlost, farba) = if !u.meno.starts_with("mmcblk") {
+        let (rychlost, farba) = if u.meno != s.merana_karta {
             (String::new(), TLMENY)
         } else {
             match s.meranie_karty {
@@ -456,6 +458,7 @@ mod skusky {
             pripravene_s: Some(2.4),
             verzia: "19. 11. 2026 · f26272c",
             meranie_karty: &MeranieKarty::Hotovo(22.4, 1830.0),
+            merana_karta: "mmcblk0",
             vykon: 1.0,
             podpatie: Some(false),
             podpatie_bolo: false,
