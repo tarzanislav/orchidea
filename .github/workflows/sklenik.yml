@@ -131,7 +131,7 @@ jobs:
       - name: Nástroje
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq dosfstools mtools fdisk qemu-system-arm
+          sudo apt-get install -y -qq dosfstools mtools fdisk qemu-system-arm device-tree-compiler
       - uses: actions/download-artifact@v4
         with:
           pattern: jadro-*
@@ -190,7 +190,9 @@ jobs:
               echo "✅ $meno"; return 0
             fi
             echo "❌ nenaštartoval" >> "$GITHUB_STEP_SUMMARY"
-            echo "❌ $meno"; head -60 "$log"; echo "…"; tail -40 "$log"; return 1
+            echo "❌ $meno"; head -60 "$log"; echo "…"
+            grep -E -A6 "Unable to handle|Internal error|PC is at|Kernel panic|Run /init" "$log" | head -60; echo "…"
+            tail -30 "$log"; return 1
           }
           spolocne="rdinit=/init sklenik.skuska=1 loglevel=7"
           chyby=0
@@ -200,8 +202,13 @@ jobs:
           skusaj "Raspberry Pi 2 (ARMv7)" qemu-rpi2.log qemu-system-arm -M raspi2b -m 1G \
             -kernel boot/kernel7.img -dtb boot/bcm2709-rpi-2-b.dtb -initrd boot/initramfs7.cpio.gz \
             -append "earlycon=pl011,mmio32,0x3f201000 console=ttyAMA0,115200 $spolocne" || chyby=$((chyby+1))
+          # QEMU nenapodobňuje blok správy napájania BCM2835 (jeho ovládač by v emulátore spadol) – len pre
+          # emulátor sa v popise hardvéru vypne; na karte zostáva popis bez zmeny
+          cp boot/bcm2708-rpi-zero.dtb qemu-zero.dtb
+          pm=$(fdtget -l qemu-zero.dtb /soc | grep -m1 '^watchdog@' || true)
+          if [ -n "$pm" ]; then fdtput -t s qemu-zero.dtb "/soc/$pm" status disabled; echo "emulátor: /soc/$pm vypnutý"; fi
           skusaj "Raspberry Pi Zero (ARMv6)" qemu-rpi0.log qemu-system-arm -M raspi0 -m 512M \
-            -kernel boot/kernel.img -dtb boot/bcm2708-rpi-zero.dtb -initrd boot/initramfs6.cpio.gz \
+            -kernel boot/kernel.img -dtb qemu-zero.dtb -initrd boot/initramfs6.cpio.gz \
             -append "earlycon=pl011,mmio32,0x20201000 console=ttyAMA0,115200 $spolocne" || chyby=$((chyby+1))
           # RPi 5 QEMU nemá – jadro pre RPi 5 sa skúša aspoň na všeobecnom stroji s procesorom Cortex-A76
           skusaj "Jadro RPi 5 na procesore Cortex-A76 (nie celé RPi 5)" qemu-rpi5.log qemu-system-aarch64 \

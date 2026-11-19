@@ -135,7 +135,10 @@ impl Supis {
 
         // obrazovka: framebuffer od firmvéru a výstupy grafického ovládača, ak je v jadre
         let grafika = sys.join("class/graphics");
-        for fb in polozky(&grafika).into_iter().filter(|n| n.starts_with("fb")) {
+        for fb in polozky(&grafika)
+            .into_iter()
+            .filter(|n| n.len() > 2 && n.starts_with("fb") && n[2..].bytes().all(|b| b.is_ascii_digit()))
+        {
             let rozmer = citaj(grafika.join(&fb).join("virtual_size")).map(|r| r.replace(',', "x"));
             s.obrazovky.push(match rozmer {
                 Some(r) => format!("{fb} {r}"),
@@ -382,10 +385,12 @@ mod skusky {
     }
 
     #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "WASI nemá dočasný priečinok")]
     fn supis_raspberry_pi_s_klavesnicou_mysou_a_sietou() {
         let s = Strom::novy("rpi");
         let kluce = format!("{:x}", (1u64 << KEY_A) | (1u64 << KEY_SPACE));
         s.subor("sys/class/graphics/fb0/virtual_size", "1920,1080")
+            .subor("sys/class/graphics/fbcon/rotate", "0")
             .subor("sys/class/input/event0/device/name", "Klavesnica USB")
             .subor("sys/class/input/event0/device/capabilities/ev", "120013")
             .subor("sys/class/input/event0/device/capabilities/key", &format!("0 0 0 {kluce}"))
@@ -452,6 +457,7 @@ mod skusky {
     }
 
     #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "WASI nemá dočasný priečinok")]
     fn prazdne_zariadenie() {
         let s = Strom::novy("prazdne");
         let p = Supis::nacitaj(&s.0);
