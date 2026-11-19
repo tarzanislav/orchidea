@@ -1,5 +1,5 @@
 //! Volania jadra Linux, ktoré štandardná knižnica Rustu nemá (pripojenie súborových systémov, vypnutie,
-//! zber ukončených procesov, zapnutie sieťového rozhrania). Jediné miesto KLÍČA s nebezpečným kódom.
+//! zber ukončených procesov, zapnutie sieťového rozhrania, obrazovka, meno zariadenia). Jediné miesto KLÍČA s nebezpečným kódom.
 
 #![allow(unsafe_code)]
 
@@ -20,6 +20,7 @@ unsafe extern "C" {
     fn socket(domena: c_int, typ: c_int, protokol: c_int) -> c_int;
     fn ioctl(fd: c_int, poziadavka: c_ulong, ...) -> c_int;
     fn close(fd: c_int) -> c_int;
+    fn sethostname(meno: *const u8, dlzka: usize) -> c_int;
 }
 
 pub const MS_NOSUID: c_ulong = 2;
@@ -36,6 +37,10 @@ const SOCK_CLOEXEC: c_int = 0o2000000;
 const SIOCGIFFLAGS: c_ulong = 0x8913;
 const SIOCSIFFLAGS: c_ulong = 0x8914;
 const IFF_UP: i16 = 1;
+const FBIOGET_VSCREENINFO: c_ulong = 0x4600;
+const KDSETMODE: c_ulong = 0x4B3A;
+const KD_GRAPHICS: c_ulong = 1;
+
 /// `struct ifreq`: meno (16 B) + spoločná časť; 40 B stačí na 32- aj 64-bitovom jadre.
 const IFREQ: usize = 40;
 
@@ -102,6 +107,36 @@ pub fn zapni_rozhranie(meno: &str) -> io::Result<bool> {
     // SAFETY: fd je náš otvorený deskriptor, zatvára sa raz.
     unsafe { close(fd) };
     vysledok
+}
+
+/// Popis obrazovky od jadra (`struct fb_var_screeninfo` ako 40 slov po 32 bitoch).
+pub fn fb_vlastnosti(fb: &std::fs::File) -> io::Result<[u32; 40]> {
+    use std::os::fd::AsRawFd;
+    let mut v = [0u32; 40];
+    // SAFETY: v má presne veľkosť fb_var_screeninfo (160 B), deskriptor je platný počas volania.
+    if unsafe { ioctl(fb.as_raw_fd(), FBIOGET_VSCREENINFO, v.as_mut_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(v)
+}
+
+/// Prepne konzolu do grafického režimu – jadro potom do obrazovky nekreslí text.
+pub fn graficka_konzola(tty: &std::fs::File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: KDSETMODE berie celé číslo hodnotou; deskriptor je platný.
+    if unsafe { ioctl(tty.as_raw_fd(), KDSETMODE, KD_GRAPHICS) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Nastaví meno zariadenia v sieti (ako `hostname`).
+pub fn nastav_meno(meno: &str) -> io::Result<()> {
+    // SAFETY: ukazovateľ a dĺžka pochádzajú z platného reťazca.
+    if unsafe { sethostname(meno.as_ptr(), meno.len()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn cstr(s: &str) -> io::Result<CString> {

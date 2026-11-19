@@ -1,11 +1,15 @@
 //! KLÍČ na Linuxe: štart systému, periférie a sieť, tepelný strážca nad súbormi jadra (`/sys`) a stav na
 //! obrazovke.
 
+use crate::obrazovka::{self, FormatBodu, Jazyk, Stav};
 use crate::periferie::Supis;
 use crate::strazca::{Hardver, Profil, Regulator, Uroven, stupen_ventilatora, urovne};
 use crate::sys;
+use orchidea_pismo::{Pismo, Platno};
+use sklenik_karta::NastavenieZariadenia;
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -166,6 +170,82 @@ fn zapni_siet() {
     }
 }
 
+/// Grafická obrazovka (framebuffer jadra) – zapisujú sa len zmenené riadky.
+struct Displej {
+    fb: fs::File,
+    sirka: usize,
+    vyska: usize,
+    riadok_bajtov: u64,
+    zaciatok: u64,
+    format: FormatBodu,
+    predosle: Option<Platno>,
+    _tty: Option<fs::File>,
+}
+
+impl Displej {
+    fn otvor() -> Option<Displej> {
+        let fb = fs::OpenOptions::new().read(true).write(true).open("/dev/fb0").ok()?;
+        let v = sys::fb_vlastnosti(&fb).ok()?;
+        let format = FormatBodu::z_jadra(&v)?;
+        let (sirka, vyska) = (v[0] as usize, v[1] as usize);
+        if sirka < 160 || vyska < 120 {
+            return None;
+        }
+        let riadok_bajtov = citaj("/sys/class/graphics/fb0/stride")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(v[2] as u64 * format.bajtov as u64);
+        let zaciatok = v[5] as u64 * riadok_bajtov + v[4] as u64 * format.bajtov as u64;
+        // konzola v grafickom režime: jadro do obrazovky nepíše
+        let tty = fs::OpenOptions::new().read(true).write(true).open("/dev/tty1").ok();
+        if let Some(t) = &tty
+            && let Err(e) = sys::graficka_konzola(t)
+        {
+            hlas(&format!("obrazovka: grafický režim konzoly sa nepodaril: {e}"));
+        }
+        hlas(&format!("obrazovka: {sirka}×{vyska}, {} bitov na bod", format.bajtov * 8));
+        Some(Displej { fb, sirka, vyska, riadok_bajtov, zaciatok, format, predosle: None, _tty: tty })
+    }
+
+    /// Zapíše plátno; vráti počet zapísaných riadkov.
+    fn ukaz(&mut self, p: Platno) -> usize {
+        let mut bajty = Vec::with_capacity(self.sirka * self.format.bajtov);
+        let mut zapisane = 0;
+        for y in 0..self.vyska {
+            let riadok = &p.body[y * self.sirka..(y + 1) * self.sirka];
+            if self.predosle.as_ref().is_some_and(|q| &q.body[y * self.sirka..(y + 1) * self.sirka] == riadok)
+            {
+                continue;
+            }
+            self.format.preved(riadok, &mut bajty);
+            if self.fb.write_at(&bajty, self.zaciatok + y as u64 * self.riadok_bajtov).is_ok() {
+                zapisane += 1;
+            }
+        }
+        self.predosle = Some(p);
+        zapisane
+    }
+}
+
+/// Nastavenie zariadenia zo súboru SKLENIK.TXT na karte – číta sa priamo z disku, len na čítanie.
+fn nacitaj_nastavenie(supis: &Supis) -> Option<(String, NastavenieZariadenia)> {
+    for u in &supis.ulozisko {
+        let cesta = format!("/dev/{}", u.meno);
+        let Ok(mut f) = fs::File::open(&cesta) else { continue };
+        if let Ok(text) = sklenik_karta::citaj_nastavenie(&mut f) {
+            let (n, upozornenia) = NastavenieZariadenia::z_textu(&text);
+            for up in upozornenia {
+                hlas(&format!("nastavenie ({cesta}): {up}"));
+            }
+            return Some((cesta, n));
+        }
+    }
+    None
+}
+
+fn uptime() -> Option<f64> {
+    citaj("/proc/uptime")?.split_whitespace().next()?.parse().ok()
+}
+
 /// Stavová obrazovka – prekreslí sa len pri zmene (žiadne zbytočné prebúdzanie).
 fn ukaz_stav(model: &str, teplota: Option<f64>, r: &Regulator, cas_startu: Duration, p: &Supis) {
     let t = teplota.map_or("bez snímača".to_string(), |t| format!("{t:.1} °C"));
@@ -205,6 +285,26 @@ pub fn spusti() {
         zapni_siet();
     }
     let mut supis = Supis::nacitaj(Path::new("/"));
+    let mut nastavenie = nacitaj_nastavenie(&supis);
+    let nastav_zariadenie = |n: &Option<(String, NastavenieZariadenia)>| {
+        if let Some((cesta, n)) = n {
+            hlas(&format!(
+                "nastavenie z {cesta}: meno {}, jazyk {}, Wi-Fi {}",
+                n.meno.as_deref().unwrap_or("–"),
+                n.jazyk.as_deref().unwrap_or("–"),
+                n.wifi.as_deref().unwrap_or("–")
+            ));
+            if pid1
+                && let Some(m) = &n.meno
+                && let Err(e) = sys::nastav_meno(m)
+            {
+                hlas(&format!("meno zariadenia sa nepodarilo nastaviť: {e}"));
+            }
+        }
+    };
+    nastav_zariadenie(&nastavenie);
+    let pismo = Pismo::stonka();
+    let mut displej = if len_sledovanie { None } else { Displej::otvor() };
     let profil = Profil::pre_model(&model);
     let mut hw = Sysfs::najdi();
     let mut regulator = Regulator::novy(urovne(&hw.takty(), hw.jadier()), profil);
@@ -221,6 +321,7 @@ pub fn spusti() {
         if len_sledovanie { " (len sledovanie)" } else { "" }
     ));
     hlas(&supis.riadok());
+    let pripravene = uptime();
 
     let mut posledny = Instant::now();
     let mut zobrazene: Option<(i64, usize)> = None;
@@ -251,10 +352,39 @@ pub fn spusti() {
             }
             hlas(&novy.riadok());
             supis = novy;
+            // karta sa môže objaviť až chvíľu po štarte
+            if nastavenie.is_none() {
+                nastavenie = nacitaj_nastavenie(&supis);
+                nastav_zariadenie(&nastavenie);
+            }
         }
         let stav = (teplota.map_or(-1000, |t| (t * 2.0).round() as i64), regulator.index());
         if zobrazene != Some(stav) || zmena_periferii {
-            ukaz_stav(&model, teplota, &regulator, cas_startu, &supis);
+            match displej.as_mut() {
+                Some(d) => {
+                    let n = nastavenie.as_ref().map(|(_, n)| n);
+                    let stav = Stav {
+                        model: &model,
+                        meno: n.and_then(|n| n.meno.as_deref()),
+                        teplota,
+                        ciel: profil.ciel,
+                        strop: profil.strop,
+                        uroven: (regulator.index() + 1, regulator.pocet_urovni()),
+                        supis: &supis,
+                        pripravene_s: pripravene,
+                    };
+                    let jazyk = Jazyk::z_kodu(n.and_then(|n| n.jazyk.as_deref()));
+                    let platno = obrazovka::nakresli(&pismo, d.sirka, d.vyska, &stav, jazyk);
+                    let riadkov = d.ukaz(platno);
+                    if skuska {
+                        hlas(&format!(
+                            "obrazovka nakreslená: {}×{}, zapísaných riadkov {riadkov}",
+                            d.sirka, d.vyska
+                        ));
+                    }
+                }
+                None => ukaz_stav(&model, teplota, &regulator, cas_startu, &supis),
+            }
             if !pid1 || skuska {
                 hlas(&format!(
                     "teplota {}, úroveň {}/{} (jadrá {}, takt {} MHz)",
@@ -271,6 +401,10 @@ pub fn spusti() {
         if skuska && krokov >= 3 {
             hlas(&format!("SKLENÍK pripravený (štart KLÍČA {:.2} s)", cas_startu.as_secs_f64()));
             if pid1 {
+                // čas na snímku obrazovky v skúške (emulátor)
+                if displej.is_some() {
+                    std::thread::sleep(Duration::from_secs(6));
+                }
                 let e = sys::vypni(false);
                 hlas(&format!("vypnutie zlyhalo: {e}"));
                 loop {

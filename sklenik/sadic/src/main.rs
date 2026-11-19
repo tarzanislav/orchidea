@@ -8,11 +8,11 @@
 
 #[cfg_attr(not(windows), allow(dead_code))]
 mod disk;
-mod obraz;
 #[cfg(windows)]
 mod windows;
 
-use obraz::Nastavenie;
+use sklenik_karta as obraz;
+use sklenik_karta::Nastavenie;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::process::ExitCode;

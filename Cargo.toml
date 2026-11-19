@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["jadro", "gpu", "neuron", "sklenik/klic", "sklenik/sadic"]
+members = ["jadro", "gpu", "neuron", "pismo", "sklenik/karta", "sklenik/klic", "sklenik/sadic"]
 
 [workspace.package]
 version = "0.1.0"
@@ -15,6 +15,8 @@ authors = ["autori projektu ORCHIDEA"]
 [workspace.dependencies]
 orchidea-jadro = { path = "jadro" }
 orchidea-gpu = { path = "gpu" }
+orchidea-pismo = { path = "pismo" }
+sklenik-karta = { path = "sklenik/karta" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

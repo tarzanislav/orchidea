@@ -1,0 +1,15 @@
+[package]
+name = "sklenik-karta"
+description = "Karta SKLENÍKA: čítanie a úprava oddielu FAT32 a nastavenia zariadenia SKLENIK.TXT (spoločné pre SADIČ a KLÍČ)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[lints]
+workspace = true

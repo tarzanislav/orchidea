@@ -10,6 +10,10 @@
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod strazca;
 
+// stavová obrazovka (rozloženie a formát bodov) – skúša sa na každom systéme
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod obrazovka;
+
 // súpis periférií číta len súbory jadra – skúša sa na každom systéme na vymyslenom strome /sys
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod periferie;

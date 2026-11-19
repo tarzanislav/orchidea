@@ -6,6 +6,8 @@ on:
       - "sklenik/**"
       - "nastroje/initramfs.py"
       - "nastroje/kontrola_karty.py"
+      - "nastroje/kontrola_obrazovky.py"
+      - "pismo/**"
       - ".github/workflows/sklenik.yml"
   workflow_dispatch:
 
@@ -169,9 +171,70 @@ jobs:
           dd if=obraz/boot.img of=obraz/sklenik-rpi.img bs=512 seek=8192 conv=notrunc status=none
           rm obraz/boot.img
           sfdisk -l obraz/sklenik-rpi.img
+      - name: Karta s nastavením od SADIČA (meno a jazyk) pre skúšku
+        run: |
+          rustup toolchain install
+          cargo build --locked --release -p sklenik-sadic
+          cp obraz/sklenik-rpi.img karta.img
+          target/release/sadic priprav karta.img meno=skuska-qemu jazyk=sk
+          # QEMU chce kartu s veľkosťou mocniny dvoch
+          truncate -s 512M karta.img
       - name: Skúšky štartu v emulovaných Raspberry Pi (QEMU)
         run: |
           skusaj() {
+            meno="$1"; log="$2"; sock="$3"; shift 3
+            "$@" -nographic -no-reboot -monitor "unix:$sock,server,nowait" > "$log" 2>&1 &
+            q=$!
+            for i in $(seq 1 150); do
+              grep -q "SKLENÍK pripravený" "$log" && break
+              kill -0 $q 2>/dev/null || break
+              sleep 2
+            done
+            echo "#### $meno" >> "$GITHUB_STEP_SUMMARY"
+            if grep -q "SKLENÍK pripravený" "$log"; then
+              grep "KLÍČ" "$log" | sed 's/^/    /' | tee -a "$GITHUB_STEP_SUMMARY"
+              rozmer=$(grep -o "obrazovka: [0-9]*×[0-9]*" "$log" | head -1 | grep -o "[0-9]*×[0-9]*" || true)
+              if [ -n "$rozmer" ]; then
+                if ! python3 nastroje/kontrola_obrazovky.py "$sock" "${rozmer%×*}" "${rozmer#*×}" | tee -a "$GITHUB_STEP_SUMMARY"; then
+                  kill $q 2>/dev/null || true; echo "❌ $meno – obrazovka"; return 1
+                fi
+              else
+                echo "❌ $meno – KLÍČ nenašiel grafickú obrazovku" | tee -a "$GITHUB_STEP_SUMMARY"; kill $q 2>/dev/null || true; return 1
+              fi
+              kill $q 2>/dev/null || true
+              echo "✅ $meno"; return 0
+            fi
+            kill $q 2>/dev/null || true
+            echo "❌ nenaštartoval" >> "$GITHUB_STEP_SUMMARY"
+            echo "❌ $meno"; head -60 "$log"; echo "…"
+            grep -E -A6 "Unable to handle|Internal error|PC is at|Kernel panic|Run /init" "$log" | head -60; echo "…"
+            tail -30 "$log"; return 1
+          }
+          spolocne="rdinit=/init sklenik.skuska=1 loglevel=7"
+          chyby=0
+          skusaj "Raspberry Pi 3 (64-bit) s kartou" qemu-rpi3.log qm-rpi3.sock qemu-system-aarch64 -M raspi3b -m 1G \
+            -kernel boot/kernel8.img -dtb boot/bcm2710-rpi-3-b.dtb -initrd boot/initramfs8.cpio.gz \
+            -drive if=sd,format=raw,file=karta.img \
+            -append "earlycon=pl011,mmio32,0x3f201000 console=ttyAMA0,115200 $spolocne" || chyby=$((chyby+1))
+          if grep -q "nastavenie z /dev/mmcblk0: meno skuska-qemu, jazyk sk" qemu-rpi3.log; then
+            echo "✅ KLÍČ prečítal z karty nastavenie od SADIČA (meno, jazyk)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ KLÍČ neprečítal nastavenie z karty" | tee -a "$GITHUB_STEP_SUMMARY"; grep -iE "mmc|nastavenie" qemu-rpi3.log | head -20; chyby=$((chyby+1))
+          fi
+          skusaj "Raspberry Pi 2 (ARMv7)" qemu-rpi2.log qm-rpi2.sock qemu-system-arm -M raspi2b -m 1G \
+            -kernel boot/kernel7.img -dtb boot/bcm2709-rpi-2-b.dtb -initrd boot/initramfs7.cpio.gz \
+            -append "earlycon=pl011,mmio32,0x3f201000 console=ttyAMA0,115200 $spolocne" || chyby=$((chyby+1))
+          # QEMU nenapodobňuje blok správy napájania BCM2835 (jeho ovládač by v emulátore spadol) – len pre
+          # emulátor sa v popise hardvéru vypne; na karte zostáva popis bez zmeny
+          cp boot/bcm2708-rpi-zero.dtb qemu-zero.dtb
+          pm=$(fdtget -l qemu-zero.dtb /soc | grep -m1 '^watchdog@' || true)
+          if [ -n "$pm" ]; then fdtput -t s qemu-zero.dtb "/soc/$pm" status disabled; echo "emulátor: /soc/$pm vypnutý"; fi
+          skusaj "Raspberry Pi Zero (ARMv6)" qemu-rpi0.log qm-rpi0.sock qemu-system-arm -M raspi0 -m 512M \
+            -kernel boot/kernel.img -dtb qemu-zero.dtb -initrd boot/initramfs6.cpio.gz \
+            -append "earlycon=pl011,mmio32,0x20201000 console=ttyAMA0,115200 $spolocne" || chyby=$((chyby+1))
+          # RPi 5 QEMU nemá – jadro pre RPi 5 sa skúša aspoň na všeobecnom stroji s procesorom Cortex-A76
+          # (všeobecný stroj nemá obrazovku – kontroluje sa len štart jadra a KLÍČA)
+          skusaj_bez_obrazovky() {
             meno="$1"; log="$2"; shift 2
             "$@" -nographic -no-reboot > "$log" 2>&1 &
             q=$!
@@ -182,33 +245,10 @@ jobs:
             done
             kill $q 2>/dev/null || true
             echo "#### $meno" >> "$GITHUB_STEP_SUMMARY"
-            if grep -q "SKLENÍK pripravený" "$log"; then
-              grep "KLÍČ" "$log" | sed 's/^/    /' | tee -a "$GITHUB_STEP_SUMMARY"
-              echo "✅ $meno"; return 0
-            fi
-            echo "❌ nenaštartoval" >> "$GITHUB_STEP_SUMMARY"
-            echo "❌ $meno"; head -60 "$log"; echo "…"
-            grep -E -A6 "Unable to handle|Internal error|PC is at|Kernel panic|Run /init" "$log" | head -60; echo "…"
+            grep -q "SKLENÍK pripravený" "$log" && { grep "KLÍČ" "$log" | sed 's/^/    /' | tee -a "$GITHUB_STEP_SUMMARY"; echo "✅ $meno"; return 0; }
             tail -30 "$log"; return 1
           }
-          spolocne="rdinit=/init sklenik.skuska=1 loglevel=7"
-          chyby=0
-          skusaj "Raspberry Pi 3 (64-bit)" qemu-rpi3.log qemu-system-aarch64 -M raspi3b -m 1G \
-            -kernel boot/kernel8.img -dtb boot/bcm2710-rpi-3-b.dtb -initrd boot/initramfs8.cpio.gz \
-            -append "earlycon=pl011,mmio32,0x3f201000 console=ttyAMA0,115200 $spolocne" || chyby=$((chyby+1))
-          skusaj "Raspberry Pi 2 (ARMv7)" qemu-rpi2.log qemu-system-arm -M raspi2b -m 1G \
-            -kernel boot/kernel7.img -dtb boot/bcm2709-rpi-2-b.dtb -initrd boot/initramfs7.cpio.gz \
-            -append "earlycon=pl011,mmio32,0x3f201000 console=ttyAMA0,115200 $spolocne" || chyby=$((chyby+1))
-          # QEMU nenapodobňuje blok správy napájania BCM2835 (jeho ovládač by v emulátore spadol) – len pre
-          # emulátor sa v popise hardvéru vypne; na karte zostáva popis bez zmeny
-          cp boot/bcm2708-rpi-zero.dtb qemu-zero.dtb
-          pm=$(fdtget -l qemu-zero.dtb /soc | grep -m1 '^watchdog@' || true)
-          if [ -n "$pm" ]; then fdtput -t s qemu-zero.dtb "/soc/$pm" status disabled; echo "emulátor: /soc/$pm vypnutý"; fi
-          skusaj "Raspberry Pi Zero (ARMv6)" qemu-rpi0.log qemu-system-arm -M raspi0 -m 512M \
-            -kernel boot/kernel.img -dtb qemu-zero.dtb -initrd boot/initramfs6.cpio.gz \
-            -append "earlycon=pl011,mmio32,0x20201000 console=ttyAMA0,115200 $spolocne" || chyby=$((chyby+1))
-          # RPi 5 QEMU nemá – jadro pre RPi 5 sa skúša aspoň na všeobecnom stroji s procesorom Cortex-A76
-          skusaj "Jadro RPi 5 na procesore Cortex-A76 (nie celé RPi 5)" qemu-rpi5.log qemu-system-aarch64 \
+          skusaj_bez_obrazovky "Jadro RPi 5 na procesore Cortex-A76 (nie celé RPi 5)" qemu-rpi5.log qemu-system-aarch64 \
             -M virt,gic-version=2 -cpu cortex-a76 -m 1G -kernel boot/kernel_2712.img -initrd boot/initramfs8.cpio.gz \
             -append "earlycon=pl011,0x9000000 console=ttyAMA0 $spolocne" \
             || echo "⚠️ jadro RPi 5 na všeobecnom stroji nenaštartovalo – overí sa na skutočnom RPi 5" | tee -a "$GITHUB_STEP_SUMMARY"

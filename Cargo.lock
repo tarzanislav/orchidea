@@ -22,12 +22,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "orchidea-pismo"
+version = "0.1.0"
+
+[[package]]
+name = "sklenik-karta"
+version = "0.1.0"
+
+[[package]]
 name = "sklenik-klic"
 version = "0.1.0"
+dependencies = [
+ "orchidea-pismo",
+ "sklenik-karta",
+]
 
 [[package]]
 name = "sklenik-sadic"
 version = "0.1.0"
 dependencies = [
  "orchidea-jadro",
+ "sklenik-karta",
 ]

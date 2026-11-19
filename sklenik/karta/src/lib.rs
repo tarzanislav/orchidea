@@ -1,4 +1,7 @@
-//! Obraz SKLENÍKA: tabuľka oddielov MBR, oddiel FAT32 a súbor nastavenia `SKLENIK.TXT`.
+//! Karta SKLENÍKA: tabuľka oddielov MBR, oddiel FAT32 a súbor nastavenia `SKLENIK.TXT`.
+//!
+//! Spoločné pre SADIČ (pripraví nastavenie pri zápise) a KLÍČ (prečíta ho pri štarte priamo z karty, len
+//! na čítanie, bez pripájania súborového systému – karta sa nikdy nepoškodí).
 //!
 //! SADIČ obraz nemení na disku počítača – nastavenie zariadenia (meno, Wi-Fi, jazyk) sa pripraví ako
 //! **záplaty** (posun v obraze + nové bajty), ktoré sa uplatnia počas zápisu na kartu. Súbor
@@ -208,11 +211,11 @@ impl Nastavenie {
 
     fn over(&self) -> Result<(), String> {
         if let Some(m) = &self.meno
-            && (m.is_empty()
-                || m.len() > 32
-                || !m.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'))
+            && !platne_meno(m)
         {
-            return Err("meno zariadenia: 1 až 32 znakov a–z, 0–9 a pomlčka".into());
+            return Err(
+                "meno zariadenia: 1 až 32 znakov a–z, 0–9 a pomlčka (nie na začiatku ani na konci)".into()
+            );
         }
         if let Some(w) = &self.wifi
             && (w.is_empty() || w.len() > 32 || w.contains(['\n', '\r']))
@@ -254,6 +257,74 @@ impl Nastavenie {
         }
         t
     }
+}
+
+/// Nastavenie, ako ho prečíta zariadenie zo súboru `SKLENIK.TXT` (heslo Wi-Fi tam nikdy nie je – len kľúč).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NastavenieZariadenia {
+    pub meno: Option<String>,
+    pub wifi: Option<String>,
+    pub wifi_psk: Option<[u8; 32]>,
+    pub jazyk: Option<String>,
+}
+
+impl NastavenieZariadenia {
+    /// Prečíta text súboru. Súbor sa dá upraviť aj ručne, preto sa neplatné riadky len vynechajú
+    /// a vrátia sa ako upozornenia.
+    pub fn z_textu(text: &str) -> (NastavenieZariadenia, Vec<String>) {
+        let mut n = NastavenieZariadenia::default();
+        let mut upozornenia = Vec::new();
+        for (i, riadok) in text.lines().enumerate() {
+            let riadok = riadok.trim();
+            if riadok.is_empty() || riadok.starts_with('#') {
+                continue;
+            }
+            let Some((k, v)) = riadok.split_once('=') else {
+                upozornenia.push(format!("riadok {}: chýba „=“", i + 1));
+                continue;
+            };
+            let (k, v) = (k.trim(), v.trim());
+            match k {
+                "meno" if platne_meno(v) => n.meno = Some(v.to_string()),
+                "wifi" if !v.is_empty() && v.len() <= 32 => n.wifi = Some(v.to_string()),
+                "wifi_psk" => match hex32(v) {
+                    Some(k) => n.wifi_psk = Some(k),
+                    None => upozornenia
+                        .push(format!("riadok {}: kľúč Wi-Fi má mať 64 šestnástkových znakov", i + 1)),
+                },
+                "jazyk"
+                    if (2..=5).contains(&v.len())
+                        && v.bytes().all(|c| c.is_ascii_alphabetic() || c == b'-') =>
+                {
+                    n.jazyk = Some(v.to_ascii_lowercase())
+                }
+                "meno" | "wifi" | "jazyk" => {
+                    upozornenia.push(format!("riadok {}: neplatná hodnota „{k}“", i + 1))
+                }
+                _ => upozornenia.push(format!("riadok {}: neznáme nastavenie „{k}“", i + 1)),
+            }
+        }
+        (n, upozornenia)
+    }
+}
+
+/// Meno zariadenia: 1 až 32 znakov a–z, 0–9 a pomlčka (platí aj ako meno v sieti).
+pub fn platne_meno(m: &str) -> bool {
+    (1..=32).contains(&m.len())
+        && m.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        && !m.starts_with('-')
+        && !m.ends_with('-')
+}
+
+fn hex32(v: &str) -> Option<[u8; 32]> {
+    if v.len() != 64 || !v.is_ascii() {
+        return None;
+    }
+    let mut k = [0u8; 32];
+    for (i, b) in k.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&v[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(k)
 }
 
 // ---- WPA2: kľúč z hesla a názvu siete (PBKDF2-HMAC-SHA1, 4096 opakovaní, IEEE 802.11i) ----
@@ -484,5 +555,31 @@ mod skusky {
         assert!(zaplaty_nastavenia(&mut Cursor::new(&mut zly), "x").is_err(), "obraz bez MBR");
         let dlhe = "x".repeat(5000);
         assert!(zaplaty_nastavenia(&mut Cursor::new(skusobny_obraz(64)), &dlhe).is_err());
+    }
+
+    #[test]
+    fn zariadenie_precita_nastavenie_od_sadica_aj_rucne_upravene() {
+        let n = Nastavenie {
+            meno: Some("dielna-1".into()),
+            wifi: Some("Domov".into()),
+            wifi_heslo: Some("tajneheslo".into()),
+            jazyk: Some("sk".into()),
+        };
+        let mut text = n.text();
+        text += "   \n# poznámka\nfarba=zelena\nmeno-zle\n";
+        let (z, upozornenia) = NastavenieZariadenia::z_textu(&text);
+        assert_eq!(z.meno.as_deref(), Some("dielna-1"));
+        assert_eq!(z.wifi.as_deref(), Some("Domov"));
+        assert_eq!(z.wifi_psk, Some(wpa_psk("tajneheslo", "Domov")));
+        assert_eq!(z.jazyk.as_deref(), Some("sk"));
+        assert_eq!(upozornenia.len(), 2, "{upozornenia:?}");
+        assert!(!text.contains("tajneheslo"));
+        // neplatné meno sa nepoužije
+        let (z, u) = NastavenieZariadenia::z_textu("meno=Zlé Meno\njazyk=CS\nwifi_psk=12\n");
+        assert_eq!(z.meno, None);
+        assert_eq!(z.jazyk.as_deref(), Some("cs"));
+        assert_eq!(z.wifi_psk, None);
+        assert_eq!(u.len(), 2, "{u:?}");
+        assert!(!platne_meno("-pi") && !platne_meno("pi-") && platne_meno("pi-1"));
     }
 }

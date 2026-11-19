@@ -1,6 +1,6 @@
 [package]
 name = "sklenik-klic"
-description = "KLÍČ – prvý program systému SKLENÍK (PID 1): štart, tepelný strážca, stav"
+description = "KLÍČ – prvý program systému SKLENÍK (PID 1): štart, periférie, tepelný strážca, stavová obrazovka"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +14,10 @@ vrstva = 2
 [[bin]]
 name = "klic"
 path = "src/main.rs"
+
+[dependencies]
+orchidea-pismo.workspace = true
+sklenik-karta.workspace = true
 
 [lints]
 workspace = true
