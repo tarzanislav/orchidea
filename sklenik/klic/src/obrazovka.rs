@@ -134,6 +134,7 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         j.t("Sieť", "Síť", "Network"),
         j.t("Úložisko", "Úložiště", "Storage"),
         "USB",
+        j.t("Doska", "Deska", "Board"),
     ];
     let stlpec = m + popisy.iter().map(|t| pismo.sirka(t, v, h)).fold(0.0, f32::max) + 1.5 * v;
     let krok = 1.8 * v;
@@ -225,6 +226,9 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     }
     let usb = format!("{} {}", j.t("zariadení:", "zařízení:", "devices:"), s.supis.usb.len());
     riadok(&mut p, &mut y, popisy[6], &[(&usb, TEXT)]);
+    // prídavná doska alebo skrinka s identifikačným čipom (napr. HAT+); „–“ = firmvér žiadnu nenašiel
+    let doska = s.supis.dosky.first().cloned().unwrap_or_else(|| "–".into());
+    riadok(&mut p, &mut y, popisy[7], &[(&doska, if s.supis.dosky.is_empty() { TLMENY } else { TEXT })]);
 
     // päta
     let paticka = j.t(
@@ -317,6 +321,7 @@ mod skusky {
             }],
             zvuk: vec![],
             usb: vec!["x".into()],
+            dosky: vec![],
         }
     }
 

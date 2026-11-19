@@ -53,6 +53,8 @@ pub struct Supis {
     pub zvuk: Vec<String>,
     /// Zariadenia USB okrem rozbočovačov (na RPi 1–3 je medzi nimi aj čip Ethernetu).
     pub usb: Vec<String>,
+    /// Prídavné dosky a skrinky s identifikačným čipom (HAT), ktoré našiel firmvér Raspberry Pi.
+    pub dosky: Vec<String>,
 }
 
 // čísla udalostí a tlačidiel jadra Linux (include/uapi/linux/input-event-codes.h)
@@ -220,6 +222,26 @@ impl Supis {
             }
         }
 
+        // prídavné dosky (HAT, HAT+): firmvér ich opis z identifikačného čipu vloží do stromu zariadení
+        let strom = koren.join("proc/device-tree");
+        for uzol in polozky(&strom).into_iter().filter(|n| n.starts_with("hat")) {
+            let u = strom.join(&uzol);
+            let casti: Vec<String> = ["vendor", "product"]
+                .iter()
+                .filter_map(|f| citaj(u.join(f)))
+                .filter(|t| !t.is_empty())
+                .collect();
+            let id = citaj(u.join("product_id")).filter(|t| !t.is_empty());
+            if casti.is_empty() && id.is_none() {
+                continue;
+            }
+            let mut opis = casti.join(" ");
+            if let Some(id) = id {
+                opis = format!("{opis} (výrobok {id})").trim().to_string();
+            }
+            s.dosky.push(opis);
+        }
+
         // USB: skutočné zariadenia (nie koreňové rozbočovače, rozhrania ani rozbočovače)
         let usb = sys.join("bus/usb/devices");
         for meno in polozky(&usb) {
@@ -289,8 +311,9 @@ impl Supis {
                 .join(", ")
         };
         let zvuk = if self.zvuk.is_empty() { "–".into() } else { self.zvuk.join(", ") };
+        let dosky = if self.dosky.is_empty() { "žiadna".into() } else { self.dosky.join(", ") };
         format!(
-            "periférie – obrazovka: {obrazovka}; vstupy: {vstupy}; sieť: {siet}; úložisko: {ulozisko}; zvuk: {zvuk}; USB: {}",
+            "periférie – obrazovka: {obrazovka}; vstupy: {vstupy}; sieť: {siet}; úložisko: {ulozisko}; zvuk: {zvuk}; USB: {}; prídavná doska: {dosky}",
             self.usb.len()
         )
     }
@@ -424,7 +447,10 @@ mod skusky {
             .subor("sys/bus/usb/devices/1-1.1/bDeviceClass", "ff")
             .subor("sys/bus/usb/devices/1-1.2/idVendor", "046d")
             .subor("sys/bus/usb/devices/1-1.2/product", "USB Receiver")
-            .subor("sys/bus/usb/devices/1-1.2/bDeviceClass", "00");
+            .subor("sys/bus/usb/devices/1-1.2/bDeviceClass", "00")
+            .subor("proc/device-tree/hat/vendor", "Vyrobca s.r.o.\0")
+            .subor("proc/device-tree/hat/product", "Skrinka 5\0")
+            .subor("proc/device-tree/hat/product_id", "0x0316\0");
         // rozhranie zariadenia USB (dvojbodka v mene – na Windows taký súbor nemôže byť)
         if cfg!(unix) {
             s.subor("sys/bus/usb/devices/1-1.1:1.0/idVendor", "0424");
@@ -449,6 +475,7 @@ mod skusky {
         assert_eq!(p.ulozisko[0].bajtov, 62333952 * 512);
         assert_eq!(p.zvuk, vec!["bcm2835 Headphones"]);
         assert_eq!(p.usb, vec!["0424:ec00", "USB Receiver"]);
+        assert_eq!(p.dosky, vec!["Vyrobca s.r.o. Skrinka 5 (výrobok 0x0316)"]);
         let r = p.riadok();
         assert!(r.contains("klávesnica (Klavesnica USB)"), "{r}");
         assert!(r.contains("eth0 kábel b8:27:eb:00:00:01 – spojené"), "{r}");
