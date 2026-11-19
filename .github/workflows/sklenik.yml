@@ -205,7 +205,7 @@ jobs:
           make -s CROSS_COMPILE=aarch64-linux-gnu- odroid-c4_defconfig
           make -s -j"$(nproc)" CROSS_COMPILE=aarch64-linux-gnu-
           cd "../amlogic-boot-fip-${FIP_COMMIT}"
-          mkdir -p ../uboot-vystup
+          mkdir -p ../uboot-vystup ../fip-vystup
           ./build-fip.sh odroid-c4 "../u-boot-${UBOOT_TAG#v}/u-boot.bin" ../fip-vystup
           cp ../fip-vystup/u-boot.bin.sd.bin ../uboot-vystup/
           ls -l ../fip-vystup ../uboot-vystup

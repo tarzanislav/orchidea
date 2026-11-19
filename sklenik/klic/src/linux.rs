@@ -2,7 +2,7 @@
 //! obrazovke.
 
 use crate::obrazovka::{self, FormatBodu, Jazyk, MeranieKarty, Stav};
-use crate::periferie::Supis;
+use crate::periferie::{Supis, Ulozisko};
 use crate::strazca::{Hardver, Profil, Regulator, Uroven, stupen_ventilatora, urovne};
 use crate::sys;
 use orchidea_pismo::{Pismo, Platno};
@@ -11,6 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const CPU: &str = "/sys/devices/system/cpu";
@@ -278,6 +279,41 @@ fn zmeraj_kartu(zariadenie: &str, bajtov: u64, priebeh: &dyn Fn(u64)) -> std::io
     Ok((suvisle, pocet as f64 / t.elapsed().as_secs_f64().max(1e-6)))
 }
 
+/// Karta, ktorej rýchlosť sa meria: tá, z ktorej SKLENÍK štartoval (má SKLENIK.TXT), inak prvá SD/eMMC.
+fn vyber_kartu(supis: &Supis, nastavenie: &Option<(String, NastavenieZariadenia)>) -> Option<Ulozisko> {
+    nastavenie
+        .as_ref()
+        .and_then(|(cesta, _)| supis.ulozisko.iter().find(|u| format!("/dev/{}", u.meno) == *cesta))
+        .or_else(|| supis.ulozisko.iter().find(|u| u.meno.starts_with("mmcblk")))
+        .filter(|u| u.meno.starts_with("mmcblk"))
+        .cloned()
+}
+
+/// Spustí meranie karty vo vlastnom vlákne; priebeh a výsledok zapisuje do `meranie`.
+fn spusti_meranie(u: Ulozisko, meranie: Arc<Mutex<MeranieKarty>>) {
+    let nastav = move |v: MeranieKarty| {
+        if let Ok(mut g) = meranie.lock() {
+            *g = v;
+        }
+    };
+    std::thread::spawn(move || {
+        // pár sekúnd po štarte, aby meranie nebrzdilo štart
+        std::thread::sleep(Duration::from_secs(3));
+        nastav(MeranieKarty::Bezi(0));
+        hlas(&format!("meriam rýchlosť karty {}", u.meno));
+        match zmeraj_kartu(&format!("/dev/{}", u.meno), u.bajtov, &|mb| nastav(MeranieKarty::Bezi(mb))) {
+            Ok(v) => {
+                nastav(MeranieKarty::Hotovo(v.0, v.1));
+                hlas(&format!("karta {}: čítanie {:.1} MB/s, náhodne 4 KB {:.0}/s", u.meno, v.0, v.1));
+            }
+            Err(e) => {
+                nastav(MeranieKarty::Chyba(e.to_string()));
+                hlas(&format!("meranie karty sa nepodarilo: {e}"));
+            }
+        }
+    });
+}
+
 fn uptime() -> Option<f64> {
     citaj("/proc/uptime")?.split_whitespace().next()?.parse().ok()
 }
@@ -360,38 +396,13 @@ pub fn spusti() {
     hlas(&supis.riadok());
     let pripravene = uptime();
     // meranie rýchlosti karty na pozadí (pár sekúnd po štarte, aby nebrzdilo štart)
-    let meranie = std::sync::Arc::new(std::sync::Mutex::new(MeranieKarty::Caka));
-    // meria sa karta, z ktorej SKLENÍK štartoval (má SKLENIK.TXT); inak prvá karta SD/eMMC
-    let karta = nastavenie
-        .as_ref()
-        .and_then(|(cesta, _)| supis.ulozisko.iter().find(|u| format!("/dev/{}", u.meno) == *cesta))
-        .or_else(|| supis.ulozisko.iter().find(|u| u.meno.starts_with("mmcblk")))
-        .filter(|u| u.meno.starts_with("mmcblk"))
-        .cloned();
-    let merana_karta = karta.as_ref().map(|u| u.meno.clone()).unwrap_or_default();
-    let ma_kartu = karta.is_some();
-    if let Some(u) = karta {
-        let m = meranie.clone();
-        let nastav = move |v: MeranieKarty| {
-            if let Ok(mut g) = m.lock() {
-                *g = v;
-            }
-        };
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_secs(3));
-            hlas(&format!("meriam rýchlosť karty {}", u.meno));
-            nastav(MeranieKarty::Bezi(0));
-            match zmeraj_kartu(&format!("/dev/{}", u.meno), u.bajtov, &|mb| nastav(MeranieKarty::Bezi(mb))) {
-                Ok(v) => {
-                    hlas(&format!("karta {}: čítanie {:.1} MB/s, náhodne 4 KB {:.0}/s", u.meno, v.0, v.1));
-                    nastav(MeranieKarty::Hotovo(v.0, v.1));
-                }
-                Err(e) => {
-                    hlas(&format!("meranie karty sa nepodarilo: {e}"));
-                    nastav(MeranieKarty::Chyba(e.to_string()));
-                }
-            }
-        });
+    // meranie rýchlosti karty na pozadí – spustí sa, keď je karta v systéme (na RPi 3 sa karta objaví
+    // až chvíľu po štarte KLÍČA, preto sa to skúša pri každej zmene periférií)
+    let meranie = Arc::new(Mutex::new(MeranieKarty::Caka));
+    let mut merana_karta = String::new();
+    if let Some(u) = vyber_kartu(&supis, &nastavenie) {
+        merana_karta = u.meno.clone();
+        spusti_meranie(u, meranie.clone());
     }
     let mut zobrazene_meranie = MeranieKarty::Caka;
     let mut zmena_merania = Instant::now();
@@ -435,6 +446,12 @@ pub fn spusti() {
             if nastavenie.is_none() {
                 nastavenie = nacitaj_nastavenie(&supis);
                 nastav_zariadenie(&nastavenie);
+            }
+            if merana_karta.is_empty()
+                && let Some(u) = vyber_kartu(&supis, &nastavenie)
+            {
+                merana_karta = u.meno.clone();
+                spusti_meranie(u, meranie.clone());
             }
         }
         let stav = (teplota.map_or(-1000, |t| (t * 2.0).round() as i64), regulator.index());
@@ -500,7 +517,8 @@ pub fn spusti() {
         }
         krokov += 1;
         // v skúške sa počká aj na koniec merania karty (najviac 60 s)
-        let meranie_bezi = matches!(meranie_karty, MeranieKarty::Caka | MeranieKarty::Bezi(_)) && ma_kartu;
+        let meranie_bezi =
+            matches!(meranie_karty, MeranieKarty::Caka | MeranieKarty::Bezi(_)) && !merana_karta.is_empty();
         if skuska && krokov >= 3 && (!meranie_bezi || start.elapsed() > Duration::from_secs(60)) {
             hlas(&format!(
                 "SKLENÍK pripravený (štart KLÍČA {:.2} s, verzia {})",
