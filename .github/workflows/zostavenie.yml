@@ -150,7 +150,7 @@ jobs:
       - name: Skúšky v emulátore Androidu
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
+          api-level: 34
           arch: x86_64
           target: default
           disable-animations: true

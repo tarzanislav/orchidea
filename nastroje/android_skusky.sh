@@ -13,7 +13,6 @@ for subor in $(cat binarky.txt); do
   echo "== $meno"
   adb shell "cd /data/local/tmp && ORCHIDEA_GPU_STOPA=1 ./$meno --test-threads=1 --nocapture; echo KONIEC=\$?" </dev/null > vystup.txt 2>&1 || true
   grep -E "test result|panicked|FAILED" vystup.txt || true
-  grep -B2 -A30 "Segmentation\|Aborted" vystup.txt | grep -v "^INFO" | head -60 || true
   if grep -q "KONIEC=0" vystup.txt; then
     uspesne=$((uspesne + 1))
   else

@@ -886,7 +886,13 @@ impl<'a> Buffer<'a> {
         };
         over(unsafe { (f.vkAllocateMemory)(d, &alloc, null(), &mut b.pamat) }, "pamäť")?;
         over(unsafe { (f.vkBindBufferMemory)(d, b.buffer, b.pamat, 0) }, "pripojenie pamäte")?;
-        over(unsafe { (f.vkMapMemory)(d, b.pamat, 0, bajtov, 0, &mut b.mapa) }, "mapovanie pamäte")?;
+        over(unsafe { (f.vkMapMemory)(d, b.pamat, 0, u64::MAX, 0, &mut b.mapa) }, "mapovanie pamäte")?;
+        if b.mapa.is_null() || !(b.mapa as usize).is_multiple_of(4) {
+            return Err(Chyba::Vypocet(format!(
+                "Vulkan: ovládač vrátil neplatnú adresu mapovanej pamäte {:p}",
+                b.mapa
+            )));
+        }
         stopa("kopírovanie dát do bufferu");
         let zdroj = data.ako_bajty();
         // SAFETY: mapa ukazuje na aspoň `bajtov` bajtov súvislej pamäte viditeľnej procesorom.

@@ -134,6 +134,7 @@ pub enum Druh {
     Procesor,
     Vulkan,
     D3d12,
+    Metal,
 }
 
 /// Druh hardvéru.
@@ -234,6 +235,11 @@ pub fn vsetky_zariadenia() -> (Vec<Arc<dyn Zariadenie>>, Vec<String>) {
             match crate::vulkan::Vulkan::otvor_vsetky() {
                 Ok(v) => z.extend(v.into_iter().map(|x| Arc::new(x) as Arc<dyn Zariadenie>)),
                 Err(e) => dovody.push(format!("Vulkan: {e}")),
+            }
+            #[cfg(target_vendor = "apple")]
+            match crate::metal::Metal::otvor() {
+                Ok(m) => z.push(Arc::new(m)),
+                Err(e) => dovody.push(format!("Metal: {e}")),
             }
             #[cfg(windows)]
             match crate::d3d12::D3d12::otvor_vsetky() {

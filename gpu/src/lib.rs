@@ -3,7 +3,7 @@
 //! - [`ir`] – vlastný jazyk výpočtových kernelov,
 //! - [`interpret`] – referenčný interpret na procesore (CPU cesta vždy, rozhodca správnosti),
 //! - [`spirv`] – vlastný prekladač do SPIR-V (Vulkan), [`texty`] – do HLSL, MSL a WGSL,
-//! - [`zariadenie`] – spoločné rozhranie; [`vulkan`] a `d3d12` (Windows) – zariadenia cez vlastné väzby.
+//! - [`zariadenie`] – spoločné rozhranie; [`vulkan`], [`d3d12`] a [`metal`] – zariadenia cez vlastné väzby.
 //!
 //! Žiadne cudzie knižnice. Nebezpečný kód je len vo väzbách na rozhrania operačného systému a ovládačov.
 
@@ -14,6 +14,7 @@ pub mod interpret;
 pub mod ir;
 pub mod kernely;
 mod kniznica;
+pub mod metal;
 pub mod spirv;
 pub mod texty;
 pub mod vulkan;
