@@ -516,6 +516,7 @@ pub fn spusti() {
 
     let mut posledny = Instant::now();
     let mut zobrazene: Option<(i64, usize)> = None;
+    let mut zobrazeny_cas: Option<u64> = None;
     let mut krokov = 0u32;
     // R99: hardvérový strážny časovač – ak sa KLÍČ zasekne na 15 s, doska sa sama reštartuje
     // v emulátore QEMU sa časovač nespráva ako na doske (reštartuje hneď) – v skúške sa vynechá
@@ -613,7 +614,10 @@ pub fn spusti() {
             hlas(&format!("meranie karty stojí pri {mb} MB – karta neodpovedá"));
         }
         let nove_meranie = meranie_karty != zobrazene_meranie;
-        if zobrazene != Some(stav) || zmena_periferii || nove_meranie {
+        // hodiny od zapnutia sa menia každú sekundu – prekreslí sa len ich riadok
+        let bezi_s = uptime().unwrap_or(0.0) as u64;
+        let novy_cas = Some(bezi_s) != zobrazeny_cas;
+        if zobrazene != Some(stav) || zmena_periferii || nove_meranie || novy_cas {
             match displej.as_mut() {
                 Some(d) => {
                     let n = nastavenie.as_ref().map(|(_, n)| n);
@@ -629,6 +633,7 @@ pub fn spusti() {
                         supis: &supis,
                         pripravene_s: pripravene,
                         verzia: crate::VERZIA,
+                        bezi_s,
                         meranie_karty: &meranie_karty,
                         merana_karta: &merana_karta,
                         poda: &poda,
@@ -658,6 +663,7 @@ pub fn spusti() {
                 ));
             }
             zobrazene = Some(stav);
+            zobrazeny_cas = Some(bezi_s);
             zobrazene_meranie = meranie_karty.clone();
         }
         krokov += 1;

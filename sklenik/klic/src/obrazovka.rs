@@ -82,6 +82,8 @@ pub struct Stav<'a> {
     pub pripravene_s: Option<f64>,
     /// Verzia SKLENÍKA na karte (dátum a odtlačok zostavenia).
     pub verzia: &'a str,
+    /// Ako dlho beží systém od zapnutia (sekundy) – hodiny pre skúšky teploty.
+    pub bezi_s: u64,
     /// Meranie rýchlosti karty, z ktorej systém štartoval.
     pub meranie_karty: &'a MeranieKarty,
     /// Meno zariadenia, ktoré sa meria (napr. mmcblk0).
@@ -143,6 +145,12 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     let verzia = format!("{} {}", j.t("verzia", "verze", "version"), s.verzia);
     let wv = pismo.sirka(&verzia, 0.65 * v, h * 0.7);
     p.text(pismo, &verzia, pravy - wv, y + 1.2 * v, 0.65 * v, h * 0.7, TLMENY);
+    // hodiny od zapnutia (nie skutočný čas – RPi nemá hodiny reálneho času)
+    let (hod, min, sek) = (s.bezi_s / 3600, s.bezi_s / 60 % 60, s.bezi_s % 60);
+    let cas = if hod > 0 { format!("{hod}:{min:02}:{sek:02}") } else { format!("{min}:{sek:02}") };
+    let hodiny = format!("{} {cas}", j.t("beží", "běží", "up"));
+    let wh = pismo.sirka(&hodiny, 0.65 * v, h * 0.7);
+    p.text(pismo, &hodiny, pravy - wh, y + 2.2 * v, 0.65 * v, h * 0.7, TLMENY);
 
     // meno zariadenia
     y += 3.0 * v;
@@ -531,6 +539,7 @@ mod skusky {
             supis,
             pripravene_s: Some(2.4),
             verzia: "19. 11. 2026 · f26272c",
+            bezi_s: 754,
             meranie_karty: &MeranieKarty::Hotovo(22.4, 1830.0),
             merana_karta: "mmcblk0",
             poda: Box::leak(Box::new(Poda {
