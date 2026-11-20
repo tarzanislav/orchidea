@@ -153,8 +153,10 @@ pub fn nacitaj(koren: &Path) -> Poda {
     let dt = koren.join("proc/device-tree");
     let cpuinfo = citaj(&koren.join("proc/cpuinfo")).unwrap_or_default();
 
+    // kód 0 nie je platný (napr. emulátor QEMU) – vtedy sa čip zistí z popisu hardvéru
     p.revizia = cislo_be(&dt.join("system/linux,revision"))
-        .or_else(|| z_cpuinfo(&cpuinfo, "Revision").and_then(|r| u32::from_str_radix(r, 16).ok()));
+        .or_else(|| z_cpuinfo(&cpuinfo, "Revision").and_then(|r| u32::from_str_radix(r, 16).ok()))
+        .filter(|&k| k != 0);
     if let Some(kod) = p.revizia {
         let (ram, rev, vyrobca, cip, zaruka) = rozloz_reviziu(kod);
         p.ram_dosky_mb = ram;
@@ -171,10 +173,14 @@ pub fn nacitaj(koren: &Path) -> Poda {
         } else if ma(b"amlogic,sm1") {
             Some("Amlogic SM1".into())
         } else {
-            kompat
-                .split(|&b| b == 0)
-                .rfind(|c| !c.is_empty())
-                .map(|c| String::from_utf8_lossy(c).into_owned())
+            kompat.split(|&b| b == 0).rfind(|c| !c.is_empty()).map(|c| {
+                let c = String::from_utf8_lossy(c);
+                // „brcm,bcm2837“ → „BCM2837“
+                match c.strip_prefix("brcm,") {
+                    Some(b) => b.to_uppercase(),
+                    None => c.into_owned(),
+                }
+            })
         };
     }
 
@@ -357,6 +363,12 @@ cpuid asimdrdm lrcpc dcpop asimddp\nCPU part\t: 0xd0b\n\nprocessor\t: 1\n\nproce
         assert_eq!(p.instrukcie, vec!["NEON", "CRC32"]);
         assert!(p.mala_pamat());
         assert_eq!(p.zdroj_ma, None);
+        // emulátor RPi 2: kód revízie 0 – čip podľa popisu hardvéru
+        let s = Strom::novy("qemu")
+            .subor("proc/device-tree/compatible", b"raspberrypi,2-model-b\0brcm,bcm2836\0")
+            .subor("proc/cpuinfo", b"processor\t: 0\nCPU part\t: 0xc07\nRevision\t: 0000\n");
+        let p = nacitaj(&s.0);
+        assert_eq!((p.revizia, p.cip.as_deref()), (None, Some("BCM2836")));
         // Odroid C4: bez kódu revízie, čip podľa popisu hardvéru
         let s = Strom::novy("odroid")
             .subor("proc/device-tree/compatible", b"hardkernel,odroid-c4\0amlogic,sm1\0")

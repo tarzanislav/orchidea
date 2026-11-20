@@ -348,12 +348,12 @@ jobs:
           fi
           # PÔDA (R92) a stlačená pamäť zram (R94, RPi 3 má 1 GB)
           if grep -q "KLÍČ: PÔDA – .*čip BCM2837" qemu-rpi3.log; then
-            echo "✅ $(grep -o 'PÔDA – .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "✅ $(grep -o 'KLÍČ: PÔDA – .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "❌ KLÍČ neprečítal PÔDU" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "pôda" qemu-rpi3.log | head; chyby=$((chyby+1))
           fi
           if grep -q "KLÍČ: zram: " qemu-rpi3.log; then
-            echo "✅ $(grep -o 'zram: .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "✅ $(grep -o 'KLÍČ: zram: .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "❌ KLÍČ nezapol zram" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "zram" qemu-rpi3.log | head; chyby=$((chyby+1))
           fi
