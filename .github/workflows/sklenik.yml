@@ -352,6 +352,13 @@ jobs:
           else
             echo "❌ KLÍČ neprečítal PÔDU" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "pôda" qemu-rpi3.log | head; chyby=$((chyby+1))
           fi
+          # strážca pravdy (R100) a strážny časovač (R99)
+          if grep -q "KLÍČ: test jadier: 4/4 v poriadku" qemu-rpi3.log; then
+            echo "✅ $(grep -o 'KLÍČ: test jadier: .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ test jadier neprešiel" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "jadi\|jadro" qemu-rpi3.log | head; chyby=$((chyby+1))
+          fi
+          echo "ℹ️ $(grep -o 'KLÍČ: strážny časovač.*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           if grep -q "KLÍČ: zram: " qemu-rpi3.log; then
             echo "✅ $(grep -o 'KLÍČ: zram: .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           else

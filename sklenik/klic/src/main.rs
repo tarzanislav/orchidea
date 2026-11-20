@@ -18,6 +18,10 @@ mod obrazovka;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod periferie;
 
+// strážca pravdy – test jadier so známym výsledkom (R100)
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod test_jadier;
+
 // PÔDA – profil hardvéru zo súborov jadra; skúša sa na každom systéme na vymyslenom strome
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod poda;

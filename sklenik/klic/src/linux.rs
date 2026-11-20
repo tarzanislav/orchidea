@@ -377,6 +377,45 @@ fn zapni_zram(poda: &Poda) -> Option<u64> {
     Some(velkost >> 20)
 }
 
+/// Strážca pravdy (R100): každé zapnuté jadro spočíta úlohu so známym výsledkom (súbežne, pár milisekúnd).
+fn test_jadier(poda: &mut Poda) {
+    let zapnute: Vec<usize> = citaj("/sys/devices/system/cpu/online")
+        .map(|s| {
+            s.split(',')
+                .flat_map(|cast| {
+                    let (a, b) = cast.split_once('-').unwrap_or((cast, cast));
+                    let (a, b) = (a.trim().parse().unwrap_or(0), b.trim().parse().unwrap_or(0));
+                    a..=b
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| vec![0]);
+    let t = Instant::now();
+    let vlakna: Vec<_> = zapnute
+        .iter()
+        .map(|&j| {
+            (j, std::thread::spawn(move || sys::pripni_na_jadro(j).map(|_| crate::test_jadier::vypocet())))
+        })
+        .collect();
+    for (j, v) in vlakna {
+        match v.join() {
+            Ok(Ok(r)) if r == crate::test_jadier::OCAKAVANE => poda.overene_jadra += 1,
+            Ok(Ok(r)) => {
+                hlas(&format!("test jadier: jadro {j} počíta chybne ({r:#x})"));
+                poda.chybne_jadra.push(j);
+            }
+            Ok(Err(e)) => hlas(&format!("test jadier: jadro {j} sa nedalo vybrať: {e}")),
+            Err(_) => poda.chybne_jadra.push(j),
+        }
+    }
+    hlas(&format!(
+        "test jadier: {}/{} v poriadku ({:.0} ms)",
+        poda.overene_jadra,
+        zapnute.len(),
+        t.elapsed().as_secs_f64() * 1000.0
+    ));
+}
+
 fn uptime() -> Option<f64> {
     citaj("/proc/uptime")?.split_whitespace().next()?.parse().ok()
 }
@@ -416,7 +455,8 @@ pub fn spusti() {
         || std::env::args().any(|a| a == "--skuska");
     let len_sledovanie = !pid1 && !std::env::args().any(|a| a == "--riadit");
     let model = citaj("/proc/device-tree/model").unwrap_or_else(|| "neznáme zariadenie".into());
-    let poda = crate::poda::nacitaj(Path::new("/"));
+    let mut poda = crate::poda::nacitaj(Path::new("/"));
+    test_jadier(&mut poda);
     if pid1 {
         zapni_siet();
     }
@@ -477,14 +517,46 @@ pub fn spusti() {
     let mut posledny = Instant::now();
     let mut zobrazene: Option<(i64, usize)> = None;
     let mut krokov = 0u32;
+    // R99: hardvérový strážny časovač – ak sa KLÍČ zasekne na 15 s, doska sa sama reštartuje
+    let mut strazny = if pid1 {
+        match sys::otvor_strazny_casovac(15) {
+            Ok(f) => {
+                hlas(&format!(
+                    "strážny časovač: 15 s ({})",
+                    citaj("/sys/class/watchdog/watchdog0/identity").unwrap_or_else(|| "?".into())
+                ));
+                Some(f)
+            }
+            Err(e) => {
+                hlas(&format!("strážny časovač nie je k dispozícii: {e}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut bez_teploty_hlasene = false;
     loop {
         let dt = posledny.elapsed().as_secs_f64().max(0.001);
         posledny = Instant::now();
         let teplota = hw.teplota();
         let uroven = match teplota {
             Some(t) => regulator.krok(t, dt),
+            // R99: snímač teploty bol, ale nedá sa prečítať (napr. zlyhal firmvér) – nevieme, že je chladno,
+            // preto bezpečný režim: strážca znižuje výkon, akoby bolo nad stropom
+            None if !hw.snimace.is_empty() => {
+                if !bez_teploty_hlasene {
+                    hlas("teplotu sa nepodarilo prečítať – bezpečný režim (nižší výkon)");
+                    bez_teploty_hlasene = true;
+                }
+                regulator.krok(regulator.profil().strop + 5.0, dt)
+            }
             None => regulator.uroven(),
         };
+        // KLÍČ žije – nakŕmiť strážny časovač
+        if let Some(f) = strazny.as_mut() {
+            let _ = f.write_all(b"\0");
+        }
         if !len_sledovanie {
             hw.uplatni(&uroven);
             if let Some(t) = teplota {

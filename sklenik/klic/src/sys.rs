@@ -22,6 +22,7 @@ unsafe extern "C" {
     fn close(fd: c_int) -> c_int;
     fn sethostname(meno: *const u8, dlzka: usize) -> c_int;
     fn swapon(cesta: *const c_char, priznaky: c_int) -> c_int;
+    fn sched_setaffinity(pid: c_int, velkost: usize, maska: *const u64) -> c_int;
     fn sysconf(meno: c_int) -> core::ffi::c_long;
 }
 
@@ -50,6 +51,7 @@ const ETHTOOL_GEEE: u32 = 0x44;
 const ETHTOOL_SEEE: u32 = 0x45;
 const SC_PAGESIZE: c_int = 30;
 const SWAP_FLAG_PREFER: c_int = 0x8000;
+const WDIOC_SETTIMEOUT: c_ulong = 0xC004_5706;
 
 /// Pripojí súborový systém.
 pub fn pripoj(zdroj: &str, ciel: &str, typ: &str, priznaky: c_ulong) -> io::Result<()> {
@@ -208,4 +210,30 @@ pub fn vypni_eee(meno: &str) -> io::Result<bool> {
     // SAFETY: fd je náš otvorený deskriptor, zatvára sa raz.
     unsafe { close(fd) };
     vysledok
+}
+
+/// Pripne aktuálne vlákno na jedno jadro procesora.
+pub fn pripni_na_jadro(jadro: usize) -> io::Result<()> {
+    let mut maska = [0u64; 16];
+    if jadro >= 1024 {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    maska[jadro / 64] = 1 << (jadro % 64);
+    // SAFETY: maska je platné pole 128 bajtov, žije počas volania.
+    if unsafe { sched_setaffinity(0, size_of_val(&maska), maska.as_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Hardvérový strážny časovač (R99): ak ho KLÍČ do `sekund` nenakŕmi, doska sa sama reštartuje.
+pub fn otvor_strazny_casovac(sekund: c_int) -> io::Result<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let f = std::fs::OpenOptions::new().write(true).open("/dev/watchdog")?;
+    let mut t = sekund;
+    // SAFETY: ukazovateľ na c_int, žije počas volania; deskriptor patrí f.
+    if unsafe { ioctl(f.as_raw_fd(), WDIOC_SETTIMEOUT, &mut t as *mut c_int) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(f)
 }

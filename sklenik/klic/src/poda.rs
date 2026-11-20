@@ -36,6 +36,9 @@ pub struct Poda {
     pub usb_vysoky_prud: Option<bool>,
     /// Firmvér zaznamenal, že doska bola niekedy pretaktovaná nad povolené napätie (bit záruky).
     pub zaruka_porusena: bool,
+    /// Strážca pravdy (R100): koľko jadier prešlo testom so známym výsledkom a ktoré počítali chybne.
+    pub overene_jadra: usize,
+    pub chybne_jadra: Vec<usize>,
 }
 
 fn citaj(cesta: &Path) -> Option<String> {

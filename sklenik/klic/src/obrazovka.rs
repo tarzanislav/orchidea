@@ -256,7 +256,22 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     if let Some(mhz) = s.poda.max_mhz {
         procesor += &format!(" · {} GHz", j.cislo(mhz as f64 / 1000.0, 1));
     }
-    riadok(&mut p, &mut y, popisy[8], &[(procesor.trim_end(), TEXT)]);
+    // strážca pravdy (R100): jadrá overené známym výsledkom
+    let (overenie, farba_overenia) = if !s.poda.chybne_jadra.is_empty() {
+        (
+            format!(
+                "· {} {}",
+                j.t("chybné jadro", "chybné jádro", "faulty core"),
+                s.poda.chybne_jadra.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", ")
+            ),
+            CERVENA,
+        )
+    } else if s.poda.overene_jadra > 0 {
+        (format!("· {} ✓", j.t("overené", "ověřeno", "verified")), ZELENA)
+    } else {
+        (String::new(), TLMENY)
+    };
+    riadok(&mut p, &mut y, popisy[8], &[(procesor.trim_end(), TEXT), (&overenie, farba_overenia)]);
     let mb = |m: u64| {
         if m >= 1024 {
             format!("{} GB", j.cislo(m as f64 / 1024.0, if m.is_multiple_of(1024) { 0 } else { 1 }))
