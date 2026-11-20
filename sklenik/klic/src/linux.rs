@@ -3,6 +3,7 @@
 
 use crate::obrazovka::{self, FormatBodu, Jazyk, MeranieKarty, Stav};
 use crate::periferie::{Supis, Ulozisko};
+use crate::poda::Poda;
 use crate::strazca::{Hardver, Profil, Regulator, Uroven, stupen_ventilatora, urovne};
 use crate::sys;
 use orchidea_pismo::{Pismo, Platno};
@@ -170,6 +171,20 @@ fn zapni_siet() {
                 Ok(false) => {}
                 Err(e) => hlas(&format!("sieť: rozhranie {meno} sa nepodarilo zapnúť: {e}")),
             }
+            // úsporný režim Ethernetu (EEE) robí na RPi 3 B+ (lan78xx) a RPi 4/400 (bcmgenet) výpadky
+            // spojenia s niektorými prepínačmi – spoľahlivé spojenie s PC (KORENE) má prednosť
+            let ovladac = fs::read_link(z.path().join("device/driver"))
+                .ok()
+                .and_then(|c| c.file_name().map(|m| m.to_string_lossy().into_owned()));
+            if matches!(ovladac.as_deref(), Some("lan78xx" | "bcmgenet")) {
+                match sys::vypni_eee(meno) {
+                    Ok(true) => {
+                        hlas(&format!("sieť: {meno} – úsporný režim EEE vypnutý (stabilné spojenie)"))
+                    }
+                    Ok(false) => {}
+                    Err(e) => hlas(&format!("sieť: {meno} – EEE sa nepodarilo vypnúť: {e}")),
+                }
+            }
         }
     }
 }
@@ -317,6 +332,51 @@ fn spusti_meranie(u: Ulozisko, meranie: Arc<Mutex<MeranieKarty>>) {
     });
 }
 
+/// Stlačená pamäť zram na zariadeniach s ≤ 1 GB RAM (R94): stránky, ktoré sa práve nepoužívajú, sa stlačia
+/// v pamäti (lz4 – rýchly a nenáročný, procesor sa nezohreje) – použiteľnej pamäte je zhruba o tretinu viac.
+/// Na kartu sa nič nezapisuje. Vráti veľkosť v MB.
+fn zapni_zram(poda: &Poda) -> Option<u64> {
+    if !poda.mala_pamat() {
+        return None;
+    }
+    let z = Path::new("/sys/block/zram0");
+    if !z.exists() {
+        hlas("zram: jadro ho nemá");
+        return None;
+    }
+    let _ = fs::write(z.join("comp_algorithm"), "lz4");
+    let stranka = sys::velkost_stranky() as u64;
+    let velkost = (poda.pamat_kb * 1024 / 2) / stranka * stranka;
+    let vysledok = (|| -> std::io::Result<()> {
+        fs::write(z.join("disksize"), velkost.to_string())?;
+        // hlavička odkladacej pamäte (ako mkswap): verzia 1, posledná stránka, menovka, podpis na konci stránky
+        let mut h = vec![0u8; stranka as usize];
+        h[1024..1028].copy_from_slice(&1u32.to_ne_bytes());
+        h[1028..1032].copy_from_slice(&((velkost / stranka - 1) as u32).to_ne_bytes());
+        h[1052..1059].copy_from_slice(b"SKLENIK");
+        let n = h.len();
+        h[n - 10..].copy_from_slice(b"SWAPSPACE2");
+        fs::OpenOptions::new().write(true).open("/dev/zram0")?.write_all_at(&h, 0)?;
+        sys::zapni_odkladanie("/dev/zram0", 100)
+    })();
+    if let Err(e) = vysledok {
+        hlas(&format!("zram sa nepodarilo zapnúť: {e}"));
+        return None;
+    }
+    // stlačená pamäť je rýchla – jadro ju smie používať ochotne a bez čítania dopredu
+    let _ = fs::write("/proc/sys/vm/swappiness", "100");
+    let _ = fs::write("/proc/sys/vm/page-cluster", "0");
+    let algoritmus = citaj(z.join("comp_algorithm"))
+        .and_then(|a| a.split('[').nth(1).and_then(|x| x.split(']').next()).map(str::to_string))
+        .unwrap_or_else(|| "?".into());
+    hlas(&format!(
+        "zram: {} MB stlačenej pamäte ({algoritmus}, stránka {} kB)",
+        velkost >> 20,
+        stranka / 1024
+    ));
+    Some(velkost >> 20)
+}
+
 fn uptime() -> Option<f64> {
     citaj("/proc/uptime")?.split_whitespace().next()?.parse().ok()
 }
@@ -356,6 +416,7 @@ pub fn spusti() {
         || std::env::args().any(|a| a == "--skuska");
     let len_sledovanie = !pid1 && !std::env::args().any(|a| a == "--riadit");
     let model = citaj("/proc/device-tree/model").unwrap_or_else(|| "neznáme zariadenie".into());
+    let poda = crate::poda::nacitaj(Path::new("/"));
     if pid1 {
         zapni_siet();
     }
@@ -396,8 +457,10 @@ pub fn spusti() {
         profil.strop,
         if len_sledovanie { " (len sledovanie)" } else { "" }
     ));
+    hlas(&poda.riadok());
     hlas(&supis.riadok());
     let pripravene = uptime();
+    let zram_mb = if pid1 { zapni_zram(&poda) } else { None };
     // meranie rýchlosti karty na pozadí (pár sekúnd po štarte, aby nebrzdilo štart)
     // meranie rýchlosti karty na pozadí – spustí sa, keď je karta v systéme (na RPi 3 sa karta objaví
     // až chvíľu po štarte KLÍČA, preto sa to skúša pri každej zmene periférií)
@@ -492,6 +555,8 @@ pub fn spusti() {
                         verzia: crate::VERZIA,
                         meranie_karty: &meranie_karty,
                         merana_karta: &merana_karta,
+                        poda: &poda,
+                        zram_mb,
                     };
                     let jazyk = Jazyk::z_kodu(n.and_then(|n| n.jazyk.as_deref()));
                     let platno = obrazovka::nakresli(&pismo, d.sirka, d.vyska, &stav, jazyk);

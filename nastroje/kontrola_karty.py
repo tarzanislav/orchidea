@@ -29,7 +29,7 @@ MODELY = {
     "RPi 2 B v1.2": ({"pi2"}, "armv7", ["bcm2710-rpi-2-b.dtb"]),
     "RPi 3 B": ({"pi3"}, "aarch64", ["bcm2710-rpi-3-b.dtb"]),
     "RPi 3 B+": ({"pi3", "pi3+"}, "aarch64", ["bcm2710-rpi-3-b-plus.dtb"]),
-    "RPi Zero 2 W": ({"pi0", "pi02"}, "aarch64", ["bcm2710-rpi-zero-2-w.dtb"]),
+    "RPi Zero 2 W": ({"pi0", "pi0w", "pi02"}, "aarch64", ["bcm2710-rpi-zero-2-w.dtb"]),
     "RPi 4 B": ({"pi4"}, "aarch64", ["bcm2711-rpi-4-b.dtb"]),
     "RPi 400": ({"pi4", "pi400"}, "aarch64", ["bcm2711-rpi-400.dtb"]),
     "RPi 5": ({"pi5"}, "aarch64-16k", ["bcm2712-rpi-5-b.dtb", "bcm2712d0-rpi-5-b.dtb"]),
@@ -65,6 +65,8 @@ def nastavenie(config: str, filtre: set) -> dict:
         if riadok.startswith("initramfs "):
             casti = riadok.split()
             vysledok["initramfs"] = casti[1]
+        elif riadok.startswith("dtoverlay="):
+            vysledok.setdefault("dtoverlay", []).append(riadok.split("=", 1)[1].split(",")[0].strip())
         elif "=" in riadok:
             k, v = riadok.split("=", 1)
             vysledok[k.strip()] = v.strip()
@@ -229,6 +231,9 @@ def main() -> int:
             for d in dtb:
                 if not (koren / d).is_file():
                     problemy.append(f"chýba {d}")
+            for o in n.get("dtoverlay", []):
+                if not (koren / "overlays" / f"{o}.dtbo").is_file():
+                    problemy.append(f"chýba prekrytie overlays/{o}.dtbo")
         else:
             dj = dp = "–"
         vysledok = "✅" if not problemy else "❌ " + "; ".join(problemy)

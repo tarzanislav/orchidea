@@ -12,25 +12,37 @@ temp_limit=75
 # grafika od firmvéru (jednoduchý framebuffer); sériová linka pre ladenie (adaptér USB–TTL)
 gpu_mem=64
 enable_uart=1
+# obraz aj vtedy, keď sa monitor pripojí až po zapnutí (firmvér inak bez monitora obrazovku nevytvorí)
+hdmi_force_hotplug=1
 
 # RPi 1, Zero, Zero W – 32-bit ARMv6 (časť [pi0] platí aj pre Zero 2 W, tú prepíše [pi02] nižšie)
 [pi1]
 kernel=kernel.img
 initramfs initramfs6.cpio.gz followkernel
+# PÔDA (R93): grafické jadro na RPi 1–3 a Zero si berie RAM systému – SKLENÍK zatiaľ potrebuje len obrazovku
+gpu_mem=32
 [pi0]
 kernel=kernel.img
 initramfs initramfs6.cpio.gz followkernel
+gpu_mem=32
+# Zero W a Zero 2 W: Bluetooth zatiaľ nepoužívame – vypnúť (menej tepla) a sériovú linku dať na plnohodnotný
+# PL011; inak by enable_uart=1 zamkol takt grafického jadra na 250 MHz kvôli „mini UART“
+[pi0w]
+dtoverlay=disable-bt
 
 # RPi 2 – 32-bit ARMv7
 [pi2]
 kernel=kernel7.img
 initramfs initramfs7.cpio.gz followkernel
+gpu_mem=32
 
 # RPi 3, 3+, Zero 2 W a RPi 4, 400 – 64-bit
 [pi3]
 arm_64bit=1
 kernel=kernel8.img
 initramfs initramfs8.cpio.gz followkernel
+gpu_mem=32
+dtoverlay=disable-bt
 [pi3+]
 # RPi 3 B+: firmvér zníži takt 1,4 → 1,2 GHz už pri 60 °C
 temp_soft_limit=60
@@ -42,6 +54,9 @@ initramfs initramfs8.cpio.gz followkernel
 arm_64bit=1
 kernel=kernel8.img
 initramfs initramfs8.cpio.gz followkernel
+# RPi 4 B od rev. 1.4 a RPi 400: oficiálny takt 1,8 GHz (nie pretaktovanie; staršie dosky ho ignorujú)
+arm_boost=1
+dtoverlay=disable-bt
 [pi400]
 arm_64bit=1
 kernel=kernel8.img

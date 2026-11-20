@@ -253,12 +253,19 @@ jobs:
           for f in bootcode.bin start.elf fixup.dat start4.elf fixup4.dat LICENCE.broadcom; do
             curl -sSfL -o "firmver/$f" "https://raw.githubusercontent.com/raspberrypi/firmware/${FIRMVER_TAG}/boot/$f"
           done
+          # prekrytia popisu hardvéru, ktoré používa config.txt (len tie, nie celý priečinok)
+          mkdir -p prekrytia
+          for f in $(grep -oE '^dtoverlay=[a-z0-9-]+' sklenik/boot/config.txt | cut -d= -f2 | sort -u); do
+            curl -sSfL -o "prekrytia/$f.dtbo" "https://raw.githubusercontent.com/raspberrypi/firmware/${FIRMVER_TAG}/boot/overlays/$f.dtbo"
+          done
+          ls -l prekrytia
       - name: Zavádzací oddiel – jadrá, systémy v pamäti, nastavenie
         run: |
           mkdir -p boot
           for v in 6 7 8; do python3 nastroje/initramfs.py "klic/klic-v$v/klic" "boot/initramfs$v.cpio.gz"; done
           cp firmver/* jadra/*.dtb jadra/*.img jadra/*.config boot/
           cp sklenik/boot/config.txt sklenik/boot/cmdline.txt sklenik/boot/sklenik.txt boot/
+          mkdir -p boot/overlays && cp prekrytia/*.dtbo boot/overlays/
           # Odroid C4: jadro a popis hardvéru v odroid/, nastavenie zavádzača U-Boot v extlinux/
           cp -r jadra/odroid sklenik/boot/extlinux boot/
           printf 'SKLENÍK %s – univerzálna karta pre Raspberry Pi 1, 2, 3, 4, 5, Zero, Zero W, Zero 2 W a Odroid C4\njadro: https://github.com/raspberrypi/linux/tree/%s + sklenik/jadro.config (úplné nastavenie v jadro-*.config)\nfirmvér: https://github.com/raspberrypi/firmware/tree/%s/boot (LICENCE.broadcom)\nOdroid C4 – jadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-odroid.config (odroid/jadro-c4.config)\nOdroid C4 – zavádzač (prvé 4 MiB karty): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+) a podpísané časti Amlogic https://github.com/LibreELEC/amlogic-boot-fip/tree/%s/odroid-c4\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
@@ -338,6 +345,17 @@ jobs:
             echo "✅ KLÍČ prečítal z karty nastavenie od SADIČA (meno, jazyk)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "❌ KLÍČ neprečítal nastavenie z karty" | tee -a "$GITHUB_STEP_SUMMARY"; grep -iE "mmc|nastavenie" qemu-rpi3.log | head -20; chyby=$((chyby+1))
+          fi
+          # PÔDA (R92) a stlačená pamäť zram (R94, RPi 3 má 1 GB)
+          if grep -q "KLÍČ: PÔDA – .*čip BCM2837" qemu-rpi3.log; then
+            echo "✅ $(grep -o 'PÔDA – .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ KLÍČ neprečítal PÔDU" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "pôda" qemu-rpi3.log | head; chyby=$((chyby+1))
+          fi
+          if grep -q "KLÍČ: zram: " qemu-rpi3.log; then
+            echo "✅ $(grep -o 'zram: .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ KLÍČ nezapol zram" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "zram" qemu-rpi3.log | head; chyby=$((chyby+1))
           fi
           if grep -q "KLÍČ: karta mmcblk0: čítanie" qemu-rpi3.log; then
             echo "✅ KLÍČ zmeral rýchlosť karty: $(grep -o 'karta mmcblk0: čítanie.*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"

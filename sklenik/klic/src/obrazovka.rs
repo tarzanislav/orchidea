@@ -5,6 +5,7 @@
 //! v pamäti; na obrazovku sa zapíšu len riadky, ktoré sa zmenili (časť pre Linux v `linux.rs`).
 
 use crate::periferie::{DruhVstupu, Supis};
+use crate::poda::Poda;
 use orchidea_pismo::{Farba, Pismo, Platno};
 
 const POZADIE: Farba = 0x0F1C15;
@@ -85,6 +86,10 @@ pub struct Stav<'a> {
     pub meranie_karty: &'a MeranieKarty,
     /// Meno zariadenia, ktoré sa meria (napr. mmcblk0).
     pub merana_karta: &'a str,
+    /// Profil hardvéru (PÔDA).
+    pub poda: &'a Poda,
+    /// Stlačená pamäť zram (MB), ak je zapnutá.
+    pub zram_mb: Option<u64>,
 }
 
 /// Teplota slovom a farbou.
@@ -166,12 +171,19 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         j.t("Úložisko", "Úložiště", "Storage"),
         "USB",
         j.t("Doska", "Deska", "Board"),
+        j.t("Procesor", "Procesor", "Processor"),
+        j.t("Pamäť", "Paměť", "Memory"),
     ];
     let stlpec = m + popisy.iter().map(|t| pismo.sirka(t, v, h)).fold(0.0, f32::max) + 1.5 * v;
-    let krok = 1.8 * v;
+    // riadkov je podľa počtu sietí a úložísk – rozostup sa prispôsobí, aby sa zmestili všetky
+    let riadkov = 8 + s.supis.siet.len().max(1) + s.supis.ulozisko.len().max(1);
+    // posledný riadok musí ostať nad pätou (tri riadky malého písma)
+    let spodok = vyska as f32 - mv - 4.0 * v;
+    let volne = spodok - (y + 0.4 * v);
+    let krok = (volne / riadkov as f32).clamp(1.3 * v, 1.8 * v);
     let riadok = |p: &mut Platno, y: &mut f32, popis: &str, casti: &[(&str, Farba)]| {
         *y += krok;
-        if *y > vyska as f32 - mv - 3.4 * v {
+        if *y > spodok + 0.5 {
             return;
         }
         p.text(pismo, popis, m, *y, v, h, TLMENY);
@@ -221,7 +233,49 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         (Some(false), false) => (j.t("v poriadku", "v pořádku", "OK"), ZELENA),
         (None, _) => ("–", TLMENY),
     };
-    riadok(&mut p, &mut y, popisy[1], &[napajanie]);
+    // zdroj podľa firmvéru (RPi 5): 5 A = plný prúd pre USB, 3 A = USB obmedzené na 0,6 A
+    let zdroj = match (s.poda.zdroj_ma, s.poda.usb_vysoky_prud) {
+        (Some(ma), Some(false)) => format!(
+            "· {} {} A – {}",
+            j.t("zdroj", "zdroj", "supply"),
+            j.cislo(ma as f64 / 1000.0, 0),
+            j.t("USB len 0,6 A", "USB jen 0,6 A", "USB limited to 0.6 A")
+        ),
+        (Some(ma), _) => {
+            format!("· {} {} A", j.t("zdroj", "zdroj", "supply"), j.cislo(ma as f64 / 1000.0, 0))
+        }
+        _ => String::new(),
+    };
+    riadok(&mut p, &mut y, popisy[1], &[napajanie, (&zdroj, TLMENY)]);
+
+    // PÔDA: čip, jadrá a takt; pamäť, voľná pamäť, stlačená pamäť a úseky NUMA
+    let mut procesor = s.poda.cip.clone().unwrap_or_else(|| "–".into());
+    if s.poda.jadier > 0 {
+        procesor += &format!(" · {}× {}", s.poda.jadier, s.poda.jadro.unwrap_or(""));
+    }
+    if let Some(mhz) = s.poda.max_mhz {
+        procesor += &format!(" · {} GHz", j.cislo(mhz as f64 / 1000.0, 1));
+    }
+    riadok(&mut p, &mut y, popisy[8], &[(procesor.trim_end(), TEXT)]);
+    let mb = |m: u64| {
+        if m >= 1024 {
+            format!("{} GB", j.cislo(m as f64 / 1024.0, if m.is_multiple_of(1024) { 0 } else { 1 }))
+        } else {
+            format!("{m} MB")
+        }
+    };
+    let pamat = if s.poda.pamat_kb > 0 { mb(s.poda.ram_mb()) } else { "–".into() };
+    let mut doplnok = String::new();
+    if s.poda.dostupna_kb > 0 {
+        doplnok += &format!("· {} {} ", j.t("voľné", "volné", "free"), mb(s.poda.dostupna_kb / 1024));
+    }
+    if let Some(z) = s.zram_mb {
+        doplnok += &format!("· {} {} ", j.t("+ stlačená", "+ komprimovaná", "+ compressed"), mb(z));
+    }
+    if s.poda.uzly_numa > 1 {
+        doplnok += &format!("· NUMA {}", s.poda.uzly_numa);
+    }
+    riadok(&mut p, &mut y, popisy[9], &[(&pamat, TEXT), (doplnok.trim_end(), TLMENY)]);
 
     let obrazovka = s
         .supis
@@ -459,6 +513,17 @@ mod skusky {
             verzia: "19. 11. 2026 · f26272c",
             meranie_karty: &MeranieKarty::Hotovo(22.4, 1830.0),
             merana_karta: "mmcblk0",
+            poda: Box::leak(Box::new(Poda {
+                cip: Some("BCM2837".into()),
+                jadro: Some("Cortex-A53"),
+                jadier: 4,
+                max_mhz: Some(1400),
+                ram_dosky_mb: Some(1024),
+                pamat_kb: 948_304,
+                dostupna_kb: 870_000,
+                ..Poda::default()
+            })),
+            zram_mb: Some(474),
             vykon: 1.0,
             podpatie: Some(false),
             podpatie_bolo: false,

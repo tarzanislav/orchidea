@@ -21,6 +21,8 @@ unsafe extern "C" {
     fn ioctl(fd: c_int, poziadavka: c_ulong, ...) -> c_int;
     fn close(fd: c_int) -> c_int;
     fn sethostname(meno: *const u8, dlzka: usize) -> c_int;
+    fn swapon(cesta: *const c_char, priznaky: c_int) -> c_int;
+    fn sysconf(meno: c_int) -> core::ffi::c_long;
 }
 
 pub const MS_NOSUID: c_ulong = 2;
@@ -43,6 +45,11 @@ const KD_GRAPHICS: c_ulong = 1;
 
 /// `struct ifreq`: meno (16 B) + spoločná časť; 40 B stačí na 32- aj 64-bitovom jadre.
 const IFREQ: usize = 40;
+const SIOCETHTOOL: c_ulong = 0x8946;
+const ETHTOOL_GEEE: u32 = 0x44;
+const ETHTOOL_SEEE: u32 = 0x45;
+const SC_PAGESIZE: c_int = 30;
+const SWAP_FLAG_PREFER: c_int = 0x8000;
 
 /// Pripojí súborový systém.
 pub fn pripoj(zdroj: &str, ciel: &str, typ: &str, priznaky: c_ulong) -> io::Result<()> {
@@ -141,4 +148,64 @@ pub fn nastav_meno(meno: &str) -> io::Result<()> {
 
 fn cstr(s: &str) -> io::Result<CString> {
     CString::new(s).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "reťazec obsahuje nulový znak"))
+}
+
+/// Veľkosť stránky pamäte (4 kB; RPi 5 má 16 kB).
+pub fn velkost_stranky() -> usize {
+    // SAFETY: sysconf len číta nastavenie systému.
+    let v = unsafe { sysconf(SC_PAGESIZE) };
+    if v > 0 { v as usize } else { 4096 }
+}
+
+/// Zapne odkladaciu pamäť (zram) s prednosťou `priorita`.
+pub fn zapni_odkladanie(cesta: &str, priorita: c_int) -> io::Result<()> {
+    let c = CString::new(cesta).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: platný reťazec ukončený nulou, žije počas volania.
+    if unsafe { swapon(c.as_ptr(), SWAP_FLAG_PREFER | (priorita & 0x7fff)) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Vypne úsporný režim Ethernetu (EEE) na rozhraní – na RPi 3 B+, 4 a 400 známa príčina výpadkov spojenia.
+/// Vráti `Ok(false)`, ak EEE nebolo zapnuté.
+pub fn vypni_eee(meno: &str) -> io::Result<bool> {
+    if meno.is_empty() || meno.len() >= 16 || meno.contains('\0') {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "neplatné meno rozhrania"));
+    }
+    // struct ethtool_eee: cmd, supported, advertised, lp_advertised, eee_active, eee_enabled,
+    // tx_lpi_enabled, tx_lpi_timer, reserved[2] – 10 slov po 32 bitoch
+    let mut eee = [0u32; 10];
+    eee[0] = ETHTOOL_GEEE;
+    // SAFETY: obyčajné volanie jadra s konštantami; výsledok sa kontroluje.
+    let fd = unsafe { socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut ifr = [0u8; IFREQ];
+    ifr[..meno.len()].copy_from_slice(meno.as_bytes());
+    let vysledok = (|| {
+        let mut volaj = |eee: &mut [u32; 10]| {
+            let ukazovatel = eee.as_mut_ptr() as usize;
+            ifr[16..16 + size_of::<usize>()].copy_from_slice(&ukazovatel.to_ne_bytes());
+            // SAFETY: ifr obsahuje meno a ukazovateľ na eee; obe žijú počas volania.
+            if unsafe { ioctl(fd, SIOCETHTOOL, ifr.as_mut_ptr()) } < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        };
+        volaj(&mut eee)?;
+        if eee[5] == 0 && eee[6] == 0 {
+            return Ok(false);
+        }
+        eee[0] = ETHTOOL_SEEE;
+        eee[5] = 0;
+        eee[6] = 0;
+        volaj(&mut eee)?;
+        Ok(true)
+    })();
+    // SAFETY: fd je náš otvorený deskriptor, zatvára sa raz.
+    unsafe { close(fd) };
+    vysledok
 }
