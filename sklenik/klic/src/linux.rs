@@ -633,6 +633,7 @@ pub fn spusti() {
                         merana_karta: &merana_karta,
                         poda: &poda,
                         zram_mb,
+                        strazny_casovac: strazny.is_some(),
                     };
                     let jazyk = Jazyk::z_kodu(n.and_then(|n| n.jazyk.as_deref()));
                     let platno = obrazovka::nakresli(&pismo, d.sirka, d.vyska, &stav, jazyk);

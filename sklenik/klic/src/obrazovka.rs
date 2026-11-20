@@ -90,6 +90,8 @@ pub struct Stav<'a> {
     pub poda: &'a Poda,
     /// Stlačená pamäť zram (MB), ak je zapnutá.
     pub zram_mb: Option<u64>,
+    /// Hardvérový strážny časovač je zapnutý (R99).
+    pub strazny_casovac: bool,
 }
 
 /// Teplota slovom a farbou.
@@ -442,6 +444,9 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         j.cislo(s.strop, 0)
     );
 
+    if s.strazny_casovac {
+        info += &format!(" · {} ✓", j.t("strážny časovač", "hlídací časovač", "watchdog"));
+    }
     p.text(pismo, &pismo.skrat(&info, pravy - m, maly, h * 0.8), m, yp - 1.5 * maly, maly, h * 0.8, TLMENY);
     p
 }
@@ -539,6 +544,7 @@ mod skusky {
                 ..Poda::default()
             })),
             zram_mb: Some(474),
+            strazny_casovac: true,
             vykon: 1.0,
             podpatie: Some(false),
             podpatie_bolo: false,
