@@ -70,6 +70,29 @@ def vlastnost_korena_dtb(dtb: bytes, meno: str) -> bytes | None:
     return None
 
 
+def vlastnosti_uzla(dtb: bytes, meno_uzla: str) -> set:
+    """Mená vlastností uzla s daným menom (napr. „mmc@ffe05000“) v popise hardvéru (FDT)."""
+    _, _, struct_od, retazce_od = struct.unpack_from(">IIII", dtb, 0)
+    i, cesta, vysledok = struct_od, [], set()
+    while i < len(dtb):
+        (token,) = struct.unpack_from(">I", dtb, i)
+        i += 4
+        if token == 1:
+            koniec = dtb.index(b"\0", i)
+            cesta.append(dtb[i:koniec].decode())
+            i = (koniec + 4) & ~3
+        elif token == 2:
+            cesta.pop()
+        elif token == 3:
+            dlzka, meno_od = struct.unpack_from(">II", dtb, i)
+            i = (i + 8 + dlzka + 3) & ~3
+            if cesta and cesta[-1] == meno_uzla:
+                vysledok.add(dtb[retazce_od + meno_od : dtb.index(b"\0", retazce_od + meno_od)].decode())
+        elif token == 9:
+            break
+    return vysledok
+
+
 def main() -> int:
     obraz = Path(sys.argv[1]).read_bytes()[: (ODDIEL_OD + 1) * 512]
     zavadzac = Path(sys.argv[2]).read_bytes()
@@ -130,6 +153,13 @@ def main() -> int:
             b"hardkernel,odroid-c4" in kompat and b"amlogic,sm1" in kompat,
             f"popis hardvéru: {model} (hardkernel,odroid-c4, amlogic,sm1)",
             f"popis hardvéru nie je pre Odroid C4: {model} {kompat}",
+        )
+        sd = vlastnosti_uzla(dtb, "mmc@ffe05000")
+        uhs = sorted(v for v in sd if v.startswith("sd-uhs"))
+        over(
+            bool(sd) and not uhs,
+            "SD karta bez rýchlych režimov UHS – reštart zo SD funguje (R96)",
+            f"SD karta má režimy {uhs or 'uzol chýba'} – reštart zo SD by zamrzol",
         )
     if chyby:
         print(f"❌ chýb: {len(chyby)}")
