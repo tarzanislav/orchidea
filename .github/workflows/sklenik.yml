@@ -358,7 +358,6 @@ jobs:
           else
             echo "❌ test jadier neprešiel" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "jadi\|jadro" qemu-rpi3.log | head; chyby=$((chyby+1))
           fi
-          echo "ℹ️ $(grep -o 'KLÍČ: strážny časovač.*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           if grep -q "KLÍČ: zram: " qemu-rpi3.log; then
             echo "✅ $(grep -o 'KLÍČ: zram: .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           else

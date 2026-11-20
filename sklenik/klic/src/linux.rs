@@ -518,7 +518,11 @@ pub fn spusti() {
     let mut zobrazene: Option<(i64, usize)> = None;
     let mut krokov = 0u32;
     // R99: hardvérový strážny časovač – ak sa KLÍČ zasekne na 15 s, doska sa sama reštartuje
-    let mut strazny = if pid1 {
+    // v emulátore QEMU sa časovač nespráva ako na doske (reštartuje hneď) – v skúške sa vynechá
+    let mut strazny = if pid1 && skuska {
+        hlas("strážny časovač: v skúške vynechaný");
+        None
+    } else if pid1 {
         match sys::otvor_strazny_casovac(15) {
             Ok(f) => {
                 hlas(&format!(
