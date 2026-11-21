@@ -222,8 +222,15 @@ pub fn nacitaj(koren: &Path) -> Poda {
 
 impl Poda {
     /// Celková pamäť na zobrazenie (MB): podľa kódu dosky, inak podľa jadra.
+    /// RAM dosky (MB): na RPi podľa kódu revízie; inde (Odroid) z pamäte, ktorú vidí jadro, zaokrúhlenej
+    /// na veľkosť čipov – jadro si časť RAM nechá pre seba a firmvér (3,7 GB na doske so 4 GB).
     pub fn ram_mb(&self) -> u64 {
-        self.ram_dosky_mb.map(u64::from).unwrap_or(self.pamat_kb / 1024)
+        if let Some(mb) = self.ram_dosky_mb {
+            return mb.into();
+        }
+        let mb = self.pamat_kb / 1024;
+        let mocnina = mb.max(1).next_power_of_two();
+        if mb * 5 >= mocnina * 4 { mocnina } else { mb }
     }
 
     /// Malá pamäť (≤ 1 GB) – zapne sa stlačená pamäť zram (R94).
@@ -381,5 +388,8 @@ cpuid asimdrdm lrcpc dcpop asimddp\nCPU part\t: 0xd0b\n\nprocessor\t: 1\n\nproce
             (p.cip.as_deref(), p.jadro, p.revizia),
             (Some("Amlogic S905X3"), Some("Cortex-A55"), None)
         );
+        // 3,7 GB, ktoré vidí jadro = doska so 4 GB; 0,9 GB = 1 GB; nezvyčajné množstvo zostane
+        let ram = |kb| Poda { pamat_kb: kb, ..Poda::default() }.ram_mb();
+        assert_eq!((ram(3_880_000), ram(948_304), ram(1_400_000), ram(0)), (4096, 1024, 1367, 0));
     }
 }

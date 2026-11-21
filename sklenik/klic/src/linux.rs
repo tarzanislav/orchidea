@@ -1,7 +1,7 @@
 //! KLÍČ na Linuxe: štart systému, periférie a sieť, tepelný strážca nad súbormi jadra (`/sys`) a stav na
 //! obrazovke.
 
-use crate::obrazovka::{self, FormatBodu, Jazyk, MeranieKarty, Stav};
+use crate::obrazovka::{self, Eee, FormatBodu, Jazyk, MeranieKarty, Stav};
 use crate::periferie::{Supis, Ulozisko};
 use crate::poda::Poda;
 use crate::strazca::{Hardver, Profil, Regulator, Uroven, stupen_ventilatora, urovne};
@@ -171,20 +171,6 @@ fn zapni_siet() {
                 Ok(false) => {}
                 Err(e) => hlas(&format!("sieť: rozhranie {meno} sa nepodarilo zapnúť: {e}")),
             }
-            // úsporný režim Ethernetu (EEE) robí na RPi 3 B+ (lan78xx) a RPi 4/400 (bcmgenet) výpadky
-            // spojenia s niektorými prepínačmi – spoľahlivé spojenie s PC (KORENE) má prednosť
-            let ovladac = fs::read_link(z.path().join("device/driver"))
-                .ok()
-                .and_then(|c| c.file_name().map(|m| m.to_string_lossy().into_owned()));
-            if matches!(ovladac.as_deref(), Some("lan78xx" | "bcmgenet")) {
-                match sys::vypni_eee(meno) {
-                    Ok(true) => {
-                        hlas(&format!("sieť: {meno} – úsporný režim EEE vypnutý (stabilné spojenie)"))
-                    }
-                    Ok(false) => {}
-                    Err(e) => hlas(&format!("sieť: {meno} – EEE sa nepodarilo vypnúť: {e}")),
-                }
-            }
         }
     }
 }
@@ -242,6 +228,24 @@ impl Displej {
         }
         self.predosle = Some(p);
         zapisane
+    }
+
+    /// Zapíše na obrazovku len obdĺžnik z posledného plátna (R109 – hodiny).
+    fn ukaz_obdlznik(&mut self, x: usize, y: usize, w: usize, v: usize) {
+        let Some(p) = self.predosle.as_ref() else { return };
+        if x >= self.sirka {
+            return;
+        }
+        let mut bajty = Vec::with_capacity(w * self.format.bajtov);
+        for yy in y..(y + v).min(self.vyska) {
+            let od = yy * self.sirka + x;
+            let riadok = &p.body[od..od + w.min(self.sirka - x)];
+            self.format.preved(riadok, &mut bajty);
+            let _ = self.fb.write_at(
+                &bajty,
+                self.zaciatok + yy as u64 * self.riadok_bajtov + (x * self.format.bajtov) as u64,
+            );
+        }
     }
 }
 
@@ -514,9 +518,9 @@ pub fn spusti() {
     let mut zmena_merania = Instant::now();
     let mut posledne_mb = None;
 
-    let mut posledny = Instant::now();
     let mut zobrazene: Option<(i64, usize)> = None;
     let mut zobrazeny_cas: Option<u64> = None;
+    let mut zobrazene_ine: Option<(Option<Eee>, Vec<String>)> = None;
     let mut krokov = 0u32;
     // R99: hardvérový strážny časovač – ak sa KLÍČ zasekne na 15 s, doska sa sama reštartuje
     // v emulátore QEMU sa časovač nespráva ako na doske (reštartuje hneď) – v skúške sa vynechá
@@ -540,63 +544,117 @@ pub fn spusti() {
     } else {
         None
     };
+    // R113: udalosti jadra – KLÍČ spí, kým sa niečo nepripojí, alebo kým nie je čas na krok strážcu
+    let udalosti = match sys::Udalosti::otvor() {
+        Ok(u) => {
+            hlas("udalosti jadra: sledované (pripojenie zariadení a kábla bez prehľadávania)");
+            Some(u)
+        }
+        Err(e) => {
+            hlas(&format!("udalosti jadra nie sú k dispozícii ({e}) – prehľadávanie každé 2 s"));
+            None
+        }
+    };
+    let mut eee = SledovanieEee::nove(&supis);
+    let mut vytazenie = Vytazenie::nove();
+    let mut kmsg = Hlasenia::otvor(&model);
+    kmsg.citaj();
+    let mut usb_ozivene = false;
     let mut bez_teploty_hlasene = false;
+    let mut teplota = hw.teplota();
+    let mut posledny_krok = Instant::now();
+    let mut dalsi_krok = Instant::now();
+    let mut posledny_supis = Instant::now();
+    let mut udalost = false;
     loop {
-        let dt = posledny.elapsed().as_secs_f64().max(0.001);
-        posledny = Instant::now();
-        let teplota = hw.teplota();
-        let uroven = match teplota {
-            Some(t) => regulator.krok(t, dt),
-            // R99: snímač teploty bol, ale nedá sa prečítať (napr. zlyhal firmvér) – nevieme, že je chladno,
-            // preto bezpečný režim: strážca znižuje výkon, akoby bolo nad stropom
-            None if !hw.snimace.is_empty() => {
-                if !bez_teploty_hlasene {
-                    hlas("teplotu sa nepodarilo prečítať – bezpečný režim (nižší výkon)");
-                    bez_teploty_hlasene = true;
+        // krok strážcu: v pokoji každé 4 s, inak každú sekundu (udalosti ho neurýchľujú – sklon teploty
+        // sa počíta z rovnomerných krokov)
+        if Instant::now() >= dalsi_krok {
+            let dt = posledny_krok.elapsed().as_secs_f64().max(0.001);
+            posledny_krok = Instant::now();
+            teplota = hw.teplota();
+            let v = vytazenie.krok();
+            let uroven = match teplota {
+                Some(t) => regulator.krok_s_vytazenim(t, dt, v),
+                // R99: snímač teploty bol, ale nedá sa prečítať (napr. zlyhal firmvér) – nevieme, že je
+                // chladno, preto bezpečný režim: strážca znižuje výkon, akoby bolo nad stropom
+                None if !hw.snimace.is_empty() => {
+                    if !bez_teploty_hlasene {
+                        hlas("teplotu sa nepodarilo prečítať – bezpečný režim (nižší výkon)");
+                        bez_teploty_hlasene = true;
+                    }
+                    regulator.krok(regulator.profil().strop + 5.0, dt)
                 }
-                regulator.krok(regulator.profil().strop + 5.0, dt)
+                None => regulator.uroven(),
+            };
+            // KLÍČ žije – nakŕmiť strážny časovač
+            if let Some(f) = strazny.as_mut() {
+                let _ = f.write_all(b"\0");
             }
-            None => regulator.uroven(),
+            if !len_sledovanie {
+                hw.uplatni(&uroven);
+                if let Some(t) = teplota {
+                    hw.ventiluj(t, profil);
+                }
+            }
+            if pid1 {
+                sys::zber_procesov();
+                eee.krok();
+            }
+            // v pokoji sa strážca prebúdza zriedkavejšie
+            let pokoj = teplota.unwrap_or(0.0) < regulator.profil().ciel - 10.0;
+            dalsi_krok = posledny_krok + Duration::from_secs(if pokoj { 4 } else { 1 });
+        }
+
+        // periférie: pri udalosti jadra, inak raz za 10 s (podpätie, ktoré udalosť nemá); bez udalostí 2 s
+        let interval = if udalosti.is_some() { 10 } else { 2 };
+        let zmena_periferii = if udalost || posledny_supis.elapsed() >= Duration::from_secs(interval) {
+            posledny_supis = Instant::now();
+            let novy = Supis::nacitaj(Path::new("/"));
+            let zmena = novy != supis;
+            if zmena {
+                if pid1 && novy.siet.len() != supis.siet.len() {
+                    zapni_siet();
+                }
+                // obrazovka sa môže objaviť až po štarte (ovládač grafiky Odroidu) alebo zmeniť rozlíšenie
+                if !len_sledovanie && novy.obrazovky != supis.obrazovky {
+                    displej = Displej::otvor();
+                }
+                hlas(&novy.riadok());
+                supis = novy;
+                podpatie_bolo |= supis.podpatie == Some(true);
+                eee.obnov(&supis);
+                // karta sa môže objaviť až chvíľu po štarte
+                if nastavenie.is_none() {
+                    nastavenie = nacitaj_nastavenie(&supis);
+                    nastav_zariadenie(&nastavenie);
+                }
+                if merana_karta.is_empty()
+                    && let Some(u) = vyber_kartu(&supis, &nastavenie)
+                {
+                    merana_karta = u.meno.clone();
+                    spusti_meranie(u, meranie.clone());
+                }
+            }
+            kmsg.citaj();
+            zmena
+        } else {
+            false
         };
-        // KLÍČ žije – nakŕmiť strážny časovač
-        if let Some(f) = strazny.as_mut() {
-            let _ = f.write_all(b"\0");
-        }
-        if !len_sledovanie {
-            hw.uplatni(&uroven);
-            if let Some(t) = teplota {
-                hw.ventiluj(t, profil);
+        // R114: rozbočovač USB Odroidu C4 sa pri štarte občas nezobudí (klávesnica a myš chýbajú, kým sa
+        // nevytiahnu a nezasunú) – KLÍČ ho raz „zasunie znova“ sám: odpojí a znova pripojí koreňové rozbočovače
+        if pid1 && !skuska && !usb_ozivene && uptime().unwrap_or(0.0) >= 8.0 {
+            usb_ozivene = true;
+            let cerstvy = Supis::nacitaj(Path::new("/"));
+            if cerstvy.usb.is_empty() && cerstvy.vstupy.is_empty() {
+                let n = ozivi_usb();
+                if n > 0 {
+                    hlas(&format!("USB: žiadne zariadenie – rozbočovače ({n}) znova pripojené"));
+                    posledny_supis = Instant::now() - Duration::from_secs(60);
+                }
             }
         }
-        if pid1 {
-            sys::zber_procesov();
-        }
-        // pripojená klávesnica, myš, kábel alebo karta sa objaví bez reštartu
-        let novy = Supis::nacitaj(Path::new("/"));
-        let zmena_periferii = novy != supis;
-        if zmena_periferii {
-            if pid1 && novy.siet.len() != supis.siet.len() {
-                zapni_siet();
-            }
-            // obrazovka sa môže objaviť až po štarte (ovládač grafiky Odroidu) alebo zmeniť rozlíšenie
-            if !len_sledovanie && novy.obrazovky != supis.obrazovky {
-                displej = Displej::otvor();
-            }
-            hlas(&novy.riadok());
-            supis = novy;
-            podpatie_bolo |= supis.podpatie == Some(true);
-            // karta sa môže objaviť až chvíľu po štarte
-            if nastavenie.is_none() {
-                nastavenie = nacitaj_nastavenie(&supis);
-                nastav_zariadenie(&nastavenie);
-            }
-            if merana_karta.is_empty()
-                && let Some(u) = vyber_kartu(&supis, &nastavenie)
-            {
-                merana_karta = u.meno.clone();
-                spusti_meranie(u, meranie.clone());
-            }
-        }
+
         let stav = (teplota.map_or(-1000, |t| (t * 2.0).round() as i64), regulator.index());
         let mut meranie_karty = meranie.lock().map(|g| g.clone()).unwrap_or(MeranieKarty::Caka);
         if let MeranieKarty::Bezi(mb) = meranie_karty {
@@ -614,13 +672,23 @@ pub fn spusti() {
             hlas(&format!("meranie karty stojí pri {mb} MB – karta neodpovedá"));
         }
         let nove_meranie = meranie_karty != zobrazene_meranie;
-        // hodiny od zapnutia sa menia každú sekundu – prekreslí sa len ich riadok
+        let ine = (eee.stav(), kmsg.posledne(2));
+        let nove_ine = zobrazene_ine.as_ref() != Some(&ine);
         let bezi_s = uptime().unwrap_or(0.0) as u64;
         let novy_cas = Some(bezi_s) != zobrazeny_cas;
-        if zobrazene != Some(stav) || zmena_periferii || nove_meranie || novy_cas {
+        let n = nastavenie.as_ref().map(|(_, n)| n);
+        let jazyk = Jazyk::z_kodu(n.and_then(|n| n.jazyk.as_deref()));
+        let vsetko = zobrazene != Some(stav) || zmena_periferii || nove_meranie || nove_ine;
+        if vsetko || novy_cas {
             match displej.as_mut() {
+                // R109: zmenili sa len hodiny – prekreslí sa len ich obdĺžnik (zlomok práce)
+                Some(d) if !vsetko && d.predosle.is_some() => {
+                    if let Some(platno) = d.predosle.as_mut() {
+                        let (x, y, w, v) = obrazovka::nakresli_hodiny(&pismo, platno, bezi_s, jazyk);
+                        d.ukaz_obdlznik(x, y, w, v);
+                    }
+                }
                 Some(d) => {
-                    let n = nastavenie.as_ref().map(|(_, n)| n);
                     let stav = Stav {
                         model: &model,
                         meno: n.and_then(|n| n.meno.as_deref()),
@@ -639,8 +707,9 @@ pub fn spusti() {
                         poda: &poda,
                         zram_mb,
                         strazny_casovac: strazny.is_some(),
+                        eee: ine.0,
+                        hlasenia: &ine.1,
                     };
-                    let jazyk = Jazyk::z_kodu(n.and_then(|n| n.jazyk.as_deref()));
                     let platno = obrazovka::nakresli(&pismo, d.sirka, d.vyska, &stav, jazyk);
                     let riadkov = d.ukaz(platno);
                     if skuska {
@@ -650,21 +719,24 @@ pub fn spusti() {
                         ));
                     }
                 }
-                None => ukaz_stav(&model, teplota, &regulator, cas_startu, &supis),
+                None if vsetko => ukaz_stav(&model, teplota, &regulator, cas_startu, &supis),
+                None => {}
             }
-            if !pid1 || skuska {
+            if vsetko && (!pid1 || skuska) {
+                let u = regulator.uroven();
                 hlas(&format!(
                     "teplota {}, úroveň {}/{} (jadrá {}, takt {} MHz)",
                     teplota.map_or("–".into(), |t| format!("{t:.1} °C")),
                     regulator.index() + 1,
                     regulator.pocet_urovni(),
-                    uroven.jadra,
-                    uroven.takt_khz / 1000
+                    u.jadra,
+                    u.takt_khz / 1000
                 ));
             }
             zobrazene = Some(stav);
             zobrazeny_cas = Some(bezi_s);
             zobrazene_meranie = meranie_karty.clone();
+            zobrazene_ine = Some(ine);
         }
         krokov += 1;
         // v skúške sa počká aj na koniec merania karty (najviac 60 s)
@@ -689,9 +761,272 @@ pub fn spusti() {
             }
             return;
         }
-        // v pokoji sa strážca prebúdza zriedkavejšie
-        let t = teplota.unwrap_or(0.0);
-        let pokoj = t < regulator.profil().ciel - 10.0;
-        std::thread::sleep(Duration::from_secs(if pokoj { 4 } else { 1 }));
+
+        // spánok do ďalšieho kroku strážcu alebo do udalosti jadra; hodiny na obrazovke sa posunú pri
+        // každom prebudení (v pokoji po 4 s – zbytočné prebúdzanie by doskou len hrialo)
+        let cakat = dalsi_krok.saturating_duration_since(Instant::now());
+        udalost = match &udalosti {
+            Some(u) => {
+                let bola = u.cakaj(cakat.as_millis() as u64);
+                if bola {
+                    // pripojenie zariadenia je dávka udalostí – počká sa, kým utíchne (najviac 1 s)
+                    let t = Instant::now();
+                    while t.elapsed() < Duration::from_secs(1) && u.cakaj(200) {}
+                }
+                bola
+            }
+            None => {
+                std::thread::sleep(cakat);
+                false
+            }
+        };
+    }
+}
+
+/// Vyťaženie procesora z `/proc/stat` (podiel času, keď zapnuté jadrá pracovali) – pre strážcu (R110).
+struct Vytazenie {
+    posledne: Option<(u64, u64)>,
+}
+
+impl Vytazenie {
+    fn nove() -> Vytazenie {
+        Vytazenie { posledne: Self::cas() }
+    }
+
+    /// (spolu, nečinne) v tikoch jadra za všetky jadrá.
+    fn cas() -> Option<(u64, u64)> {
+        let text = fs::read_to_string("/proc/stat").ok()?;
+        rozloz_stat(text.lines().next()?)
+    }
+
+    fn krok(&mut self) -> Option<f64> {
+        let teraz = Self::cas()?;
+        let predtym = self.posledne.replace(teraz)?;
+        let spolu = teraz.0.saturating_sub(predtym.0);
+        let necinne = teraz.1.saturating_sub(predtym.1);
+        (spolu > 0).then(|| 1.0 - necinne as f64 / spolu as f64)
+    }
+}
+
+/// Riadok `cpu  user nice system idle iowait irq softirq steal …` → (spolu, nečinné vrátane čakania na disk).
+fn rozloz_stat(riadok: &str) -> Option<(u64, u64)> {
+    let mut casti = riadok.split_whitespace();
+    if casti.next()? != "cpu" {
+        return None;
+    }
+    let cisla: Vec<u64> = casti.take(8).filter_map(|x| x.parse().ok()).collect();
+    if cisla.len() < 5 {
+        return None;
+    }
+    Some((cisla.iter().sum(), cisla[3] + cisla[4]))
+}
+
+/// R111: úsporný režim Ethernetu (EEE) zostáva zapnutý (Ethernet v pokoji menej hreje), kým spojenie
+/// nezačne vypadávať – vtedy ho KLÍČ vypne (známy problém RPi 3 B+ a 4 s niektorými prepínačmi).
+struct SledovanieEee {
+    rozhranie: Option<String>,
+    posledny_pocet: Option<u64>,
+    vypadky: Vec<Instant>,
+    vypnute: bool,
+    aktivne: bool,
+}
+
+/// Koľko zmien spojenia (odpojenie + pripojenie = 2) za 10 minút znamená nestabilné spojenie.
+const EEE_ZMIEN: usize = 4;
+
+impl SledovanieEee {
+    fn nove(supis: &Supis) -> SledovanieEee {
+        let mut s = SledovanieEee {
+            rozhranie: None,
+            posledny_pocet: None,
+            vypadky: Vec::new(),
+            vypnute: false,
+            aktivne: false,
+        };
+        s.obnov(supis);
+        s
+    }
+
+    /// Po zmene periférií: prvé káblové rozhranie a jeho stav EEE.
+    fn obnov(&mut self, supis: &Supis) {
+        let meno = supis.siet.iter().find(|r| !r.bezdrotove).map(|r| r.meno.clone());
+        if meno != self.rozhranie {
+            self.rozhranie = meno;
+            self.posledny_pocet = None;
+            self.vypadky.clear();
+        }
+        let Some(meno) = &self.rozhranie else { return };
+        let aktivne = matches!(sys::eee_stav(meno), Ok(Some((true, true))));
+        if aktivne != self.aktivne {
+            self.aktivne = aktivne;
+            hlas(&format!(
+                "sieť: {meno} – úsporný režim EEE {}",
+                if aktivne { "aktívny" } else { "neaktívny" }
+            ));
+        }
+    }
+
+    fn krok(&mut self) {
+        let Some(meno) = self.rozhranie.clone() else { return };
+        if self.vypnute {
+            return;
+        }
+        let Some(pocet) =
+            citaj(format!("/sys/class/net/{meno}/carrier_changes")).and_then(|c| c.parse::<u64>().ok())
+        else {
+            return;
+        };
+        let predtym = self.posledny_pocet.replace(pocet);
+        // prvé spojenie po štarte sa nepočíta
+        if let Some(p) = predtym
+            && pocet > p
+            && uptime().unwrap_or(0.0) > 30.0
+        {
+            let teraz = Instant::now();
+            self.vypadky.extend(std::iter::repeat_n(teraz, (pocet - p).min(16) as usize));
+        }
+        self.vypadky.retain(|t| t.elapsed() < Duration::from_secs(600));
+        if self.vypadky.len() >= EEE_ZMIEN {
+            match sys::vypni_eee(&meno) {
+                Ok(_) => hlas(&format!(
+                    "sieť: {meno} – spojenie vypadávalo ({} zmien za 10 min), úsporný režim EEE vypnutý",
+                    self.vypadky.len()
+                )),
+                Err(e) => hlas(&format!("sieť: {meno} – EEE sa nepodarilo vypnúť: {e}")),
+            }
+            self.vypnute = true;
+            self.aktivne = false;
+        }
+    }
+
+    fn stav(&self) -> Option<Eee> {
+        if self.vypnute {
+            Some(Eee::VypnutyPreVypadky)
+        } else if self.aktivne {
+            Some(Eee::Aktivny)
+        } else {
+            None
+        }
+    }
+}
+
+/// R114: odpojí a znova pripojí koreňové rozbočovače USB (ako vytiahnutie a zasunutie). Vráti ich počet.
+fn ozivi_usb() -> usize {
+    let mut n = 0;
+    for z in fs::read_dir("/sys/bus/usb/devices").into_iter().flatten().flatten() {
+        let meno = z.file_name().to_string_lossy().into_owned();
+        if meno.starts_with("usb") && zapis(z.path().join("authorized"), "0") {
+            std::thread::sleep(Duration::from_millis(200));
+            if zapis(z.path().join("authorized"), "1") {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// R115: hlásenia jadra o chybách zariadení (karta, USB, obrazovka) z `/dev/kmsg` – na obrazovku, aby sa
+/// dali odfotiť (doska nemusí mať sériovú linku ani sieť).
+struct Hlasenia {
+    subor: Option<fs::File>,
+    zoznam: Vec<String>,
+    /// Najvyššia (najmenej závažná) úroveň, ktorá sa ešte ukáže: na RPi len chyby (ovládač USB RPi 1–3
+    /// pri každom štarte píše neškodné varovanie), inde aj varovania.
+    uroven: u32,
+}
+
+impl Hlasenia {
+    fn otvor(model: &str) -> Hlasenia {
+        use std::os::unix::fs::OpenOptionsExt;
+        // O_NONBLOCK – čítanie skončí, keď sú prečítané všetky záznamy
+        let subor = fs::OpenOptions::new().read(true).custom_flags(0o4000).open("/dev/kmsg").ok();
+        Hlasenia { subor, zoznam: Vec::new(), uroven: if model.contains("Raspberry Pi") { 3 } else { 4 } }
+    }
+
+    fn citaj(&mut self) {
+        use std::io::Read;
+        let Some(f) = self.subor.as_mut() else { return };
+        let mut buf = vec![0u8; 8192];
+        for _ in 0..10_000 {
+            match f.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if let Some(h) = dolezite_hlasenie(&String::from_utf8_lossy(&buf[..n]), self.uroven)
+                        && self.zoznam.last() != Some(&h)
+                    {
+                        self.zoznam.push(h);
+                        if self.zoznam.len() > 8 {
+                            self.zoznam.remove(0);
+                        }
+                    }
+                }
+                // záznamy medzitým prepísané novšími – čítanie pokračuje
+                Err(e) if e.raw_os_error() == Some(32) => continue,
+                Err(_) => break,
+            }
+        }
+    }
+
+    fn posledne(&self, n: usize) -> Vec<String> {
+        self.zoznam[self.zoznam.len().saturating_sub(n)..].to_vec()
+    }
+}
+
+/// Záznam `/dev/kmsg` (`úroveň,poradie,čas,príznaky;text`) – vráti text, ak je to varovanie alebo chyba
+/// zariadenia, ktoré SKLENÍK ukazuje (karta, USB, obrazovka, napájanie zariadení, odložené ovládače).
+fn dolezite_hlasenie(zaznam: &str, najvyssia_uroven: u32) -> Option<String> {
+    let (hlavicka, text) = zaznam.split_once(';')?;
+    let uroven = hlavicka.split(',').next()?.parse::<u32>().ok()? & 7;
+    let text = text.lines().next()?.trim();
+    if uroven > najvyssia_uroven || text.starts_with("KLÍČ") {
+        return None;
+    }
+    let maly = text.to_lowercase();
+    const SLOVA: [&str; 12] =
+        ["mmc", "sdhci", "usb", "hub", "dwc", "xhci", "hdmi", "drm", "edid", "regulator", "deferred", "phy"];
+    if !SLOVA.iter().any(|s| maly.contains(s)) {
+        return None;
+    }
+    let mut t: String = text.chars().take(100).collect();
+    if text.chars().count() > 100 {
+        t.push('…');
+    }
+    Some(t)
+}
+
+#[cfg(test)]
+mod skusky {
+    use super::*;
+
+    #[test]
+    fn vytazenie_z_proc_stat() {
+        assert_eq!(rozloz_stat("cpu  100 0 50 800 50 0 0 0 0 0"), Some((1000, 850)));
+        assert_eq!(rozloz_stat("cpu0 1 2 3 4 5"), None);
+        assert_eq!(rozloz_stat("cpu  1 2"), None);
+    }
+
+    #[test]
+    fn hlasenia_jadra_len_o_zariadeniach() {
+        assert_eq!(
+            dolezite_hlasenie(
+                "3,812,4211000,-;mmc0: error -110 whilst initialising SD card\n SUBSYSTEM=mmc",
+                4
+            ),
+            Some("mmc0: error -110 whilst initialising SD card".into())
+        );
+        assert_eq!(
+            dolezite_hlasenie("4,900,9000000,-;platform ffe05000.mmc: deferred probe pending: regulator", 4),
+            Some("platform ffe05000.mmc: deferred probe pending: regulator".into())
+        );
+        // informácie, cudzie témy a vlastné správy KLÍČA sa neukazujú
+        assert_eq!(dolezite_hlasenie("6,1,1,-;usb 1-1: new high-speed USB device", 4), None);
+        assert_eq!(dolezite_hlasenie("3,2,2,-;random: crng init done", 4), None);
+        assert_eq!(dolezite_hlasenie("4,3,3,-;KLÍČ: usb", 4), None);
+        // úroveň s príznakom zariadenia (facility) v horných bitoch
+        assert!(dolezite_hlasenie("11,4,4,-;usb 1-1: device descriptor read/64, error -71", 4).is_some());
+        // na RPi len chyby: varovanie ovládača USB pri štarte sa neukazuje
+        assert_eq!(dolezite_hlasenie("4,6,6,-;WARN::dwc_otg_hcd_init:1074: FIQ DMA bounce buffers", 3), None);
+        let dlhy = format!("3,5,5,-;usb {}", "x".repeat(200));
+        assert_eq!(dolezite_hlasenie(&dlhy, 4).map(|t| t.chars().count()), Some(101));
     }
 }

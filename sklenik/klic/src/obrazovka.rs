@@ -94,6 +94,111 @@ pub struct Stav<'a> {
     pub zram_mb: Option<u64>,
     /// Hardvérový strážny časovač je zapnutý (R99).
     pub strazny_casovac: bool,
+    /// Úsporný režim Ethernetu (R111) na prvom káblovom rozhraní.
+    pub eee: Option<Eee>,
+    /// Hlásenia jadra o chybách zariadení (karta, USB, obrazovka) – diagnostika (R115).
+    pub hlasenia: &'a [String],
+}
+
+/// Úsporný režim Ethernetu (EEE).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Eee {
+    /// Zapnutý a aktívny – Ethernet v pokoji šetrí energiu.
+    Aktivny,
+    /// Vypnutý, lebo spojenie vypadávalo (R111).
+    VypnutyPreVypadky,
+}
+
+/// Rozmery rozloženia odvodené z rozlíšenia (spoločné pre celú obrazovku aj pre samotné hodiny).
+struct Rozmery {
+    /// Veľkosť bežného písma.
+    v: f32,
+    /// Hrúbka čiary písma.
+    h: f32,
+    /// Okraj vľavo a vpravo, okraj hore a dole.
+    m: f32,
+    mv: f32,
+    /// Pravý okraj textu.
+    pravy: f32,
+}
+
+impl Rozmery {
+    fn pre(sirka: usize, vyska: usize) -> Rozmery {
+        let v = (vyska as f32 / 30.0).clamp(10.0, 64.0);
+        let h = (v * 0.11).max(1.3);
+        // okraj aj pre televízory, ktoré obraz na krajoch orezávajú (asi 4–5 %)
+        let m = (sirka as f32 * 0.045).max(1.2 * v).max(6.0);
+        let mv = (vyska as f32 * 0.04).max(v).max(6.0);
+        Rozmery { v, h, m, mv, pravy: sirka as f32 - m }
+    }
+
+    /// Základná čiara riadku s modelom (hlavička).
+    fn hlavicka(&self) -> f32 {
+        self.mv + 1.6 * self.v
+    }
+
+    /// Základná čiara hodín.
+    fn hodiny_y(&self) -> f32 {
+        self.hlavicka() + 2.2 * self.v
+    }
+
+    /// Písmo hodín.
+    fn hodiny_pismo(&self) -> (f32, f32) {
+        (0.65 * self.v, self.h * 0.7)
+    }
+}
+
+/// Text hodín od zapnutia (nie skutočný čas – RPi nemá hodiny reálneho času).
+fn hodiny_text(bezi_s: u64, j: Jazyk) -> String {
+    let (hod, min, sek) = (bezi_s / 3600, bezi_s / 60 % 60, bezi_s % 60);
+    let cas = if hod > 0 { format!("{hod}:{min:02}:{sek:02}") } else { format!("{min}:{sek:02}") };
+    format!("{} {cas}", j.t("beží", "běží", "up"))
+}
+
+/// Najširšie hodiny, s ktorými rozloženie počíta (aj po 999 hodinách sa nič neprekryje).
+fn hodiny_sirka(pismo: &Pismo, r: &Rozmery, j: Jazyk) -> f32 {
+    let (velkost, hrubka) = r.hodiny_pismo();
+    pismo.sirka(&hodiny_text(999 * 3600 + 59 * 60 + 59, j), velkost, hrubka)
+}
+
+/// Obdĺžnik hodín (x, y, šírka, výška) v bodoch – len ten sa prekresľuje každú sekundu (R109).
+fn hodiny_obdlznik(pismo: &Pismo, r: &Rozmery, j: Jazyk) -> (i32, i32, i32, i32) {
+    let w = hodiny_sirka(pismo, r, j) + 0.3 * r.v;
+    let y0 = r.hodiny_y() - 0.72 * r.v;
+    let y1 = r.hodiny_y() + 0.25 * r.v;
+    ((r.pravy - w).floor() as i32, y0.floor() as i32, w.ceil() as i32 + 2, (y1 - y0).ceil() as i32 + 1)
+}
+
+/// Prekreslí len hodiny na už nakreslenej obrazovke (R109) – výsledok je bod po bode rovnaký ako celé
+/// nové `nakresli`, ale stojí zlomok práce. Vráti prekreslený obdĺžnik (x, y, šírka, výška).
+pub fn nakresli_hodiny(pismo: &Pismo, p: &mut Platno, bezi_s: u64, j: Jazyk) -> (usize, usize, usize, usize) {
+    let r = Rozmery::pre(p.sirka, p.vyska);
+    let (x, y, w, v) = hodiny_obdlznik(pismo, &r, j);
+    p.vypln(x, y, w, v, POZADIE);
+    kresli_hodiny(pismo, p, &r, bezi_s, j);
+    let x0 = x.max(0) as usize;
+    let y0 = y.max(0) as usize;
+    let x1 = ((x + w).max(0) as usize).min(p.sirka);
+    let y1 = ((y + v).max(0) as usize).min(p.vyska);
+    (x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
+}
+
+fn kresli_hodiny(pismo: &Pismo, p: &mut Platno, r: &Rozmery, bezi_s: u64, j: Jazyk) {
+    let (velkost, hrubka) = r.hodiny_pismo();
+    let text = hodiny_text(bezi_s, j);
+    let w = pismo.sirka(&text, velkost, hrubka);
+    p.text(pismo, &text, r.pravy - w, r.hodiny_y(), velkost, hrubka, TLMENY);
+}
+
+/// Veľkosť písma, pri ktorej sa text zmestí do šírky `max` (najviac zmenšené na `najmenej` × pôvodná).
+fn zmesti(pismo: &Pismo, text: &str, max: f32, velkost: f32, hrubka: f32, najmenej: f32) -> (f32, f32) {
+    let w = pismo.sirka(text, velkost, hrubka);
+    if w <= max || w <= 0.0 {
+        return (velkost, hrubka);
+    }
+    // malá rezerva – zaokrúhľovanie šírky by inak text na konci skrátilo
+    let k = (0.98 * max / w).max(najmenej);
+    (velkost * k, (hrubka * k).max(1.0))
 }
 
 /// Teplota slovom a farbou.
@@ -128,15 +233,11 @@ fn velkost_disku(bajtov: u64, j: Jazyk) -> String {
 /// Nakreslí stavovú obrazovku v rozlíšení `sirka` × `vyska`.
 pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -> Platno {
     let mut p = Platno::nove(sirka, vyska, POZADIE);
-    let v = (vyska as f32 / 30.0).clamp(10.0, 64.0);
-    let h = (v * 0.11).max(1.3);
-    // okraj aj pre televízory, ktoré obraz na krajoch orezávajú (asi 4–5 %)
-    let m = (sirka as f32 * 0.045).max(1.2 * v).max(6.0);
-    let mv = (vyska as f32 * 0.04).max(v).max(6.0);
-    let pravy = sirka as f32 - m;
+    let r = Rozmery::pre(sirka, vyska);
+    let Rozmery { v, h, m, mv, pravy } = r;
 
     // hlavička: SKLENÍK a model
-    let mut y = mv + 1.6 * v;
+    let mut y = r.hlavicka();
     let koniec = p.text(pismo, "SKLENÍK", m, y, 1.6 * v, (v * 0.17).max(2.0), ZELENA);
     let model = pismo.skrat(s.model, pravy - koniec - 2.0 * v, 0.8 * v, h * 0.8);
     let w = pismo.sirka(&model, 0.8 * v, h * 0.8);
@@ -145,19 +246,19 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     let verzia = format!("{} {}", j.t("verzia", "verze", "version"), s.verzia);
     let wv = pismo.sirka(&verzia, 0.65 * v, h * 0.7);
     p.text(pismo, &verzia, pravy - wv, y + 1.2 * v, 0.65 * v, h * 0.7, TLMENY);
-    // hodiny od zapnutia (nie skutočný čas – RPi nemá hodiny reálneho času)
-    let (hod, min, sek) = (s.bezi_s / 3600, s.bezi_s / 60 % 60, s.bezi_s % 60);
-    let cas = if hod > 0 { format!("{hod}:{min:02}:{sek:02}") } else { format!("{min}:{sek:02}") };
-    let hodiny = format!("{} {cas}", j.t("beží", "běží", "up"));
-    let wh = pismo.sirka(&hodiny, 0.65 * v, h * 0.7);
-    p.text(pismo, &hodiny, pravy - wh, y + 2.2 * v, 0.65 * v, h * 0.7, TLMENY);
+    // hodiny od zapnutia – každú sekundu sa prekreslí len ich obdĺžnik (R109)
+    kresli_hodiny(pismo, &mut p, &r, s.bezi_s, j);
+    // meno zariadenia nesmie zasahovať pod verziu a hodiny vpravo – radšej sa zmenší (R116)
+    let vpravo = wv.max(hodiny_sirka(pismo, &r, j) + 0.3 * v) + v;
+    let sirka_mena = (pravy - vpravo - m).max(4.0 * v);
 
     // meno zariadenia
     y += 3.0 * v;
     match s.meno {
         Some(meno) => {
-            let meno = pismo.skrat(meno, pravy - m, 2.2 * v, v * 0.16);
-            p.text(pismo, &meno, m, y, 2.2 * v, v * 0.16, TEXT);
+            let (velkost, hrubka) = zmesti(pismo, meno, sirka_mena, 2.2 * v, v * 0.16, 0.5);
+            let meno = pismo.skrat(meno, sirka_mena, velkost, hrubka);
+            p.text(pismo, &meno, m, y, velkost, hrubka, TEXT);
         }
         None => {
             let t = j.t(
@@ -165,7 +266,9 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
                 "bez jména – jméno nastavíte SADIČEM",
                 "no name – set it with SADIČ",
             );
-            p.text(pismo, t, m, y - 0.6 * v, v, h, TLMENY);
+            let (velkost, hrubka) = zmesti(pismo, t, sirka_mena, v, h, 0.6);
+            let t = pismo.skrat(t, sirka_mena, velkost, hrubka);
+            p.text(pismo, &t, m, y - 0.6 * v, velkost, hrubka, TLMENY);
         }
     }
     y += 1.3 * v;
@@ -183,24 +286,35 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         j.t("Doska", "Deska", "Board"),
         j.t("Procesor", "Procesor", "Processor"),
         j.t("Pamäť", "Paměť", "Memory"),
+        j.t("Jadro", "Jádro", "Kernel"),
     ];
     let stlpec = m + popisy.iter().map(|t| pismo.sirka(t, v, h)).fold(0.0, f32::max) + 1.5 * v;
     // riadkov je podľa počtu sietí a úložísk – rozostup sa prispôsobí, aby sa zmestili všetky
-    let riadkov = 8 + s.supis.siet.len().max(1) + s.supis.ulozisko.len().max(1);
+    let hlasenia = s.hlasenia.len().min(2);
+    let riadkov = 8 + s.supis.siet.len().clamp(1, 2) + s.supis.ulozisko.len().clamp(1, 2) + hlasenia;
     // posledný riadok musí ostať nad pätou (tri riadky malého písma)
     let spodok = vyska as f32 - mv - 4.0 * v;
     let volne = spodok - (y + 0.4 * v);
     let krok = (volne / riadkov as f32).clamp(1.3 * v, 1.8 * v);
+    // dlhý riadok sa najprv zmenší (najviac na 70 %), až potom skráti – nič dôležité sa neodreže (R116)
     let riadok = |p: &mut Platno, y: &mut f32, popis: &str, casti: &[(&str, Farba)]| {
         *y += krok;
         if *y > spodok + 0.5 {
             return;
         }
         p.text(pismo, popis, m, *y, v, h, TLMENY);
+        let medzera = pismo.posun(' ', v, h);
+        let spolu: f32 =
+            casti.iter().filter(|(t, _)| !t.is_empty()).map(|(t, _)| pismo.sirka(t, v, h) + medzera).sum();
+        let k = if spolu > pravy - stlpec { (0.98 * (pravy - stlpec) / spolu).max(0.7) } else { 1.0 };
+        let (vk, hk) = (v * k, (h * k).max(1.0));
         let mut x = stlpec;
         for (text, farba) in casti {
-            let text = pismo.skrat(text, pravy - x, v, h);
-            x = p.text(pismo, &text, x, *y, v, h, *farba) + pismo.posun(' ', v, h);
+            if text.is_empty() {
+                continue;
+            }
+            let text = pismo.skrat(text, pravy - x, vk, hk);
+            x = p.text(pismo, &text, x, *y, vk, hk, *farba) + pismo.posun(' ', vk, hk);
         }
     };
     y += 0.4 * v;
@@ -241,7 +355,8 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
             JANTAROVA,
         ),
         (Some(false), false) => (j.t("v poriadku", "v pořádku", "OK"), ZELENA),
-        (None, _) => ("–", TLMENY),
+        // doska bez snímača podpätia (Odroid) – nie je to chyba
+        (None, _) => (j.t("nemeria sa", "neměří se", "not measured"), TLMENY),
     };
     // zdroj podľa firmvéru (RPi 5): 5 A = plný prúd pre USB, 3 A = USB obmedzené na 0,6 A
     let zdroj = match (s.poda.zdroj_ma, s.poda.usb_vysoky_prud) {
@@ -308,7 +423,34 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         .first()
         .map(|o| o.split_once(' ').map_or(o.as_str(), |(_, r)| r).replace('x', "×"))
         .unwrap_or_else(|| "–".into());
-    riadok(&mut p, &mut y, popisy[2], &[(&obrazovka, TEXT)]);
+    // R115: monitor vie viac, než jadro nastavilo (alebo neposlal svoj popis EDID) – povie sa to otvorene
+    let rozmer = obrazovka.replace('×', "x");
+    let monitor = match &s.supis.monitor {
+        Some(mon) if mon.edid_bajtov == 0 => (
+            format!(
+                "· {}",
+                j.t(
+                    "monitor neposlal svoj popis (EDID)",
+                    "monitor neposlal svůj popis (EDID)",
+                    "no EDID from monitor"
+                )
+            ),
+            JANTAROVA,
+        ),
+        Some(mon) => match &mon.najlepsi_rezim {
+            Some(najlepsi) if !rozmer.contains(najlepsi.as_str()) => (
+                format!(
+                    "· {} {}",
+                    j.t("monitor vie", "monitor umí", "monitor supports"),
+                    najlepsi.replace('x', "×")
+                ),
+                JANTAROVA,
+            ),
+            _ => (String::new(), TLMENY),
+        },
+        None => (String::new(), TLMENY),
+    };
+    riadok(&mut p, &mut y, popisy[2], &[(&obrazovka, TEXT), (&monitor.0, monitor.1)]);
 
     let ma = |d: DruhVstupu| s.supis.vstupy.iter().any(|i| i.druh == d);
     let znak = |b: bool| if b { ("✓", ZELENA) } else { ("–", TLMENY) };
@@ -346,7 +488,23 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
             (false, None) => (j.t("vypnuté", "vypnuto", "off"), TLMENY),
         };
         let meno = format!("{} –", r.meno);
-        riadok(&mut p, &mut y, if i == 0 { popisy[4] } else { "" }, &[(&meno, TEXT), (stav, farba)]);
+        let eee = match (i, s.eee, r.spojenie) {
+            (0, Some(Eee::Aktivny), Some(true)) => {
+                j.t("· úsporný režim", "· úsporný režim", "· energy saving")
+            }
+            (0, Some(Eee::VypnutyPreVypadky), _) => j.t(
+                "· úsporný režim vypnutý (výpadky)",
+                "· úsporný režim vypnut (výpadky)",
+                "· energy saving off (dropouts)",
+            ),
+            _ => "",
+        };
+        riadok(
+            &mut p,
+            &mut y,
+            if i == 0 { popisy[4] } else { "" },
+            &[(&meno, TEXT), (stav, farba), (eee, TLMENY)],
+        );
     }
 
     if s.supis.ulozisko.is_empty() {
@@ -413,6 +571,10 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     // prídavná doska alebo skrinka s identifikačným čipom (napr. HAT+); „–“ = firmvér žiadnu nenašiel
     let doska = s.supis.dosky.first().cloned().unwrap_or_else(|| "–".into());
     riadok(&mut p, &mut y, popisy[7], &[(&doska, if s.supis.dosky.is_empty() { TLMENY } else { TEXT })]);
+    // R115: posledné hlásenia jadra o chybách zariadení – aby sa dali odfotiť a opraviť
+    for (i, hlasenie) in s.hlasenia.iter().rev().take(hlasenia).rev().enumerate() {
+        riadok(&mut p, &mut y, if i == 0 { popisy[10] } else { "" }, &[(hlasenie, JANTAROVA)]);
+    }
 
     // päta
     let paticka = j.t(
@@ -508,6 +670,7 @@ mod skusky {
     fn supis() -> Supis {
         Supis {
             obrazovky: vec!["fb0 1920x1080".into()],
+            monitor: None,
             vstupy: vec![Vstup { druh: DruhVstupu::Klavesnica, meno: "k".into() }],
             siet: vec![Rozhranie {
                 meno: "eth0".into(),
@@ -554,6 +717,8 @@ mod skusky {
             })),
             zram_mb: Some(474),
             strazny_casovac: true,
+            eee: Some(Eee::Aktivny),
+            hlasenia: &[],
             vykon: 1.0,
             podpatie: Some(false),
             podpatie_bolo: false,
@@ -597,6 +762,64 @@ mod skusky {
         assert_eq!(Jazyk::Cs.cislo(48.54, 1), "48,5");
         assert_eq!(Jazyk::z_kodu(Some("en")), Jazyk::En);
         assert_eq!(Jazyk::z_kodu(None), Jazyk::Sk);
+    }
+
+    #[test]
+    fn hodiny_sa_prekreslia_samostatne_rovnako_ako_cela_obrazovka() {
+        // R109: prekreslenie len hodín musí dať bod po bode ten istý obraz ako nové kreslenie celej obrazovky
+        let pismo = Pismo::stonka();
+        let s = supis();
+        for (w, h) in [(1920, 1080), (1024, 768), (800, 480), (3840, 2160)] {
+            for (a, b) in [(59, 60), (3599, 3600), (754, 755), (0, 360_000)] {
+                let mut st = stav(&s, Some(45.0));
+                st.bezi_s = a;
+                let mut p = nakresli(&pismo, w, h, &st, Jazyk::Sk);
+                let (x, y, sw, sv) = nakresli_hodiny(&pismo, &mut p, b, Jazyk::Sk);
+                st.bezi_s = b;
+                let cela = nakresli(&pismo, w, h, &st, Jazyk::Sk);
+                assert!(p == cela, "{w}×{h}: {a} → {b} s");
+                assert!(sw > 0 && sv > 0 && x + sw <= w && y + sv <= h);
+                // obdĺžnik hodín je malý – zlomok obrazovky
+                assert!(sw * sv * 100 < w * h, "{w}×{h}: obdĺžnik {sw}×{sv}");
+            }
+        }
+    }
+
+    #[test]
+    fn dlhe_meno_a_riadky_sa_zmestia_aj_na_malej_obrazovke() {
+        // R116: Odroid ukázal 1024×768 – meno nesmie zasahovať do hodín, riadky sa zmenšia
+        let pismo = Pismo::stonka();
+        let mut s = supis();
+        s.obrazovky = vec!["fb0 1024x768".into(), "HDMI-A-1".into()];
+        s.monitor = Some(crate::periferie::Monitor {
+            vystup: "HDMI-A-1".into(),
+            edid_bajtov: 256,
+            najlepsi_rezim: Some("1920x1080".into()),
+        });
+        let hlasenia = vec!["mmc0: error -110 whilst initialising SD card".to_string()];
+        for meno in [Some("testovanie-teploty"), Some("velmi-dlhe-meno-zariadenia-v-dielni-3"), None] {
+            let mut st = stav(&s, Some(45.0));
+            st.meno = meno;
+            st.model = "Hardkernel ODROID-C4";
+            st.hlasenia = &hlasenia;
+            let p = nakresli(&pismo, 1024, 768, &st, Jazyk::Sk);
+            // v obdĺžniku hodín nie je nič iné než hodiny
+            let r = Rozmery::pre(1024, 768);
+            let mut len_hodiny = Platno::nove(1024, 768, POZADIE);
+            kresli_hodiny(&pismo, &mut len_hodiny, &r, st.bezi_s, Jazyk::Sk);
+            let (x, y, w, v) = hodiny_obdlznik(&pismo, &r, Jazyk::Sk);
+            for yy in y..y + v {
+                for xx in x..x + w {
+                    let i = yy as usize * 1024 + xx as usize;
+                    assert_eq!(p.body[i], len_hodiny.body[i], "{meno:?}: cudzí bod v hodinách [{xx}, {yy}]");
+                }
+            }
+            // hlásenie jadra a upozornenie na monitor sú jantárové
+            assert!(p.body.contains(&JANTAROVA));
+        }
+        assert_eq!(zmesti(&pismo, "krátky", 1000.0, 20.0, 2.0, 0.7), (20.0, 2.0));
+        let (v, _) = zmesti(&pismo, "veľmi dlhý text, ktorý sa nezmestí", 50.0, 20.0, 2.0, 0.7);
+        assert_eq!(v, 14.0, "najviac na 70 %");
     }
 
     #[test]

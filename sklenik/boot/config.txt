@@ -29,6 +29,8 @@ gpu_mem=32
 # PL011; inak by enable_uart=1 zamkol takt grafického jadra na 250 MHz kvôli „mini UART“
 [pi0w]
 dtoverlay=disable-bt
+# R112: Wi-Fi SKLENÍK zatiaľ nepodporuje – čip Wi-Fi ostane bez napájania (menej tepla, menej rušenia)
+dtoverlay=disable-wifi
 
 # RPi 2 – 32-bit ARMv7
 [pi2]
@@ -43,6 +45,7 @@ kernel=kernel8.img
 initramfs initramfs8.cpio.gz followkernel
 gpu_mem=32
 dtoverlay=disable-bt
+dtoverlay=disable-wifi
 [pi3+]
 # RPi 3 B+: firmvér zníži takt 1,4 → 1,2 GHz už pri 60 °C
 temp_soft_limit=60
@@ -57,6 +60,7 @@ initramfs initramfs8.cpio.gz followkernel
 # RPi 4 B od rev. 1.4 a RPi 400: oficiálny takt 1,8 GHz (nie pretaktovanie; staršie dosky ho ignorujú)
 arm_boost=1
 dtoverlay=disable-bt
+dtoverlay=disable-wifi
 [pi400]
 arm_64bit=1
 kernel=kernel8.img
@@ -66,6 +70,9 @@ initramfs initramfs8.cpio.gz followkernel
 [pi5]
 kernel=kernel_2712.img
 initramfs initramfs8.cpio.gz followkernel
+# R112: Bluetooth a Wi-Fi zatiaľ nepoužívame – čipy bez napájania (RPi 5 má vlastné verzie prekrytí)
+dtoverlay=disable-bt-pi5
+dtoverlay=disable-wifi-pi5
 [pi500]
 kernel=kernel_2712.img
 initramfs initramfs8.cpio.gz followkernel

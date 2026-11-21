@@ -45,10 +45,23 @@ pub struct Ulozisko {
     pub vymenitelne: bool,
 }
 
+/// Monitor na výstupe grafického ovládača (DRM) – čo o sebe povedal (EDID) a aký najlepší režim vie.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Monitor {
+    /// Výstup, napr. „HDMI-A-1“.
+    pub vystup: String,
+    /// Veľkosť údajov EDID (bajty); 0 = monitor neodpovedal (alebo ho jadro neprečítalo).
+    pub edid_bajtov: usize,
+    /// Prvý (najlepší) režim zo zoznamu jadra, napr. „1920x1080“.
+    pub najlepsi_rezim: Option<String>,
+}
+
 /// Všetko, čo KLÍČ našiel.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Supis {
     pub obrazovky: Vec<String>,
+    /// Monitor podľa grafického ovládača (Odroid; na RPi obrazovku nastavuje firmvér a tento údaj chýba).
+    pub monitor: Option<Monitor>,
     pub vstupy: Vec<Vstup>,
     pub siet: Vec<Rozhranie>,
     pub ulozisko: Vec<Ulozisko>,
@@ -154,7 +167,17 @@ impl Supis {
         let drm = sys.join("class/drm");
         for vystup in polozky(&drm).into_iter().filter(|n| n.starts_with("card") && n.contains('-')) {
             if citaj(drm.join(&vystup).join("status")).as_deref() == Some("connected") {
-                s.obrazovky.push(vystup.split_once('-').map_or(vystup.clone(), |(_, v)| v.to_string()));
+                let meno = vystup.split_once('-').map_or(vystup.clone(), |(_, v)| v.to_string());
+                if s.monitor.is_none() {
+                    s.monitor = Some(Monitor {
+                        vystup: meno.clone(),
+                        edid_bajtov: fs::read(drm.join(&vystup).join("edid")).map_or(0, |b| b.len()),
+                        najlepsi_rezim: citaj(drm.join(&vystup).join("modes"))
+                            .and_then(|m| m.lines().next().map(|r| r.trim().to_string()))
+                            .filter(|r| !r.is_empty()),
+                    });
+                }
+                s.obrazovky.push(meno);
             }
         }
 
@@ -513,6 +536,24 @@ mod skusky {
         assert!(o.iter().all(|r| r.is_ascii()), "{o:?}");
         assert!(o.contains(&"klavesnica: 1  mys: 1  dotyk: 0".to_string()), "{o:?}");
         assert!(o.contains(&"siet eth0: spojene".to_string()), "{o:?}");
+        assert_eq!(p.monitor, None);
+    }
+
+    #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "WASI nemá dočasný priečinok")]
+    fn monitor_od_grafickeho_ovladaca() {
+        // Odroid C4: obrazovka od ovládača grafiky; monitor vie 1080p, obraz jadra je len 1024×768
+        let s = Strom::novy("drm");
+        s.subor("sys/class/graphics/fb0/virtual_size", "1024,768")
+            .subor("sys/class/drm/card0-HDMI-A-1/status", "connected")
+            .subor("sys/class/drm/card0-HDMI-A-1/edid", &"x".repeat(255))
+            .subor("sys/class/drm/card0-HDMI-A-1/modes", "1920x1080\n1280x720\n1024x768")
+            .subor("sys/class/drm/card0-HDMI-A-2/status", "disconnected");
+        let p = Supis::nacitaj_so_slovom(&s.0, 64);
+        assert_eq!(p.obrazovky, vec!["fb0 1024x768", "HDMI-A-1"]);
+        let m = p.monitor.expect("monitor");
+        assert_eq!((m.vystup.as_str(), m.edid_bajtov), ("HDMI-A-1", 256));
+        assert_eq!(m.najlepsi_rezim.as_deref(), Some("1920x1080"));
     }
 
     #[test]

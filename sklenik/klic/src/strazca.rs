@@ -102,6 +102,8 @@ pub struct Regulator {
 const HORIZONT_S: f64 = 30.0;
 /// Rezerva pod stropom, pri ktorej sa okamžite prejde na najnižšiu úroveň.
 const NUDZA_POD_STROPOM: f64 = 3.0;
+/// Vyťaženie, pod ktorým je procesor nečinný (strážca KLÍČ a obrazovka spotrebujú okolo 1 %).
+const NECINNOST: f64 = 0.15;
 
 impl Regulator {
     /// Začína opatrne – na najvyššej úrovni s príkonom najviac polovičným; teplotu si najprv overí.
@@ -128,7 +130,18 @@ impl Regulator {
     }
 
     /// Jeden krok regulácie: aktuálna teplota a čas od posledného kroku. Vráti zvolenú úroveň.
+    /// Vyťaženie procesora nie je známe – strážca sa správa opatrne, akoby procesor pracoval.
     pub fn krok(&mut self, teplota: f64, dt_s: f64) -> Uroven {
+        self.krok_s_vytazenim(teplota, dt_s, None)
+    }
+
+    /// Krok regulácie s vyťažením procesora (R110): podiel času, keď povolené jadrá pracovali (0–1).
+    ///
+    /// Zníženie výkonu chladí len vtedy, keď procesor pracuje. V nečinnosti (napr. RPi 3 v plastovej
+    /// krabičke, ktorá sa sama od seba ustáli okolo 60 °C) by znižovanie nič neochladilo, len by zobralo výkon
+    /// pre prácu, ktorá príde – strážca preto v nečinnosti výkon drží a postupne vracia. Pri strope a pri
+    /// rýchlom raste teploty znižuje vždy (bezpečnosť má prednosť).
+    pub fn krok_s_vytazenim(&mut self, teplota: f64, dt_s: f64, vytazenie: Option<f64>) -> Uroven {
         let dt = dt_s.max(1e-3);
         if let Some(p) = self.posledna {
             self.sklon = 0.7 * self.sklon + 0.3 * (teplota - p) / dt;
@@ -137,11 +150,17 @@ impl Regulator {
         self.od_zmeny += dt;
         let Profil { ciel, strop } = self.profil;
         let predikcia = teplota + self.sklon.max(0.0) * HORIZONT_S;
+        let necinny = vytazenie.is_some_and(|v| v < NECINNOST);
         if teplota >= strop - NUDZA_POD_STROPOM {
             self.nastav(0);
-        } else if (teplota > ciel || predikcia > strop - NUDZA_POD_STROPOM) && self.od_zmeny >= 2.0 {
+        } else if (predikcia > strop - NUDZA_POD_STROPOM || (teplota > ciel && !necinny))
+            && self.od_zmeny >= 2.0
+        {
             self.nastav(self.index.saturating_sub(1));
-        } else if teplota < ciel - 4.0 && predikcia < ciel && self.od_zmeny >= 5.0 {
+        } else if self.od_zmeny >= 5.0
+            && ((teplota < ciel - 4.0 && predikcia < ciel)
+                || (necinny && teplota <= ciel + 2.0 && self.sklon <= 0.005))
+        {
             self.nastav((self.index + 1).min(self.urovne.len() - 1));
         }
         self.uroven()
@@ -193,50 +212,87 @@ pub trait Hardver {
 mod skusky {
     use super::*;
 
-    /// Fyzikálny model dosky s pasívnym chladičom: dT/dt = (P − (T − T_okolia)/R) / C.
-    /// Konštanty zodpovedajú Raspberry Pi 3 B+: v nečinnosti okolo 45 °C pri 25 °C v miestnosti, pri plnej
-    /// práci bez obmedzenia by vystúpila na ~80 °C (tam firmvér začína škrtiť).
+    /// Fyzikálny model dosky: doska (veľká tepelná kapacita) a čip nad ňou (snímač je v čipe).
+    /// Doska: dT/dt = (P − (T − T_okolia)/R) / C. Čip je o príkon procesora × R_čipu teplejší než doska
+    /// a nasleduje ho s oneskorením niekoľkých sekúnd – pri náraze práce teplota v čipe vyskočí hneď.
     struct Doska {
         t: f64,
+        cip: f64,
         okolie: f64,
         r: f64,
         c: f64,
+        r_cipu: f64,
         nezatazena_w: f64,
         procesor_max_w: f64,
     }
 
     impl Doska {
+        /// RPi 3 B+ s chladičom alebo voľne na stole: v nečinnosti okolo 45 °C pri 25 °C v miestnosti,
+        /// pri plnej práci bez obmedzenia by vystúpila na ~80 °C (tam firmvér začína škrtiť). Pôvodná
+        /// kalibrácia – čip bez vlastného ohrevu nad doskou.
         fn rpi3(okolie: f64) -> Doska {
-            Doska { t: okolie, okolie, r: 18.0, c: 8.0, nezatazena_w: 1.2, procesor_max_w: 1.8 }
+            Doska {
+                t: okolie,
+                cip: okolie,
+                okolie,
+                r: 18.0,
+                c: 8.0,
+                r_cipu: 0.0,
+                nezatazena_w: 1.2,
+                procesor_max_w: 1.8,
+            }
+        }
+
+        /// RPi 3 B+ v plastovej krabičke bez chladiča – zmerané 21. 11. 2026 (R102, SKLENÍK 0dd8e61):
+        /// v nečinnosti 40,8 °C po 2:16, 47,2 °C po 6:01, 55,3 °C po 16:15 a 59,6 °C po 33:03 min.
+        /// Preložená krivka: ustálená teplota 60,5 °C, časová konštanta 610 s; izba okolo 22 °C.
+        fn rpi3_plast(okolie: f64) -> Doska {
+            let r = 20.0;
+            Doska {
+                t: 36.1,
+                cip: 36.1,
+                okolie,
+                r,
+                c: 610.0 / r,
+                r_cipu: 3.0,
+                nezatazena_w: (60.5 - 22.0) / r,
+                procesor_max_w: 1.8,
+            }
         }
 
         /// Krok simulácie; `zataz` 0..1 = podiel času, keď majú povolené jadrá prácu.
         fn krok(&mut self, u: &Uroven, zataz: f64, dt: f64) {
-            let p = self.nezatazena_w + self.procesor_max_w * u.prikon * zataz;
+            let procesor = self.procesor_max_w * u.prikon * zataz;
+            let p = self.nezatazena_w + procesor;
             self.t += (p - (self.t - self.okolie) / self.r) / self.c * dt;
+            // čip dobieha dosku s časovou konštantou 3 s
+            self.cip += (self.t + procesor * self.r_cipu - self.cip) * (dt / 3.0).min(1.0);
         }
     }
 
-    fn simuluj(okolie: f64, zataz: impl Fn(f64) -> f64, sekund: u32) -> (f64, f64, Regulator, u32) {
-        let mut d = Doska::rpi3(okolie);
+    fn simuluj_dosku(mut d: Doska, zataz: impl Fn(f64) -> f64, sekund: u32) -> (f64, f64, Regulator, u32) {
         let mut r = Regulator::novy(
             urovne(&[600_000, 1_400_000], 4),
             Profil::pre_model("Raspberry Pi 3 Model B Plus"),
         );
-        let (mut maximum, mut zmeny, mut posledny) = (d.t, 0u32, r.index());
+        let (mut maximum, mut zmeny, mut posledny) = (d.cip, 0u32, r.index());
         let mut prace = 0.0;
         for s in 0..sekund {
-            let u = r.krok(d.t, 1.0);
+            let z = zataz(s as f64);
+            let u = r.krok_s_vytazenim(d.cip, 1.0, Some(z));
             if r.index() != posledny && s > sekund / 2 {
                 zmeny += 1;
             }
             posledny = r.index();
-            let z = zataz(s as f64);
             prace += u.vykon * z;
             d.krok(&u, z, 1.0);
-            maximum = maximum.max(d.t);
+            maximum = maximum.max(d.cip);
         }
         (maximum, prace / sekund as f64, r, zmeny)
+    }
+
+    fn simuluj(okolie: f64, zataz: impl Fn(f64) -> f64, sekund: u32) -> (f64, f64, Regulator, u32) {
+        simuluj_dosku(Doska::rpi3(okolie), zataz, sekund)
     }
 
     #[test]
@@ -291,6 +347,83 @@ mod skusky {
         assert_eq!(stupen_ventilatora(59.0, p, 4, 1), 1);
         assert_eq!(stupen_ventilatora(55.5, p, 4, 1), 0);
         assert_eq!(stupen_ventilatora(80.0, p, 0, 0), 0, "bez ventilátora nič");
+    }
+
+    #[test]
+    fn model_plastovej_krabicky_sedi_s_meranim() {
+        // R102: model musí zopakovať skutočné meranie RPi 3 B+ v nečinnosti (±1,5 °C)
+        let mut d = Doska::rpi3_plast(22.0);
+        let u = urovne(&[600_000, 1_400_000], 4)[0];
+        let mut namerane = vec![(136, 40.8), (361, 47.2), (975, 55.3), (1983, 59.6)].into_iter().peekable();
+        for s in 0..=1983 {
+            if let Some(&(cas, t)) = namerane.peek()
+                && cas == s
+            {
+                assert!((d.cip - t).abs() < 1.5, "po {s} s model {:.1} °C, namerané {t} °C", d.cip);
+                namerane.next();
+            }
+            d.krok(&u, 0.0, 1.0);
+        }
+        assert!(namerane.next().is_none());
+    }
+
+    #[test]
+    fn necinnost_v_plaste_neberie_vykon() {
+        // R110: RPi 3 v plaste sa sám od seba ustáli nad cieľom 60 °C – znižovanie by nič neochladilo,
+        // preto má strážca v nečinnosti nechať plný výkon pre prácu, ktorá príde
+        let (maximum, _, r, _) = simuluj_dosku(Doska::rpi3_plast(22.0), |_| 0.01, 2 * 3600);
+        eprintln!(
+            "nečinnosť v plaste: maximum {maximum:.1} °C, úroveň {}/{}",
+            r.index() + 1,
+            r.pocet_urovni()
+        );
+        assert_eq!(r.index(), r.pocet_urovni() - 1, "v nečinnosti plný výkon");
+        assert!(maximum < r.profil().strop);
+    }
+
+    #[test]
+    fn plna_praca_v_plaste_pri_22_stupnoch_nikdy_neprekroci_strop() {
+        let (maximum, vykon, r, zmeny) = simuluj_dosku(Doska::rpi3_plast(22.0), |_| 1.0, 3 * 3600);
+        eprintln!("plná práca v plaste, 22 °C: maximum {maximum:.1} °C, výkon {vykon:.2}, zmeny {zmeny}");
+        assert!(maximum < r.profil().strop, "maximum {maximum:.1} °C");
+        assert!(zmeny <= 200, "regulátor kmitá: {zmeny} zmien");
+    }
+
+    #[test]
+    fn plast_v_teplej_miestnosti_je_za_hranicou_softveru() {
+        // Pri 30 °C v miestnosti má RPi 3 v plaste už v nečinnosti ~68 °C (zmerané 38,5 °C nad izbou) –
+        // strážca dá najnižší výkon, viac softvér nezmôže; treba chladič alebo kovovú/vetranú krabičku.
+        // Poistka firmvéru (temp_limit=75) zostáva nad tým.
+        let (maximum, vykon, r, _) = simuluj_dosku(Doska::rpi3_plast(30.0), |_| 1.0, 3 * 3600);
+        eprintln!("plná práca v plaste, 30 °C: maximum {maximum:.1} °C, výkon {vykon:.2}");
+        assert_eq!(r.index(), 0, "najnižší výkon");
+        assert!(maximum < r.profil().strop + 3.0, "maximum {maximum:.1} °C");
+    }
+
+    #[test]
+    fn narazova_praca_v_plaste_dostane_vykon_a_strop_neprekroci() {
+        // 20 s práca, 40 s ticho; po skončení práce sa výkon vráti (R110)
+        let (maximum, vykon, r, _) =
+            simuluj_dosku(Doska::rpi3_plast(22.0), |s| if s % 60.0 < 20.0 { 1.0 } else { 0.01 }, 2 * 3600);
+        eprintln!("nárazová práca v plaste: maximum {maximum:.1} °C, výkon {vykon:.2} z 0,33");
+        assert!(maximum < r.profil().strop - NUDZA_POD_STROPOM, "maximum {maximum:.1} °C");
+        assert!(vykon > 0.05, "priemer {vykon:.2}");
+    }
+
+    #[test]
+    fn bez_vytazenia_sa_strazca_sprava_opatrne() {
+        // neznáme vyťaženie = ako pri práci: nad cieľom znižuje
+        let mut r = Regulator::novy(urovne(&[600_000, 1_400_000], 4), Profil::pre_model("Raspberry Pi 3"));
+        let zaciatok = r.index();
+        for _ in 0..10 {
+            r.krok(62.0, 1.0);
+        }
+        assert!(r.index() < zaciatok);
+        let mut n = Regulator::novy(urovne(&[600_000, 1_400_000], 4), Profil::pre_model("Raspberry Pi 3"));
+        for _ in 0..10 {
+            n.krok_s_vytazenim(62.0, 1.0, Some(0.01));
+        }
+        assert!(n.index() >= zaciatok, "v nečinnosti pri 62 °C bez zníženia");
     }
 
     #[test]

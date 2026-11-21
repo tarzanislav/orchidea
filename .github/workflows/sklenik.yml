@@ -369,6 +369,11 @@ jobs:
           else
             echo "❌ KLÍČ nezapol zram" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "zram" qemu-rpi3.log | head; chyby=$((chyby+1))
           fi
+          if grep -q "KLÍČ: udalosti jadra: sledované" qemu-rpi3.log; then
+            echo "✅ KLÍČ čaká na udalosti jadra (R113)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ KLÍČ nesleduje udalosti jadra" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "udalosti" qemu-rpi3.log | head; chyby=$((chyby+1))
+          fi
           if grep -q "KLÍČ: karta mmcblk0: čítanie" qemu-rpi3.log; then
             echo "✅ KLÍČ zmeral rýchlosť karty: $(grep -o 'karta mmcblk0: čítanie.*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           else

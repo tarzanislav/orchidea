@@ -24,6 +24,17 @@ unsafe extern "C" {
     fn swapon(cesta: *const c_char, priznaky: c_int) -> c_int;
     fn sched_setaffinity(pid: c_int, velkost: usize, maska: *const u64) -> c_int;
     fn sysconf(meno: c_int) -> core::ffi::c_long;
+    fn bind(fd: c_int, adresa: *const c_void, dlzka: u32) -> c_int;
+    fn poll(fds: *mut PollFd, pocet: c_ulong, cakanie_ms: c_int) -> c_int;
+    fn recv(fd: c_int, buf: *mut c_void, dlzka: usize, priznaky: c_int) -> isize;
+}
+
+/// `struct pollfd`
+#[repr(C)]
+struct PollFd {
+    fd: c_int,
+    udalosti: i16,
+    vratene: i16,
 }
 
 pub const MS_NOSUID: c_ulong = 2;
@@ -52,6 +63,17 @@ const ETHTOOL_SEEE: u32 = 0x45;
 const SC_PAGESIZE: c_int = 30;
 const SWAP_FLAG_PREFER: c_int = 0x8000;
 const WDIOC_SETTIMEOUT: c_ulong = 0xC004_5706;
+const AF_NETLINK: u16 = 16;
+const SOCK_RAW: c_int = 3;
+const SOCK_NONBLOCK: c_int = 0o4000;
+const NETLINK_ROUTE: c_int = 0;
+const NETLINK_KOBJECT_UEVENT: c_int = 15;
+/// Skupina správ o sieťových rozhraniach (kábel pripojený/odpojený).
+const RTMGRP_LINK: u32 = 1;
+/// Skupina udalostí jadra o zariadeniach (pripojené/odpojené USB, karta, obrazovka …).
+const UEVENT_JADRA: u32 = 1;
+const POLLIN: i16 = 1;
+const MSG_DONTWAIT: c_int = 0x40;
 
 /// Pripojí súborový systém.
 pub fn pripoj(zdroj: &str, ciel: &str, typ: &str, priznaky: c_ulong) -> io::Result<()> {
@@ -236,4 +258,96 @@ pub fn otvor_strazny_casovac(sekund: c_int) -> io::Result<std::fs::File> {
         return Err(io::Error::last_os_error());
     }
     Ok(f)
+}
+
+/// Stav úsporného režimu Ethernetu (EEE): (zapnutý, práve aktívny so súperom na druhej strane kábla).
+/// `Ok(None)`, ak ho rozhranie nepodporuje.
+pub fn eee_stav(meno: &str) -> io::Result<Option<(bool, bool)>> {
+    if meno.is_empty() || meno.len() >= 16 || meno.contains('\0') {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "neplatné meno rozhrania"));
+    }
+    let mut eee = [0u32; 10];
+    eee[0] = ETHTOOL_GEEE;
+    // SAFETY: obyčajné volanie jadra s konštantami; výsledok sa kontroluje.
+    let fd = unsafe { socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut ifr = [0u8; IFREQ];
+    ifr[..meno.len()].copy_from_slice(meno.as_bytes());
+    let ukazovatel = eee.as_mut_ptr() as usize;
+    ifr[16..16 + size_of::<usize>()].copy_from_slice(&ukazovatel.to_ne_bytes());
+    // SAFETY: ifr obsahuje meno a ukazovateľ na eee; obe žijú počas volania.
+    let r = unsafe { ioctl(fd, SIOCETHTOOL, ifr.as_mut_ptr()) };
+    let chyba = io::Error::last_os_error();
+    // SAFETY: fd je náš otvorený deskriptor, zatvára sa raz.
+    unsafe { close(fd) };
+    if r < 0 {
+        // EOPNOTSUPP – ovládač EEE nepozná
+        return if chyba.raw_os_error() == Some(95) { Ok(None) } else { Err(chyba) };
+    }
+    if eee[1] == 0 {
+        return Ok(None);
+    }
+    Ok(Some((eee[5] != 0, eee[4] != 0)))
+}
+
+/// Udalosti jadra (R113): pripojené a odpojené zariadenia (uevent) a zmeny sieťových rozhraní (kábel).
+/// KLÍČ na ne čaká v spánku – nemusí sa sám prebúdzať a prehľadávať `/sys`.
+pub struct Udalosti {
+    fds: Vec<c_int>,
+}
+
+impl Udalosti {
+    pub fn otvor() -> io::Result<Udalosti> {
+        let mut u = Udalosti { fds: Vec::new() };
+        for (protokol, skupiny) in [(NETLINK_KOBJECT_UEVENT, UEVENT_JADRA), (NETLINK_ROUTE, RTMGRP_LINK)] {
+            // SAFETY: obyčajné volanie jadra s konštantami; výsledok sa kontroluje.
+            let fd =
+                unsafe { socket(AF_NETLINK as c_int, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, protokol) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            u.fds.push(fd);
+            // struct sockaddr_nl: rodina, výplň, pid (0 = pridelí jadro), skupiny
+            let mut adresa = [0u8; 12];
+            adresa[..2].copy_from_slice(&AF_NETLINK.to_ne_bytes());
+            adresa[8..12].copy_from_slice(&skupiny.to_ne_bytes());
+            // SAFETY: adresa je platná struct sockaddr_nl (12 B), žije počas volania.
+            if unsafe { bind(fd, adresa.as_ptr() as *const c_void, 12) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(u)
+    }
+
+    /// Čaká najviac `ms` milisekúnd. Vráti `true`, ak prišla aspoň jedna udalosť (všetky sa vyberú).
+    pub fn cakaj(&self, ms: u64) -> bool {
+        let mut p: Vec<PollFd> =
+            self.fds.iter().map(|&fd| PollFd { fd, udalosti: POLLIN, vratene: 0 }).collect();
+        let ms = ms.min(i32::MAX as u64) as c_int;
+        // SAFETY: p je platné pole struct pollfd s dĺžkou p.len(), žije počas volania.
+        let n = unsafe { poll(p.as_mut_ptr(), p.len() as c_ulong, ms) };
+        if n <= 0 {
+            return false;
+        }
+        let mut buf = [0u8; 8192];
+        let mut bolo = false;
+        for fd in &self.fds {
+            // SAFETY: buf je platná vyrovnávacia pamäť; MSG_DONTWAIT – nečaká sa.
+            while unsafe { recv(*fd, buf.as_mut_ptr() as *mut c_void, buf.len(), MSG_DONTWAIT) } > 0 {
+                bolo = true;
+            }
+        }
+        bolo
+    }
+}
+
+impl Drop for Udalosti {
+    fn drop(&mut self) {
+        for &fd in &self.fds {
+            // SAFETY: fd sú naše otvorené deskriptory, každý sa zatvára raz.
+            unsafe { close(fd) };
+        }
+    }
 }
