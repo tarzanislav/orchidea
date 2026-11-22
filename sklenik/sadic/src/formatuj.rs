@@ -26,6 +26,8 @@ pub enum System {
     Ext2,
     /// HFS+ (Mac OS Extended) bez žurnálu.
     HfsPlus,
+    /// UDF 2.01 na celom disku – Windows, macOS aj Linux bez ovládačov.
+    Udf,
 }
 
 /// Ponuka systémov v poradí vlastníka: najprv NTFS, FAT32, exFAT a linuxové, potom ostatné.
@@ -38,6 +40,7 @@ pub const PONUKA: &[System] = &[
     System::Ext3,
     System::Ext2,
     System::HfsPlus,
+    System::Udf,
 ];
 
 impl System {
@@ -46,6 +49,7 @@ impl System {
         match self {
             System::Automaticky => "Automaticky",
             System::HfsPlus => "HFS+ (Mac OS Extended)",
+            System::Udf => "UDF (Windows, macOS aj Linux)",
             s => s.nazov(),
         }
     }
@@ -60,6 +64,7 @@ impl System {
             "ext3" => Some(System::Ext3),
             "ext2" => Some(System::Ext2),
             "hfs+" | "hfsplus" | "hfs" | "mac" => Some(System::HfsPlus),
+            "udf" => Some(System::Udf),
             _ => None,
         }
     }
@@ -74,6 +79,7 @@ impl System {
             System::Ext3 => "ext3",
             System::Ext2 => "ext2",
             System::HfsPlus => "HFS+",
+            System::Udf => "UDF",
         }
     }
 
@@ -136,6 +142,14 @@ pub fn navrhni(
                 return Err("HFS+ zatiaľ len s blokom 4 KB (ako predvolí macOS)".into());
             }
             Box::new(crate::hfsplus::Hfs::navrhni(sektory, sektor, menovka)?)
+        }
+        System::Udf => {
+            if klaster.is_some_and(|k| k != sektor) {
+                return Err(format!(
+                    "UDF má blok rovný sektoru disku ({sektor} B) – inak ho Windows nepripojí"
+                ));
+            }
+            Box::new(crate::udf::Udf::navrhni(sektory, sektor, menovka)?)
         }
     })
 }
@@ -211,11 +225,15 @@ pub struct Zhrnutie {
 impl Zhrnutie {
     pub fn text(&self) -> String {
         format!(
-            "{} na celom disku ({}), tabuľka {}, klaster {} KB, zarovnanie {} MiB{}",
+            "{} na celom disku ({}), tabuľka {}, klaster {}, zarovnanie {} MiB{}",
             self.system.nazov(),
             crate::disk::velkost(self.oddiel.sektory * self.sektor as u64),
             self.schema.nazov(),
-            self.klaster / 1024,
+            if self.klaster < 1024 {
+                format!("{} B", self.klaster)
+            } else {
+                format!("{} KB", self.klaster / 1024)
+            },
             self.zarovnanie / MIB,
             if self.menovka.is_empty() { String::new() } else { format!(", menovka „{}“", self.menovka) }
         )
@@ -234,7 +252,19 @@ pub fn formatuj(
     let s = sektor as u64;
     let system = f.system.pre(velkost);
     let typ = system.typ();
-    let mut oddiel = oddiely::jeden_oddiel(velkost, sektor, f.schema, typ, &f.menovka)?;
+    // UDF ide na celý disk; pomocná tabuľka MBR má jediný oddiel od sektora 0 (Windows aj macOS)
+    let schema = if system == System::Udf { Schema::Mbr } else { f.schema };
+    let mut oddiel = if system == System::Udf {
+        Oddiel {
+            zaciatok: 0,
+            sektory: (velkost / s).min(u32::MAX as u64),
+            typ,
+            meno: f.menovka.clone(),
+            aktivny: false,
+        }
+    } else {
+        oddiely::jeden_oddiel(velkost, sektor, schema, typ, &f.menovka)?
+    };
     let zarovnanie = oddiely::zarovnanie(velkost);
     // rozvrh súborového systému sa overí ešte pred prvým zápisom
     let zvazok = navrhni(system, oddiel.sektory, sektor, oddiel.zaciatok, zarovnanie, f.klaster, &f.menovka)?;
@@ -265,7 +295,7 @@ pub fn formatuj(
         .map_err(chyba)?;
     let klaster = zvazok.klaster_b();
     // 3. tabuľka oddielov až nakoniec: kým nie je, systém nevidí polovičný zväzok
-    match f.schema {
+    match schema {
         Schema::Mbr => {
             let podpis = u32::from_le_bytes(oddiely::jedinecne()[..4].try_into().unwrap_or([1; 4]));
             c.zapis(0, &oddiely::mbr(sektor, std::slice::from_ref(&oddiel), podpis)).map_err(chyba)?;
@@ -282,16 +312,16 @@ pub fn formatuj(
     let mut b = vec![0u8; s as usize];
     c.citaj(0, &mut b).map_err(chyba)?;
     let z = oddiely::rozloz_mbr(&b).ok_or("kontrola: na disku nie je tabuľka oddielov")?;
-    let ocakavany = if f.schema == Schema::Gpt { 0xEE } else { typ.mbr() };
+    let ocakavany = if schema == Schema::Gpt { 0xEE } else { typ.mbr() };
     if z.first().map(|z| z.typ) != Some(ocakavany) {
         return Err("kontrola: tabuľka oddielov sa nezapísala správne".into());
     }
-    let mut z = vec![0u8; 4096];
+    let mut z = vec![0u8; 65_536];
     c.citaj(posun, &mut z).map_err(chyba)?;
     if !zvazok.over(&z) {
         return Err("kontrola: súborový systém sa nezapísal správne".into());
     }
-    Ok(Zhrnutie { system, schema: f.schema, oddiel, klaster, zarovnanie, menovka: f.menovka.clone(), sektor })
+    Ok(Zhrnutie { system, schema, oddiel, klaster, zarovnanie, menovka: f.menovka.clone(), sektor })
 }
 
 #[cfg(test)]

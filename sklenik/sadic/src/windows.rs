@@ -56,6 +56,7 @@ const IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS: u32 = 0x0056_0000;
 const FSCTL_LOCK_VOLUME: u32 = 0x0009_0018;
 const FSCTL_DISMOUNT_VOLUME: u32 = 0x0009_0020;
 const IOCTL_DISK_UPDATE_PROPERTIES: u32 = 0x0007_0140;
+const IOCTL_DISK_CREATE_DISK: u32 = 0x0007_C058;
 
 /// Najväčší kus jedného zápisu alebo čítania.
 pub const KUS: usize = 4 << 20;
@@ -349,11 +350,36 @@ impl Disk {
         match znova(|| self.zapis_buf(posun, n)) {
             Err(e) if matches!(e.raw_os_error(), Some(21) | Some(1117)) => {
                 self.otvor_znova()?;
+                let zvazkov = zvazky_na_disku(self.cislo).len();
                 znova(|| self.zapis_buf(posun, n)).map_err(|e| {
-                    io::Error::new(e.kind(), format!("{e} (na {} MiB od začiatku disku)", posun >> 20))
+                    io::Error::new(
+                        e.kind(),
+                        format!(
+                            "{e} (na {} MiB od začiatku disku; zväzkov na disku: {zvazkov})",
+                            posun >> 20
+                        ),
+                    )
                 })
             }
             r => r,
+        }
+    }
+
+    /// Zruší tabuľku oddielov tak, ako ju vidí Windows (ako Rufus pred zápisom), a počká, kým zmiznú
+    /// zväzky disku: počas zápisu potom Windows nič nepripája – ani oddiely, ktoré našiel na disku po
+    /// predchádzajúcom napálení. Volá sa až po potvrdení a kontrole, že ide o ten istý disk.
+    pub fn uvolni_oddiely(&mut self) {
+        let mut vstup = [0u8; 24];
+        vstup[0..4].copy_from_slice(&2u32.to_le_bytes()); // PARTITION_STYLE_RAW
+        if ioctl(&self.h, IOCTL_DISK_CREATE_DISK, &vstup, &mut []).is_err() {
+            return;
+        }
+        let _ = ioctl(&self.h, IOCTL_DISK_UPDATE_PROPERTIES, &[], &mut []);
+        for _ in 0..20 {
+            if zvazky_na_disku(self.cislo).is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
         }
     }
 

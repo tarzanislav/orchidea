@@ -418,8 +418,8 @@ pub fn bez_diakritiky(t: &str) -> String {
         .collect()
 }
 
-/// Dátum a čas vo formáte DOS (FAT) z času Unix (UTC).
-pub fn dos_cas(unix: u64) -> (u16, u16) {
+/// Občiansky dátum a čas (rok, mesiac, deň, hodina, minúta, sekunda) z času Unix (UTC).
+pub fn obciansky(unix: u64) -> (i64, u8, u8, u8, u8, u8) {
     let dni = (unix / 86_400) as i64;
     let sek = unix % 86_400;
     // občiansky dátum z počtu dní (H. Hinnant)
@@ -432,8 +432,14 @@ pub fn dos_cas(unix: u64) -> (u16, u16) {
     let den = doy - (153 * mp + 2) / 5 + 1;
     let mesiac = if mp < 10 { mp + 3 } else { mp - 9 };
     let rok = yoe + era * 400 + i64::from(mesiac <= 2);
+    (rok, mesiac as u8, den as u8, (sek / 3600) as u8, ((sek / 60) % 60) as u8, (sek % 60) as u8)
+}
+
+/// Dátum a čas vo formáte DOS (FAT) z času Unix (UTC).
+pub fn dos_cas(unix: u64) -> (u16, u16) {
+    let (rok, mesiac, den, h, m, sek) = obciansky(unix);
     let datum = (((rok - 1980).clamp(0, 127) as u16) << 9) | ((mesiac as u16) << 5) | den as u16;
-    let cas = (((sek / 3600) as u16) << 11) | ((((sek / 60) % 60) as u16) << 5) | ((sek % 60) / 2) as u16;
+    let cas = ((h as u16) << 11) | ((m as u16) << 5) | (sek / 2) as u16;
     (datum, cas)
 }
 

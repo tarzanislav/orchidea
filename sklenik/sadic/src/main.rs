@@ -42,6 +42,8 @@ mod rozbal;
 mod sha256;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod subory;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod udf;
 #[cfg(windows)]
 mod windows;
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -509,6 +511,9 @@ mod platforma {
         if zariadenie.info != d {
             return Err(Chyba(2, "disk sa medzitým zmenil (vymenená karta?) – nič sa nezapísalo".into()));
         }
+        if u.zapisovat {
+            zariadenie.uvolni_oddiely();
+        }
         let zrusene = || Chyba(1, "zrušené – karta nie je úplná, zapíšte ju znova".into());
         let mut kus = vec![0u8; KUS];
         // odtlačok každého kusu – pri chybe povie, kde na karte je problém
@@ -654,11 +659,12 @@ mod platforma {
         if !potvrd(&d) {
             return Err(Chyba(2, "nepotvrdené – nič sa nezapísalo".into()));
         }
-        let z = Disk::otvor(cislo, true)
+        let mut z = Disk::otvor(cislo, true)
             .map_err(|e| Chyba(1, format!("disk {cislo}: {e} (spustite ako správca)")))?;
         if z.info != d {
             return Err(Chyba(2, "disk sa medzitým zmenil (vymenená karta?) – nič sa nezapísalo".into()));
         }
+        z.uvolni_oddiely();
         Ok(z)
     }
 

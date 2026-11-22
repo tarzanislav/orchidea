@@ -173,7 +173,7 @@ jobs:
       - name: Nástroje na nezávislú kontrolu
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q dosfstools exfatprogs mtools gdisk xorriso isolinux syslinux-common genisoimage ntfs-3g hfsprogs
+          sudo apt-get install -y -q dosfstools exfatprogs mtools gdisk xorriso isolinux syslinux-common genisoimage ntfs-3g hfsprogs udftools p7zip-full
       - name: Zostavenie
         run: cargo build --locked --release -p sklenik-sadic
       - name: Formátovanie, rozbor ISO, napálenie, súbor nad 4 GB, skutočné ISO
@@ -262,6 +262,7 @@ jobs:
           & $s skumaj "$iso\hybrid.iso"; if ($LASTEXITCODE) { throw "rozbor hybridného ISO" }
           & $s napal "$iso\hybrid.iso" $n --potvrdzujem $n --dovol-virtualny
           if ($LASTEXITCODE) { throw "napálenie hybridného ISO zlyhalo" }
+          Get-Partition -DiskNumber $n -ErrorAction SilentlyContinue | Format-Table PartitionNumber, Offset, Size, Type, DriveLetter -AutoSize | Out-String | Write-Output
           & $s napal "$iso\win.iso" $n --potvrdzujem $n --dovol-virtualny
           if ($LASTEXITCODE) { throw "napálenie ISO Windows (rozbalenie súborov) zlyhalo" }
           function Pismeno($n) {
@@ -345,6 +346,19 @@ jobs:
             Write-Output $kontrola
             if ($kontrola -notmatch 'found no problems') { throw "chkdsk našiel chyby v $($f[3]) (kód $kod)" }
           }
+          # UDF na celom disku s pomocnou tabuľkou MBR: Windows ho pripojí, prečíta menovku a zapíše súbor
+          & $s formatuj $n udf "menovka=Spolocny" --potvrdzujem $n --dovol-virtualny
+          if ($LASTEXITCODE) { throw "formátovanie UDF zlyhalo" }
+          $l = Pismeno $n
+          $v = Get-Volume -DriveLetter $l
+          Write-Output "Windows vidí: $($v.FileSystem) '$($v.FileSystemLabel)' $($v.Size) B"
+          if ($v.FileSystem -ne 'UDF' -or $v.FileSystemLabel -ne 'Spolocny') { throw "UDF: Windows vidí $($v.FileSystem) '$($v.FileSystemLabel)'" }
+          Set-Content -LiteralPath "${l}:\skuska.txt" -Value 'Ahoj zo SADICA'
+          New-Item -ItemType Directory -Path "${l}:\Priečinok" | Out-Null
+          Copy-Item $s "${l}:\Priečinok\sadic.exe"
+          if ((Get-Content -LiteralPath "${l}:\skuska.txt") -ne 'Ahoj zo SADICA') { throw "zápis súboru na UDF" }
+          if ((Get-FileHash $s).Hash -ne (Get-FileHash "${l}:\Priečinok\sadic.exe").Hash) { throw "kópia na UDF nesedí" }
+          Write-Output (chkdsk "${l}:" 2>&1 | Out-String)
           # ext4 a HFS+: Windows ich nečíta, ale musí vidieť oddiel správneho druhu (e2fsck a fsck.hfsplus
           # spúšťa linuxová úloha)
           foreach ($f in @(@('ext4', 'gpt', '{0fc63daf-8483-4772-8e79-3d69d8477de4}'), @('ext3', 'mbr', '131'), @('hfs+', 'gpt', '{48465300-0000-11aa-aa11-00306543ecac}'), @('hfs+', 'mbr', '175'))) {
