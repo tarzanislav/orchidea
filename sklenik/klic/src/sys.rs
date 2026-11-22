@@ -227,6 +227,60 @@ pub fn zapni_odkladanie(cesta: &str, priorita: c_int) -> io::Result<()> {
     Ok(())
 }
 
+const ETHTOOL_GSET: u32 = 0x1;
+const ETHTOOL_SSET: u32 = 0x2;
+/// Ponúkané režimy, ktoré ostanú bez gigabitu: 10/100 Mb/s (bity 0–3), samočinné dohodnutie, druhy
+/// rozhraní a riadenie toku (bity 6–11, 13, 14).
+pub const BEZ_GIGABITU: u32 = 0x0000_6FCF;
+
+/// Nové ponúkané režimy bez gigabitu; `None`, ak sa nič nemení alebo by nezostal žiadny režim 10/100.
+pub fn ponuka_bez_gigabitu(ponuka: u32) -> Option<u32> {
+    let nova = ponuka & BEZ_GIGABITU;
+    (nova != ponuka && nova & 0xF != 0).then_some(nova)
+}
+
+/// R126: Ethernet ponúkne len 10/100 Mb/s (gigabitový čip siete berie v pokoji viac energie). Spojenie sa
+/// znova dohodne (asi 2–3 s). Vráti `Ok(true)`, ak sa ponuka zmenila.
+pub fn ethernet_bez_gigabitu(meno: &str) -> io::Result<bool> {
+    if meno.is_empty() || meno.len() >= 16 || meno.contains('\0') {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "neplatné meno rozhrania"));
+    }
+    // struct ethtool_cmd: 44 bajtov – cmd, supported, advertising (posun 8), …, autoneg (posun 18)
+    let mut cmd = [0u32; 11];
+    cmd[0] = ETHTOOL_GSET;
+    // SAFETY: obyčajné volanie jadra s konštantami; výsledok sa kontroluje.
+    let fd = unsafe { socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut ifr = [0u8; IFREQ];
+    ifr[..meno.len()].copy_from_slice(meno.as_bytes());
+    let vysledok = (|| {
+        let mut volaj = |cmd: &mut [u32; 11]| {
+            let ukazovatel = cmd.as_mut_ptr() as usize;
+            ifr[16..16 + size_of::<usize>()].copy_from_slice(&ukazovatel.to_ne_bytes());
+            // SAFETY: ifr obsahuje meno a ukazovateľ na cmd (44 B); obe žijú počas volania.
+            if unsafe { ioctl(fd, SIOCETHTOOL, ifr.as_mut_ptr()) } < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        };
+        volaj(&mut cmd)?;
+        let autoneg = cmd[4].to_ne_bytes()[2];
+        let Some(nova) = ponuka_bez_gigabitu(cmd[2]).filter(|_| autoneg == 1) else {
+            return Ok(false);
+        };
+        cmd[0] = ETHTOOL_SSET;
+        cmd[2] = nova;
+        volaj(&mut cmd)?;
+        Ok(true)
+    })();
+    // SAFETY: fd je náš otvorený deskriptor, zatvára sa raz.
+    unsafe { close(fd) };
+    vysledok
+}
+
 /// Vypne úsporný režim Ethernetu (EEE) na rozhraní – na RPi 3 B+, 4 a 400 známa príčina výpadkov spojenia.
 /// Vráti `Ok(false)`, ak EEE nebolo zapnuté.
 pub fn vypni_eee(meno: &str) -> io::Result<bool> {

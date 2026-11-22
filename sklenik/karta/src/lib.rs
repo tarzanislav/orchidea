@@ -172,6 +172,11 @@ pub fn citaj_nastavenie(z: &mut (impl Read + Seek)) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&obsah).trim_end().to_string())
 }
 
+/// R131: rada, kam zariadenie postaviť, aby zostalo chladné (SADIČ ju ukáže po zápise, KLÍČ pri zdroji
+/// tepla). Domáci radiátor hreje hlavne stúpajúcim teplým vzduchom, zvislá doska sa chladí lepšie a kovová
+/// krabička je oproti plastovej o ~20 °C chladnejšia (meranie 21. 11. 2026).
+pub const RADA_UMIESTNENIE: &str = "Aby zariadenie zostalo chladné: postavte ho zvislo, nie nad radiátor a aspoň 10 cm od zdrojov tepla (radiátor, slnko, iné zariadenia); kovová krabička chladí lepšie než plastová.";
+
 /// Nastavenie zariadenia.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Nastavenie {

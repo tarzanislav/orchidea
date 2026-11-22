@@ -31,6 +31,10 @@ mod test_pamate;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod poda;
 
+// odhad teploty okolia a zistenie zdroja tepla (R123, R124) – skúša sa na každom systéme
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod okolie;
+
 // samomeranie (R122) – mená súborov, poradie, krivka teploty, identifikácia; skúša sa na každom systéme
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod samomeranie;

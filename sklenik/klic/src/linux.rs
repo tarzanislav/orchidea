@@ -2,6 +2,7 @@
 //! obrazovke.
 
 use crate::obrazovka::{self, Eee, FormatBodu, Jazyk, MeranieKarty, Stav};
+use crate::okolie::{self, Okolie};
 use crate::periferie::{Supis, Ulozisko};
 use crate::poda::Poda;
 use crate::samomeranie::{self, NL, ZNACKA_NOSICA, ZNACKA_PORADIA, nadpis};
@@ -137,8 +138,7 @@ impl Hardver for Sysfs {
         for (i, p) in self.vypinatelne.iter().enumerate() {
             zapis(p, if (i as u32) + 1 < u.jadra { "1" } else { "0" });
         }
-        let _ = fs::create_dir_all("/run/sklenik");
-        let _ = fs::write(ROZPOCET, format!("vlakna={}\ntakt_khz={}\n", u.jadra, u.takt_khz));
+        // tepelný rozpočet pre ORCHIDEU zapisuje hlavná slučka (úplný, s predpoveďou – R127)
         self.uplatnena = Some((u.jadra, u.takt_khz));
     }
 }
@@ -526,6 +526,10 @@ pub fn spusti() {
     let profil = Profil::pre_model(&model);
     let mut hw = Sysfs::najdi();
     let mut regulator = Regulator::novy(urovne(&hw.takty(), hw.jadier()), profil);
+    // R123–R128: odhad okolia, zdroj tepla, predpoveď, úspora v horúcom okolí, tepelný rozpočet
+    let mut okolie = Okolie::nove();
+    let mut uspora = false;
+    let mut posledny_rozpocet: Option<(Instant, u32, u32)> = None;
     let cas_startu = start.elapsed();
     hlas(&format!(
         "{model}; jadier {}, takty {:?} kHz, snímačov teploty {}, vypínateľných jadier {}, ventilátorov {}; cieľ {:.0} °C, strop {:.0} °C{}",
@@ -564,6 +568,7 @@ pub fn spusti() {
         Option<Result<usize, usize>>,
         Vec<String>,
         Option<obrazovka::Samomeranie>,
+        (Option<i64>, &'static str, Option<bool>, Option<i64>, Option<i64>, bool),
     )> = None;
     let mut krokov = 0u32;
     // R99: hardvérový strážny časovač – ak sa KLÍČ zasekne na 15 s, doska sa sama reštartuje
@@ -631,6 +636,36 @@ pub fn spusti() {
             teplota = hw.teplota();
             let v = vytazenie.krok();
             vytazenie_teraz = v;
+            // R123: odhad okolia z minútových priemerov; R125: predpoveď ustálenej teploty pre strážcu
+            if let Some(t) = teplota {
+                okolie.krok(uptime().unwrap_or(0.0), t, v);
+            }
+            let stav_okolia = okolie.stav();
+            regulator.nastav_predpoved(stav_okolia.ustalena);
+            // R126: horúce okolie – šetrí sa aj nečinnosť (raz za beh; nečinný príkon sa zmení → prepočet)
+            if pid1 && !skuska && !uspora && stav_okolia.prostredie.horuce() {
+                uspora = true;
+                regulator.nastav_usporu(true);
+                hlas(&format!(
+                    "okolie {}: {} – úsporný režim (nečinnosť na úspornej úrovni, Ethernet bez gigabitu)",
+                    stav_okolia.okolie.map_or("?".into(), |o| format!("≈ {o:.0} °C")),
+                    stav_okolia.prostredie.slovo()
+                ));
+                for r in
+                    supis.siet.iter().filter(|r| !r.bezdrotove && r.rychlost_mbs.is_some_and(|v| v >= 1000))
+                {
+                    match sys::ethernet_bez_gigabitu(&r.meno) {
+                        Ok(true) => {
+                            hlas(&format!("sieť {}: ponúka už len 10/100 Mb/s (menej tepla)", r.meno))
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            hlas(&format!("sieť {}: obmedzenie na 100 Mb/s sa nepodarilo: {e}", r.meno))
+                        }
+                    }
+                }
+                okolie.prekalibruj();
+            }
             let uroven = match teplota {
                 Some(t) => regulator.krok_s_vytazenim(t, dt, v),
                 // R99: snímač teploty bol, ale nedá sa prečítať (napr. zlyhal firmvér) – nevieme, že je
@@ -651,7 +686,26 @@ pub fn spusti() {
             if !len_sledovanie {
                 hw.uplatni(&uroven);
                 if let Some(t) = teplota {
-                    hw.ventiluj(t, profil);
+                    // R129: v horúcom okolí sa ventilátor zapína o 5 °C skôr
+                    hw.ventiluj(if stav_okolia.prostredie.horuce() { t + 5.0 } else { t }, profil);
+                }
+                // R127: tepelný rozpočet pre programy – pri zmene úrovne a raz za 30 s (len zápis do pamäte)
+                if posledny_rozpocet.is_none_or(|(kedy, j, f)| {
+                    kedy.elapsed() >= Duration::from_secs(30) || (j, f) != (uroven.jadra, uroven.takt_khz)
+                }) {
+                    let _ = fs::create_dir_all("/run/sklenik");
+                    let _ = fs::write(
+                        ROZPOCET,
+                        okolie::rozpocet(
+                            &stav_okolia,
+                            teplota,
+                            profil.ciel,
+                            regulator.predpoved_30s(),
+                            uroven.jadra,
+                            uroven.takt_khz,
+                        ),
+                    );
+                    posledny_rozpocet = Some((Instant::now(), uroven.jadra, uroven.takt_khz));
                 }
             }
             if pid1 {
@@ -672,7 +726,7 @@ pub fn spusti() {
             }
             // R122: bod krivky teploty – z hodnôt, ktoré strážca práve odčítal (nič sa nemeria navyše)
             if let Some(m) = merania.as_mut() {
-                m.bod(teplota, uroven.vykon, uroven.takt_khz / 1000, v);
+                m.bod(teplota, uroven.vykon, uroven.takt_khz / 1000, v, stav_okolia.okolie);
             }
             // v pokoji sa strážca prebúdza zriedkavejšie
             let pokoj = teplota.unwrap_or(0.0) < regulator.profil().ciel - 10.0;
@@ -766,11 +820,22 @@ pub fn spusti() {
                     "samomeranie: začiatok – záznamy v 0., 5., 10. a 30. minúte, krivka teploty každých 30 s",
                 );
                 let u = regulator.uroven();
-                m.bod(teplota, u.vykon, u.takt_khz / 1000, vytazenie_teraz);
+                m.bod(teplota, u.vykon, u.takt_khz / 1000, vytazenie_teraz, okolie.stav().okolie);
             }
         }
         let stav_merania = merania.as_ref().filter(|_| !vypnute).map(|m| m.stav());
-        let ine = (eee.stav(), kmsg.posledne(2), pamat_vysledok, siet_chyby.clone(), stav_merania);
+        let stav_okolia = okolie.stav();
+        // riadok Okolie sa prekreslí len pri zmene toho, čo ukazuje (celé stupne, prostredie, úspora)
+        let kluc_okolia = (
+            stav_okolia.okolie.map(|o| o.round() as i64),
+            stav_okolia.prostredie.slovo(),
+            stav_okolia.studeny_start,
+            stav_okolia.samohrev.map(|x| x.round() as i64),
+            stav_okolia.tau_s.map(|t| (t / 60.0).round() as i64),
+            uspora,
+        );
+        let ine =
+            (eee.stav(), kmsg.posledne(2), pamat_vysledok, siet_chyby.clone(), stav_merania, kluc_okolia);
         let nove_ine = zobrazene_ine.as_ref() != Some(&ine);
         let bezi_s = uptime().unwrap_or(0.0) as u64;
         let novy_cas = Some(bezi_s) != zobrazeny_cas;
@@ -800,6 +865,8 @@ pub fn spusti() {
             test_pamate: ine.2,
             siet_chyby: &ine.3,
             samomeranie: ine.4.as_ref(),
+            okolie: (!hw.snimace.is_empty()).then_some(&stav_okolia),
+            uspora,
         };
         // R122: záznam samomerania – hlavná slučka len odčíta, čo už má; snímku stlačí a zapíše vlákno s
         // najnižšou prioritou
@@ -810,7 +877,7 @@ pub fn spusti() {
                 zaznam::Uloha::Zaznam(minuta) => {
                     // bod krivky v tejto minúte, ak ho krok strážcu ešte nezapísal (prebudenie udalosťou)
                     let u = regulator.uroven();
-                    m.bod(teplota, u.vykon, u.takt_khz / 1000, vytazenie_teraz);
+                    m.bod(teplota, u.vykon, u.takt_khz / 1000, vytazenie_teraz, stav_okolia.okolie);
                     let st = postav_stav();
                     // obraz: presne to, čo je na obrazovke; bez obrazovky (Tanix) sa nakreslí 1280×720
                     let (platno, opis) = match displej.as_ref().and_then(|d| d.predosle.clone()) {
@@ -853,6 +920,7 @@ pub fn spusti() {
                         vytazenie_teraz.map_or("–".into(), |v| format!("{:.0} %", v * 100.0)),
                     );
                     text += &format!("  {}{NL}", rozpoznanie(&model, &poda, profil));
+                    text += &format!("  {}{NL}", popis_okolia(&stav_okolia, uspora));
                     text += &format!("  {}{NL}  SÚPIS – {}{NL}", poda.riadok(), supis.riadok());
                     let mut dovetok = nadpis(if minuta == 0 {
                         "VAROVANIA A CHYBY JADRA OD ŠTARTU"
@@ -1333,6 +1401,32 @@ impl Hlasenia {
     }
 }
 
+/// Okolie pre správu samomerania (R123–R126).
+fn popis_okolia(o: &okolie::StavOkolia, uspora: bool) -> String {
+    let c = |x: Option<f64>, d: usize| x.map_or("?".to_string(), |v| format!("{v:.d$}"));
+    format!(
+        "okolie ≈ {} °C ({}) · na začiatku {} °C · štart {} · vlastný ohrev {} °C · τ {} s · ustáli sa pri {} °C · ohrev pri práci {} °C/min · prostredie {} · úsporný režim {}",
+        c(o.okolie, 1),
+        match o.zdroj {
+            Some(okolie::Zdroj::Start) => "zo štartu",
+            Some(okolie::Zdroj::Model) => "z modelu",
+            None => "neznáme",
+        },
+        c(o.okolie_start, 1),
+        match o.studeny_start {
+            Some(true) => "studený",
+            Some(false) => "teplý (okolie zo štartu neplatí)",
+            None => "?",
+        },
+        c(o.samohrev, 1),
+        c(o.tau_s, 0),
+        c(o.ustalena, 1),
+        c(o.ohrev_pri_praci.map(|r| r * 60.0), 2),
+        o.prostredie.slovo(),
+        if uspora { "áno" } else { "nie" }
+    )
+}
+
 /// Rozpoznal KLÍČ zariadenie? (R122 – riadok správy samomerania)
 fn rozpoznanie(model: &str, poda: &Poda, profil: Profil) -> String {
     let rodina = if model.contains("Raspberry Pi") {
@@ -1437,6 +1531,16 @@ mod skusky {
             (u16::from_ne_bytes([u[o], u[o + 1]]), u16::from_ne_bytes([u[o + 2], u[o + 3]])),
             (0x11, 1)
         );
+    }
+
+    #[test]
+    fn ethernet_bez_gigabitu() {
+        // R126: 10/100 a gigabit (bity 0–5), samočinné dohodnutie, TP, MII, riadenie toku
+        let ponuka = 0x3F | 1 << 6 | 1 << 7 | 1 << 9 | 1 << 13;
+        assert_eq!(sys::ponuka_bez_gigabitu(ponuka), Some(0x0F | 1 << 6 | 1 << 7 | 1 << 9 | 1 << 13));
+        assert_eq!(sys::ponuka_bez_gigabitu(0x0F | 1 << 6), None, "už bez gigabitu");
+        assert_eq!(sys::ponuka_bez_gigabitu(1 << 5 | 1 << 6), None, "bez 10/100 by spojenie zaniklo");
+        assert_eq!(sys::ponuka_bez_gigabitu(0x0F | 1 << 15), Some(0x0F), "aj 2,5 Gb/s preč");
     }
 
     #[test]

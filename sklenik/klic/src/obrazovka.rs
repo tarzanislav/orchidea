@@ -105,6 +105,10 @@ pub struct Stav<'a> {
     pub siet_chyby: &'a [String],
     /// Samomeranie (R122) – `None`, ak je vypnuté.
     pub samomeranie: Option<&'a Samomeranie>,
+    /// Odhad okolia a prostredie (R123, R124) – `None` bez snímača teploty.
+    pub okolie: Option<&'a crate::okolie::StavOkolia>,
+    /// Úsporný režim pre horúce okolie (R126).
+    pub uspora: bool,
 }
 
 /// Samomeranie (R122) – čo ukazuje riadok „Meranie“.
@@ -326,6 +330,7 @@ pub fn nakresli_s_opisom(
         j.t("Pamäť", "Paměť", "Memory"),
         j.t("Jadro", "Jádro", "Kernel"),
         j.t("Meranie", "Měření", "Self-test"),
+        j.t("Okolie", "Okolí", "Ambient"),
     ];
     let stlpec = m + popisy.iter().map(|t| pismo.sirka(t, v, h)).fold(0.0, f32::max) + 1.5 * v;
     // riadkov je podľa počtu sietí a úložísk – rozostup sa prispôsobí, aby sa zmestili všetky
@@ -334,7 +339,8 @@ pub fn nakresli_s_opisom(
         + s.supis.siet.len().clamp(1, 2)
         + s.supis.ulozisko.len().clamp(1, 2)
         + hlasenia
-        + usize::from(s.samomeranie.is_some());
+        + usize::from(s.samomeranie.is_some())
+        + usize::from(s.okolie.is_some());
     // posledný riadok musí ostať nad pätou (tri riadky malého písma)
     let spodok = vyska as f32 - mv - 4.0 * v;
     let volne = spodok - (y + 0.4 * v);
@@ -383,6 +389,12 @@ pub fn nakresli_s_opisom(
         popisy[0],
         &[(&teplota.0, TEXT), ("–", TLMENY), (teplota.1, teplota.2), ("·", TLMENY), (&vykon, TLMENY)],
     );
+    // R123, R124, R131: okolie hneď pod teplotou – pri zdroji tepla s radou, čo urobiť
+    if let Some(o) = s.okolie {
+        let casti = riadok_okolia(o, s.uspora, j);
+        let casti: Vec<(&str, Farba)> = casti.iter().map(|(t, f)| (t.as_str(), *f)).collect();
+        riadok(&mut p, &mut y, popisy[12], &casti);
+    }
     // R122: samomeranie hneď pod teplotou – je to to, na čo sa pri skúške čaká
     if let Some(m) = s.samomeranie {
         let casti = riadok_merania(m, j);
@@ -715,6 +727,82 @@ pub fn nakresli_s_opisom(
     (p, opis)
 }
 
+/// Časti riadku „Okolie“ (R123, R124, R131) s farbami.
+fn riadok_okolia(o: &crate::okolie::StavOkolia, uspora: bool, j: Jazyk) -> Vec<(String, Farba)> {
+    use crate::okolie::{Prostredie, Zdroj};
+    let mut v = Vec::new();
+    match (o.okolie, o.studeny_start) {
+        (Some(t), _) => {
+            let odkial = match o.zdroj {
+                Some(Zdroj::Start) => j.t(" (zo štartu)", " (ze startu)", " (at start)"),
+                _ => "",
+            };
+            v.push((format!("≈ {} °C{odkial}", j.cislo(t, 0)), TEXT));
+        }
+        (None, Some(false)) => v.push((
+            j.t(
+                "neznáme – reštart zohriatej dosky",
+                "neznámé – restart zahřáté desky",
+                "unknown – warm restart",
+            )
+            .into(),
+            TLMENY,
+        )),
+        (None, _) => v.push((j.t("zisťuje sa…", "zjišťuje se…", "estimating…").into(), TLMENY)),
+    }
+    match o.prostredie {
+        Prostredie::Utek => v.push((
+            j.t(
+                "– teplota rastie čoraz rýchlejšie: presuňte zariadenie alebo ho vypnite",
+                "– teplota roste čím dál rychleji: přesuňte zařízení nebo ho vypněte",
+                "– temperature rising faster and faster: move or switch off the device",
+            )
+            .into(),
+            CERVENA,
+        )),
+        Prostredie::ZdrojTepla(n) => v.push((
+            format!(
+                "(+{} °C) {}",
+                j.cislo(n, 0),
+                j.t(
+                    "– zdroj tepla: nie nad radiátor, 10 cm odstup, zvislo",
+                    "– zdroj tepla: ne nad radiátor, 10 cm odstup, svisle",
+                    "– heat source: not above a radiator, 10 cm away, upright",
+                )
+            ),
+            JANTAROVA,
+        )),
+        Prostredie::Teple => v.push((
+            j.t(
+                "– teplé okolie: nie nad radiátor, 10 cm odstup, zvislo",
+                "– teplé okolí: ne nad radiátor, 10 cm odstup, svisle",
+                "– warm surroundings: not above a radiator, 10 cm away, upright",
+            )
+            .into(),
+            JANTAROVA,
+        )),
+        Prostredie::Normalne | Prostredie::Nezname => {
+            if let Some(sh) = o.samohrev {
+                v.push((
+                    format!(
+                        "· {} +{} °C",
+                        j.t("vlastný ohrev", "vlastní ohřev", "self-heating"),
+                        j.cislo(sh, 0)
+                    ),
+                    TLMENY,
+                ));
+            }
+            if let Some(tau) = o.tau_s {
+                v.push((format!("· τ {} min", j.cislo(tau / 60.0, 0)), TLMENY));
+            }
+        }
+    }
+    if uspora {
+        v.push((j.t("· úspora", "· úspora", "· saving").into(), TLMENY));
+    }
+    v
+}
+
 /// Časti riadku „Meranie“ (R122) s farbami.
 fn riadok_merania(m: &Samomeranie, j: Jazyk) -> Vec<(String, Farba)> {
     match m {
@@ -876,6 +964,8 @@ mod skusky {
             test_pamate: Some(Ok(64)),
             siet_chyby: &[],
             samomeranie: None,
+            okolie: None,
+            uspora: false,
             vykon: 1.0,
             podpatie: Some(false),
             podpatie_bolo: false,
@@ -1022,6 +1112,53 @@ mod skusky {
                 assert_eq!(p, nakresli(&pismo, w, h, &st, j));
             }
         }
+    }
+
+    #[test]
+    fn okolie_na_obrazovke() {
+        use crate::okolie::{Prostredie, StavOkolia, Zdroj};
+        let pismo = Pismo::stonka();
+        let s = supis();
+        let mut st = stav(&s, Some(45.0));
+        let o = StavOkolia {
+            okolie: Some(22.4),
+            zdroj: Some(Zdroj::Model),
+            okolie_start: Some(21.5),
+            samohrev: Some(17.6),
+            tau_s: Some(600.0),
+            studeny_start: Some(true),
+            sklon: Some(0.0),
+            ustalena: Some(45.0),
+            najnizsie: Some(21.5),
+            ohrev_pri_praci: None,
+            prostredie: Prostredie::Normalne,
+        };
+        st.okolie = Some(&o);
+        let (p, opis) = nakresli_s_opisom(&pismo, 1920, 1080, &st, Jazyk::Sk);
+        let r = opis.iter().find(|r| r.contains("Okolie")).cloned().unwrap_or_default();
+        assert!(r.contains("≈ 22 °C") && r.contains("vlastný ohrev +18 °C") && r.contains("τ 10 min"), "{r}");
+        assert!(!p.body.contains(&JANTAROVA));
+        let zdroj = StavOkolia { okolie: Some(33.0), prostredie: Prostredie::ZdrojTepla(11.5), ..o };
+        st.okolie = Some(&zdroj);
+        st.uspora = true;
+        let (p, opis) = nakresli_s_opisom(&pismo, 1920, 1080, &st, Jazyk::Sk);
+        let r = opis.iter().find(|r| r.contains("Okolie")).cloned().unwrap_or_default();
+        assert!(
+            r.contains("≈ 33 °C")
+                && r.contains("(+12 °C)")
+                && r.contains("nie nad radiátor")
+                && r.contains("· úspora"),
+            "{r}"
+        );
+        assert!(p.body.contains(&JANTAROVA));
+        let utek = StavOkolia { prostredie: Prostredie::Utek, ..zdroj };
+        st.okolie = Some(&utek);
+        assert!(nakresli(&pismo, 1920, 1080, &st, Jazyk::Sk).body.contains(&CERVENA));
+        let teply =
+            StavOkolia { okolie: None, studeny_start: Some(false), prostredie: Prostredie::Nezname, ..o };
+        st.okolie = Some(&teply);
+        let (_, opis) = nakresli_s_opisom(&pismo, 800, 480, &st, Jazyk::Cs);
+        assert!(opis.iter().any(|r| r.contains("restart zahřáté desky")), "{opis:?}");
     }
 
     #[test]

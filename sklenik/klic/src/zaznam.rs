@@ -493,6 +493,21 @@ pub fn stav_systemu() -> String {
             ),
         );
     }
+    // R130 (prvý krok – len meranie): napätia regulátorov dosky, základ pre budúcu skúšku podvoltovania
+    let mut napatia: Vec<String> = fs::read_dir("/sys/class/regulator")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|z| {
+            let p = z.path();
+            let uv = citaj(p.join("microvolts"))?.parse::<f64>().ok()?;
+            Some(format!("{} {:.3} V", citaj(p.join("name")).unwrap_or_else(|| "?".into()), uv / 1e6))
+        })
+        .collect();
+    napatia.sort();
+    if !napatia.is_empty() {
+        riadok(&mut t, format!("napätia regulátorov: {}", napatia.join(" · ")));
+    }
     if let Some(v) = citaj("/proc/version") {
         riadok(&mut t, format!("jadro: {}", v.split_whitespace().take(3).collect::<Vec<_>>().join(" ")));
     }
@@ -582,7 +597,14 @@ impl Riadenie {
 
     /// Bod krivky teploty – raz za 30 s, len prvých 30 minút. Hodnoty sú z posledného kroku strážcu;
     /// navyše sa prečíta len takt (jeden malý súbor jadra).
-    pub fn bod(&mut self, teplota: Option<f64>, vykon: f64, strop_mhz: u32, vytazenie: Option<f64>) {
+    pub fn bod(
+        &mut self,
+        teplota: Option<f64>,
+        vykon: f64,
+        strop_mhz: u32,
+        vytazenie: Option<f64>,
+        okolie: Option<f64>,
+    ) {
         let Some((z, _)) = self.zaciatok else { return };
         let s = z.elapsed().as_secs();
         let koniec = *samomeranie::MILNIKY_MIN.last().unwrap_or(&30) as u64 * 60;
@@ -596,6 +618,7 @@ impl Riadenie {
             strop_mhz,
             takt_mhz: takt_mhz(),
             vytazenie,
+            okolie,
         });
         self.dalsi_bod_s += samomeranie::KROK_KRIVKY_S;
     }

@@ -134,6 +134,14 @@ const ZNAKY: &[(char, f32, &str)] = &[
     ('#', 0.66, "M 0.2 0 L 0.3 1 M 0.42 0 L 0.52 1 M 0.02 0.33 L 0.62 0.33 M 0.06 0.67 L 0.66 0.67"),
     ('…', 0.56, "M 0 0 L 0 0.005 M 0.28 0 L 0.28 0.005 M 0.56 0 L 0.56 0.005"),
     ('✓', 0.62, "M 0 0.36 L 0.22 0.08 L 0.62 0.72"),
+    // približne (≈) – dve vlnovky (odhad okolia, R123)
+    (
+        '≈',
+        0.5,
+        "M 0 0.44 L 0.08 0.5 L 0.17 0.52 L 0.25 0.48 L 0.33 0.44 L 0.42 0.46 L 0.5 0.52 M 0 0.24 L 0.08 0.3 L 0.17 0.32 L 0.25 0.28 L 0.33 0.24 L 0.42 0.26 L 0.5 0.32",
+    ),
+    // grécke tau (časová konštanta dosky, R123)
+    ('τ', 0.46, "M 0 0.7 L 0.46 0.7 M 0.2 0.7 L 0.2 0.12 L 0.26 0.02 L 0.36 0"),
     // krížik (zápis sa nepodaril) – mierne nepravidelný, aby sa nepoplietol so znamienkom ×
     ('✗', 0.56, "M 0.04 0.66 L 0.54 0.04 M 0.06 0.06 L 0.5 0.70"),
 ];
@@ -481,7 +489,7 @@ mod skusky {
     use super::*;
 
     const ABECEDA: &str = "AÁÄBCČDĎEÉĚFGHIÍJKLĹĽMNŇOÓÔÖPQRŔŘSŠTŤUÚŮÜVWXYÝZŽ\
-        aáäbcčdďeéěfghiíjklĺľmnňoóôöpqrŕřsštťuúůüvwxyýzž0123456789.,:;-–+=/()[]<>%°!?\"'_×·•*#…✓✗";
+        aáäbcčdďeéěfghiíjklĺľmnňoóôöpqrŕřsštťuúůüvwxyýzž0123456789.,:;-–+=/()[]<>%°!?\"'_×·•*#…✓✗≈τ";
 
     fn plocha(p: &Platno, pozadie: Farba) -> usize {
         p.body.iter().filter(|&&b| b != pozadie).count()

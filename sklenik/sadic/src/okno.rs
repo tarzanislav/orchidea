@@ -776,7 +776,10 @@ fn hotovo(hwnd: Hwnd) {
     match r {
         Some(Ok(_)) => sprava(
             hwnd,
-            "Hotovo – karta je zapísaná a overená.\nMôžete ju vybrať a vložiť do Raspberry Pi.",
+            &format!(
+                "Hotovo – karta je zapísaná a overená.\nMôžete ju vybrať a vložiť do Raspberry Pi.\n\n{}",
+                sklenik_karta::RADA_UMIESTNENIE
+            ),
             MB_ICONINFORMATION,
         ),
         Some(Err(e)) => sprava(hwnd, &e, MB_ICONERROR),

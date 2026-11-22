@@ -37,6 +37,8 @@ pub struct BodKrivky {
     pub takt_mhz: Option<u32>,
     /// Vyťaženie procesora (0–1).
     pub vytazenie: Option<f64>,
+    /// Odhad teploty okolia (R123).
+    pub okolie: Option<f64>,
 }
 
 /// Nadpis oddielu správy.
@@ -131,16 +133,17 @@ fn stupne(t: Option<f64>) -> String {
 
 /// Tabuľka krivky teploty (jeden riadok na bod).
 pub fn tabulka(body: &[BodKrivky]) -> String {
-    let mut t = format!("    čas     teplota   výkon  takt (strop/skutočný)  vyťaženie{NL}");
+    let mut t = format!("    čas     teplota   výkon  takt (strop/skutočný)  vyťaženie   okolie{NL}");
     for b in body {
         t += &format!(
-            "  {:>6}  {:>9}  {:>4.0} %  {:>5} / {:>5} MHz      {:>4}{NL}",
+            "  {:>6}  {:>9}  {:>4.0} %  {:>5} / {:>5} MHz      {:>4}  {:>9}{NL}",
             cas(b.s),
             stupne(b.teplota),
             b.vykon * 100.0,
             b.strop_mhz,
             b.takt_mhz.map_or("–".into(), |m| m.to_string()),
             b.vytazenie.map_or("–".into(), |v| format!("{:.0} %", v * 100.0)),
+            stupne(b.okolie),
         );
     }
     t
@@ -205,6 +208,11 @@ pub fn suhrn(body: &[BodKrivky]) -> String {
             min_vykon * 100.0,
             cas(s_min_vykon)
         );
+    }
+    // okolie na začiatku a na konci (R123) – stúplo, ak je zariadenie pri zdroji tepla
+    let okolia: Vec<f64> = body.iter().filter_map(|b| b.okolie).collect();
+    if let (Some(a), Some(z)) = (okolia.first(), okolia.last()) {
+        t += &format!("  okolie: na začiatku {a:.1} °C, na konci {z:.1} °C ({:+.1} °C){NL}", z - a);
     }
     let vytazenie: Vec<f64> = body.iter().filter_map(|b| b.vytazenie).collect();
     if !vytazenie.is_empty() {
@@ -342,6 +350,7 @@ mod skusky {
             strop_mhz: 1400,
             takt_mhz: Some(600),
             vytazenie: Some(0.02),
+            okolie: Some(22.0 + s as f64 / 1800.0),
         }
     }
 
@@ -441,6 +450,7 @@ mod skusky {
         assert!(s.contains("ustálená od"), "{s}");
         assert!(s.contains("plný celý čas"), "{s}");
         assert!(s.contains("priemer 2 %"), "{s}");
+        assert!(s.contains("okolie: na začiatku 22.0 °C, na konci 23.0 °C (+1.0 °C)"), "{s}");
         let t = tabulka(&body[..2]);
         assert_eq!(t.lines().count(), 3);
         assert!(t.contains("40.0 °C") && t.contains("100 %") && t.contains("1400 /   600 MHz"), "{t}");

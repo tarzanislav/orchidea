@@ -105,6 +105,10 @@ pub struct Regulator {
     /// Vyhladená rýchlosť zmeny teploty (°C/s).
     sklon: f64,
     od_zmeny: f64,
+    /// Predpoveď z modelu okolia (R125): kam sa teplota pri terajšej záťaži ustáli.
+    ustalena: Option<f64>,
+    /// Úspora v nečinnosti pri horúcom okolí (R126): v nečinnosti najviac úsporná úroveň.
+    uspora: bool,
 }
 
 /// Ako ďaleko dopredu (s) regulátor predpovedá teplotu.
@@ -119,7 +123,35 @@ impl Regulator {
     pub fn novy(urovne: Vec<Uroven>, profil: Profil) -> Regulator {
         assert!(!urovne.is_empty(), "aspoň jedna úroveň výkonu");
         let index = urovne.iter().rposition(|u| u.prikon <= 0.5).unwrap_or(0);
-        Regulator { urovne, profil, index, posledna: None, sklon: 0.0, od_zmeny: 0.0 }
+        Regulator {
+            urovne,
+            profil,
+            index,
+            posledna: None,
+            sklon: 0.0,
+            od_zmeny: 0.0,
+            ustalena: None,
+            uspora: false,
+        }
+    }
+
+    /// R126: pri horúcom okolí sa aj nečinnosť šetrí – každý watt navyše zostáva v doske (poučenie z vrtov
+    /// a Venuše: keď je okolie horúce, jediná páka je vlastný ohrev). V nečinnosti strážca klesne na úspornú
+    /// úroveň (najviac polovičný príkon); keď príde práca, zvyšuje ako obvykle.
+    pub fn nastav_usporu(&mut self, uspora: bool) {
+        self.uspora = uspora;
+    }
+
+    /// Najvyššia úsporná úroveň (príkon najviac polovičný).
+    fn usporna(&self) -> usize {
+        self.urovne.iter().rposition(|u| u.prikon <= 0.5).unwrap_or(0)
+    }
+
+    /// Predpoveď ustálenej teploty z modelu okolia (R125, `okolie.rs`): teplota + sklon · τ z minútových
+    /// priemerov. Strážca podľa nej zníži výkon skôr, než teplota cieľ prekročí, a nezvýši ho, ak by sa
+    /// teplota ustálila nad cieľom (poučenie z automobilov a prediktívneho riadenia MPC).
+    pub fn nastav_predpoved(&mut self, ustalena: Option<f64>) {
+        self.ustalena = ustalena;
     }
 
     pub fn profil(&self) -> Profil {
@@ -136,6 +168,11 @@ impl Regulator {
 
     pub fn pocet_urovni(&self) -> usize {
         self.urovne.len()
+    }
+
+    /// Teplota o 30 s pri terajšom raste (pre tepelný rozpočet programov – R127).
+    pub fn predpoved_30s(&self) -> Option<f64> {
+        self.posledna.map(|t| t + self.sklon.max(0.0) * HORIZONT_S)
     }
 
     /// Jeden krok regulácie: aktuálna teplota a čas od posledného kroku. Vráti zvolenú úroveň.
@@ -160,15 +197,22 @@ impl Regulator {
         let Profil { ciel, strop } = self.profil;
         let predikcia = teplota + self.sklon.max(0.0) * HORIZONT_S;
         let necinny = vytazenie.is_some_and(|v| v < NECINNOST);
+        // R125: pri práci sa teplota ustáli nad cieľom – znížiť už teraz (pomalšie, raz za 20 s)
+        let ustali_sa_nad = !necinny && self.ustalena.is_some_and(|u| u > ciel + 2.0) && teplota > ciel - 8.0;
+        let ustali_sa_pod = self.ustalena.is_none_or(|u| u < ciel - 1.0);
         if teplota >= strop - NUDZA_POD_STROPOM {
             self.nastav(0);
-        } else if (predikcia > strop - NUDZA_POD_STROPOM || (teplota > ciel && !necinny))
-            && self.od_zmeny >= 2.0
+        } else if self.uspora && necinny && self.index > self.usporna() && self.od_zmeny >= 5.0 {
+            self.nastav(self.index - 1);
+        } else if ((predikcia > strop - NUDZA_POD_STROPOM || (teplota > ciel && !necinny))
+            && self.od_zmeny >= 2.0)
+            || (ustali_sa_nad && self.od_zmeny >= 20.0)
         {
             self.nastav(self.index.saturating_sub(1));
         } else if self.od_zmeny >= 5.0
-            && ((teplota < ciel - 4.0 && predikcia < ciel)
+            && ((teplota < ciel - 4.0 && predikcia < ciel && (necinny || ustali_sa_pod))
                 || (necinny && teplota <= ciel + 2.0 && self.sklon <= 0.005))
+            && !(self.uspora && necinny && self.index >= self.usporna())
         {
             self.nastav((self.index + 1).min(self.urovne.len() - 1));
         }
@@ -337,6 +381,106 @@ mod skusky {
         eprintln!("nárazová práca, 25 °C: maximum {maximum:.1} °C, výkon {vykon:.2} z 0,33");
         assert!(maximum < r.profil().ciel + 1.0, "maximum {maximum:.1} °C");
         assert!(vykon > 0.25, "nárazová práca má dostať takmer plný výkon, priemer {vykon:.2} z 0,33");
+    }
+
+    /// Strážca s modelom okolia (R123, R125): 40 min nečinnosti po studenom štarte (model sa naučí τ
+    /// a vlastný ohrev), potom práca. Vráti (maximum, priemerný výkon a priemerná teplota pri práci, stav
+    /// okolia).
+    fn s_okolim(
+        doska: fn(f64) -> Doska,
+        okolie: impl Fn(f64) -> f64,
+        zataz: impl Fn(f64) -> f64,
+        sekund: u32,
+        predpoved: bool,
+    ) -> (f64, f64, f64, crate::okolie::StavOkolia) {
+        let mut d = doska(okolie(0.0));
+        (d.t, d.cip) = (okolie(0.0), okolie(0.0));
+        let mut r = Regulator::novy(
+            urovne(&[600_000, 1_400_000], 4),
+            Profil::pre_model("Raspberry Pi 3 Model B Plus"),
+        );
+        let mut o = crate::okolie::Okolie::nove();
+        let (mut maximum, mut prace, mut pracovnych, mut sucet_t) = (0.0f64, 0.0, 0u32, 0.0);
+        for s in 0..sekund {
+            let sf = s as f64;
+            let z = if sf < 2400.0 { 0.01 } else { zataz(sf) };
+            // snímač s rozlíšením 0,5 °C
+            let t = (d.cip * 2.0).round() / 2.0;
+            o.krok(sf + 2.0, t, Some(z));
+            if predpoved {
+                r.nastav_predpoved(o.stav().ustalena);
+            }
+            let u = r.krok_s_vytazenim(t, 1.0, Some(z));
+            d.okolie = okolie(sf);
+            d.krok(&u, z, 1.0);
+            if sf >= 2400.0 {
+                maximum = maximum.max(d.cip);
+                prace += u.vykon * z;
+                pracovnych += 1;
+                sucet_t += d.cip;
+            }
+        }
+        let n = pracovnych.max(1) as f64;
+        (maximum, prace / n, sucet_t / n, o.stav())
+    }
+
+    #[test]
+    fn predpoved_z_modelu_okolia_znizi_prekmit_a_drzi_vykon() {
+        // R125: po 40 min nečinnosti 2 h plnej práce pri 22 °C – doska s chladičom aj plastová krabička
+        // (v plaste je už nečinnosť nad cieľom – fyzika, nie softvér; predpoveď tam nesmie nič pokaziť)
+        for (meno, doska) in [("chladič", Doska::rpi3 as fn(f64) -> Doska), ("plast", Doska::rpi3_plast)] {
+            let (max_bez, vykon_bez, t_bez, _) = s_okolim(doska, |_| 22.0, |_| 1.0, 2400 + 7200, false);
+            let (max_s, vykon_s, t_s, stav) = s_okolim(doska, |_| 22.0, |_| 1.0, 2400 + 7200, true);
+            eprintln!(
+                "{meno}: bez predpovede max {max_bez:.1} °C, priemer {t_bez:.1} °C, výkon {vykon_bez:.2}; s predpoveďou max {max_s:.1} °C, priemer {t_s:.1} °C, výkon {vykon_s:.2}; τ {:?}, vlastný ohrev {:?}",
+                stav.tau_s, stav.samohrev
+            );
+            // chlad je dominanta: s predpoveďou je doska pri práci chladnejšia (ak je čo chladiť)
+            assert!(t_s <= t_bez + 0.05, "{meno}: priemer {t_s:.1} °C oproti {t_bez:.1} °C");
+            if meno == "chladič" {
+                assert!(t_s < t_bez - 1.0, "{meno}: predpoveď má dosku pri práci ochladiť");
+            }
+            let p = Profil::pre_model("Raspberry Pi 3 Model B Plus");
+            assert!(stav.tau_s.is_some(), "{meno}: model sa naučil τ: {stav:?}");
+            assert!(max_s <= max_bez + 0.05, "{meno}: predpoveď nesmie zvýšiť maximum");
+            assert!(max_s < p.strop, "{meno}: maximum {max_s:.1} °C");
+            assert!(vykon_s > 0.8 * vykon_bez, "{meno}: výkon {vykon_s:.2} oproti {vykon_bez:.2}");
+        }
+    }
+
+    #[test]
+    fn radiator_pri_praci_strop_neprekroci() {
+        // pri práci sa vedľa zapne radiátor: okolie 22 → 40 °C za 20 minút
+        let okolie = |s: f64| 22.0 + ((s - 3000.0) / 1200.0).clamp(0.0, 1.0) * 18.0;
+        let (maximum, vykon, _, stav) = s_okolim(Doska::rpi3, okolie, |_| 1.0, 2400 + 3 * 3600, true);
+        let p = Profil::pre_model("Raspberry Pi 3 Model B Plus");
+        eprintln!("radiátor pri práci: maximum {maximum:.1} °C, výkon {vykon:.2}, {stav:?}");
+        // pri 40 °C je už nečinnosť nad cieľom (40 + 22 °C vlastného ohrevu) – strážca drží strop s rezervou
+        assert!(maximum < p.strop - NUDZA_POD_STROPOM, "maximum {maximum:.1} °C");
+        assert!(vykon > 0.1, "výkon {vykon:.2}");
+    }
+
+    #[test]
+    fn uspora_v_necinnosti_pri_horucom_okoli() {
+        // R126: v nečinnosti úsporná úroveň, pri práci znova vyššia
+        let mut r = Regulator::novy(
+            urovne(&[600_000, 1_400_000], 4),
+            Profil::pre_model("Raspberry Pi 3 Model B Plus"),
+        );
+        r.nastav_usporu(true);
+        for _ in 0..120 {
+            r.krok_s_vytazenim(45.0, 1.0, Some(0.02));
+        }
+        assert!(r.uroven().prikon <= 0.5, "{:?}", r.uroven());
+        for _ in 0..120 {
+            r.krok_s_vytazenim(45.0, 1.0, Some(0.9));
+        }
+        assert!(r.uroven().prikon > 0.5, "pri práci a chlade sa výkon vráti: {:?}", r.uroven());
+        r.nastav_usporu(false);
+        for _ in 0..120 {
+            r.krok_s_vytazenim(45.0, 1.0, Some(0.02));
+        }
+        assert_eq!(r.index(), r.pocet_urovni() - 1, "bez úspory nečinnosť výkon neberie (R110)");
     }
 
     #[test]

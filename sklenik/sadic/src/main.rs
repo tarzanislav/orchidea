@@ -414,6 +414,7 @@ mod platforma {
         );
         if zapisovat {
             println!("Kartu môžete vybrať a vložiť do Raspberry Pi.");
+            println!("{}", sklenik_karta::RADA_UMIESTNENIE);
         }
         Ok(())
     }
