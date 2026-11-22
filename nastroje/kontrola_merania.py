@@ -74,7 +74,9 @@ def main() -> int:
     if len(texty) != 1 or len(obrazky) != 1 or not spolu.exists():
         print(f"- ❌ čakal sa 01-….txt, 01-…-00min.png a SPOLU.TXT, sú tam: {sorted(p.name for p in priecinok.iterdir())}")
         return 1
-    text = texty[0].read_text(encoding="utf-8")
+    # bajty – read_text by konce riadkov \r\n potichu zmenil na \n
+    surovy = texty[0].read_bytes()
+    text = surovy.decode("utf-8")
     print(f"- súbory: {texty[0].name} ({len(text.encode())} B), {obrazky[0].name} ({obrazky[0].stat().st_size} B), SPOLU.TXT")
     for musi in [
         "SKLENÍK – samomeranie č. 01 · záznam 0. minúty",
@@ -96,9 +98,9 @@ def main() -> int:
             chyby.append(f"v správe chýba „{musi}“")
     if "{PORADIE}" in text or "{NOSIC}" in text:
         chyby.append("v správe zostala nedoplnená značka")
-    if "\r\n" not in text:
-        chyby.append("správa nemá konce riadkov pre Windows")
-    if spolu.read_text(encoding="utf-8") != text:
+    if b"\r\n" not in surovy or surovy.count(b"\n") != surovy.count(b"\r\n"):
+        chyby.append("správa nemá všade konce riadkov pre Windows (\\r\\n)")
+    if spolu.read_bytes() != surovy:
         chyby.append("SPOLU.TXT sa líši od správy jediného zariadenia")
     trval = [r.strip() for r in text.splitlines() if "záznam trval" in r]
     if trval:

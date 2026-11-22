@@ -624,9 +624,12 @@ jobs:
             echo "✅ $(grep -o 'KLÍČ: samomeranie: záznam 0. minúty zapísaný.*' qemu-rpi3.log | head -1) (R122)" | tee -a "$GITHUB_STEP_SUMMARY"
             rozmer=$(grep -o "obrazovka: [0-9]*×[0-9]*" qemu-rpi3.log | head -1 | grep -o "[0-9]*×[0-9]*")
             rm -rf meranie
+            # výsledok kontroly sa berie z Pythonu, nie z tee (bez pipefail by chyba prešla)
             if MTOOLS_SKIP_CHECK=1 mcopy -s -i karta.img@@4194304 ::MERANIA meranie \
-              && python3 nastroje/kontrola_merania.py meranie "${rozmer%×*}" "${rozmer#*×}" | tee -a "$GITHUB_STEP_SUMMARY"; then :
+              && python3 nastroje/kontrola_merania.py meranie "${rozmer%×*}" "${rozmer#*×}" > kontrola-merania.txt; then
+              tee -a "$GITHUB_STEP_SUMMARY" < kontrola-merania.txt
             else
+              tee -a "$GITHUB_STEP_SUMMARY" < kontrola-merania.txt 2>/dev/null || true
               echo "❌ samomeranie – súbory na karte nie sú v poriadku" | tee -a "$GITHUB_STEP_SUMMARY"; chyby=$((chyby+1))
             fi
             rm -rf meranie
