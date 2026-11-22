@@ -180,21 +180,21 @@
       "posudenie_charty": "nástroj zostavenia"
     },
     {
-      "meno": "jadro Linux (kernel.org, dlhodobá verzia 6.18) pre Odroid C4",
+      "meno": "jadro Linux (kernel.org, dlhodobá verzia 6.18) pre Amlogic S905X3 (Odroid C4, X96 Max Plus) a Allwinner H618 (Tanix TX68)",
       "trieda": "B",
       "licencia": "GPL-2.0",
       "verzia": "6.18.64 (ODROID_JADRO v .github/workflows/sklenik.yml)",
-      "kde": "obraz SKLENÍKA – odroid/Image, zostavené bez úprav zdrojového kódu, len s vlastným nastavením sklenik/jadro.config a sklenik/jadro-odroid.config",
-      "ucel": "ovládače dosky Odroid C4 (Amlogic S905X3) – R88",
-      "posudenie_charty": "platforma; KLÍČ sa s jadrom nezlučuje (hranica jadro – používateľský priestor); zdroje a nastavenie sú v obraze (ZDROJE.txt, odroid/jadro-c4.config)"
+      "kde": "obraz SKLENÍKA – amlogic/Image (univerzálna karta) a allwinner/Image (karta Allwinner), zostavené bez úprav zdrojového kódu, len s vlastným nastavením sklenik/jadro.config, sklenik/jadro-odroid.config a sklenik/jadro-allwinner.config; popisy hardvéru z hlavného Linuxu upravené len nástrojom fdtput (meno, vypnutá Wi-Fi, zapnuté USB, bez UHS)",
+      "ucel": "ovládače dosiek Odroid C4 a X96 Max Plus (S905X3) – R88, R117; Tanix TX68 (H618) – R118",
+      "posudenie_charty": "platforma; KLÍČ sa s jadrom nezlučuje (hranica jadro – používateľský priestor); zdroje a nastavenie sú v obraze (ZDROJE.txt, amlogic/jadro-s905x3.config, allwinner/jadro-h618.config)"
     },
     {
-      "meno": "U-Boot – zavádzač (u-boot/u-boot, odroid-c4_defconfig)",
+      "meno": "U-Boot – zavádzač (u-boot/u-boot: odroid-c4_defconfig; bananapi-m5_defconfig s popisom X96 Air pre X96 Max Plus; transpeed-8k618-t_defconfig pre Tanix TX68)",
       "trieda": "B",
       "licencia": "GPL-2.0+",
       "verzia": "v2026.10 (UBOOT_TAG)",
-      "kde": "obraz SKLENÍKA – prvé 4 MiB karty pred oddielom (len pre Odroid C4)",
-      "ucel": "štart Odroidu C4 – nájde extlinux/extlinux.conf a spustí jadro; neskôr ho môže nahradiť vlastný SPÚŠŤAČ (R88)",
+      "kde": "obraz SKLENÍKA – prvé 4 MiB karty pred oddielom (Odroid C4), súbor u-boot.ext na oddiele (X96 Max Plus – spúšťa ho pôvodný zavádzač krabičky), od 8 KiB karty Allwinner (Tanix TX68)",
+      "ucel": "štart Odroidu C4, X96 Max Plus a Tanix TX68 – nájde extlinux/extlinux.conf a spustí jadro; nastavenie nikdy nezapisuje; neskôr ho môže nahradiť vlastný SPÚŠŤAČ (R88, R117, R118)",
       "posudenie_charty": "slobodný projekt; samostatný program pred štartom systému, so SKLENÍKOM sa nezlučuje"
     },
     {
@@ -205,6 +205,15 @@
       "kde": "obraz SKLENÍKA – prvé 4 MiB karty (spolu s U-Boot); nástroj na podpis len v CI",
       "ucel": "procesor S905X3 spustí len zavádzač podpísaný výrobcom – nenahraditeľné (ako firmvér Raspberry Pi)",
       "posudenie_charty": "platforma výrobcu hardvéru"
+    },
+    {
+      "meno": "ARM Trusted Firmware-A – časť BL31 (ARM-software/arm-trusted-firmware, PLAT=sun50i_h616)",
+      "trieda": "B",
+      "licencia": "BSD-3-Clause",
+      "verzia": "v2.15.0 (TFA_TAG v .github/workflows/sklenik.yml)",
+      "kde": "obraz SKLENÍKA pre Allwinner – vnútri zavádzača od 8 KiB karty (u-boot-sunxi-with-spl.bin)",
+      "ucel": "Tanix TX68 (H618, R118): bezpečný monitor procesora ARM (PSCI – zapínanie jadier, reštart), ktorý U-Boot pre 64-bit Allwinner vyžaduje",
+      "posudenie_charty": "slobodný projekt; samostatný firmvér pred štartom systému, so SKLENÍKOM sa nezlučuje"
     }
   ],
   "triedy": {

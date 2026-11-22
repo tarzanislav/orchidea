@@ -171,10 +171,16 @@ pub fn nacitaj(koren: &Path) -> Poda {
     if p.cip.is_none() {
         let kompat = fs::read(dt.join("compatible")).unwrap_or_default();
         let ma = |s: &[u8]| kompat.split(|&b| b == 0).any(|c| c == s);
-        p.cip = if ma(b"hardkernel,odroid-c4") {
+        p.cip = if ma(b"hardkernel,odroid-c4") || ma(b"amediatech,x96-air-gbit") || ma(b"amediatech,x96-air")
+        {
+            // Odroid C4 a X96 Max Plus (popis X96 Air) majú S905X3
             Some("Amlogic S905X3".into())
         } else if ma(b"amlogic,sm1") {
             Some("Amlogic SM1".into())
+        } else if ma(b"allwinner,sun50i-h618") {
+            Some("Allwinner H618".into())
+        } else if ma(b"allwinner,sun50i-h616") {
+            Some("Allwinner H616".into())
         } else {
             kompat.split(|&b| b == 0).rfind(|c| !c.is_empty()).map(|c| {
                 let c = String::from_utf8_lossy(c);
@@ -388,6 +394,14 @@ cpuid asimdrdm lrcpc dcpop asimddp\nCPU part\t: 0xd0b\n\nprocessor\t: 1\n\nproce
             (p.cip.as_deref(), p.jadro, p.revizia),
             (Some("Amlogic S905X3"), Some("Cortex-A55"), None)
         );
+        // X96 Max Plus (popis referenčnej dosky X96 Air) a Tanix TX68 (Allwinner H618)
+        for (kompat, cip) in [
+            (&b"amediatech,x96-air-gbit\0amlogic,sm1\0"[..], "Amlogic S905X3"),
+            (b"transpeed,8k618-t\0allwinner,sun50i-h618\0", "Allwinner H618"),
+        ] {
+            let s = Strom::novy(cip).subor("proc/device-tree/compatible", kompat);
+            assert_eq!(nacitaj(&s.0).cip.as_deref(), Some(cip));
+        }
         // 3,7 GB, ktoré vidí jadro = doska so 4 GB; 0,9 GB = 1 GB; nezvyčajné množstvo zostane
         let ram = |kb| Poda { pamat_kb: kb, ..Poda::default() }.ram_mb();
         assert_eq!((ram(3_880_000), ram(948_304), ram(1_400_000), ram(0)), (4096, 1024, 1367, 0));

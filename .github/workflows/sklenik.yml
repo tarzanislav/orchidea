@@ -25,6 +25,8 @@ env:
   ODROID_JADRO: "6.18.64"
   UBOOT_TAG: v2026.10
   FIP_COMMIT: b54e3bbbcf5613d451230d359d264844eeda7166
+  # Tanix TX68 (Allwinner H618, R118): ARM Trusted Firmware – časť BL31, ktorú U-Boot pre 64-bit Allwinner potrebuje
+  TFA_TAG: v2.15.0
 
 jobs:
   jadro:
@@ -130,7 +132,7 @@ jobs:
           path: klic-vystup
 
   jadro-odroid:
-    name: Jadro – Odroid C4 (hlavné jadro Linux)
+    name: Jadro – Amlogic S905X3 (Odroid C4, X96 Max Plus; hlavné jadro Linux)
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v5
@@ -139,7 +141,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: jadro-vystup
-          key: jadro-c4-${{ env.ODROID_JADRO }}-${{ hashFiles('sklenik/jadro.config', 'sklenik/jadro-odroid.config') }}
+          key: jadro-s905x3-${{ env.ODROID_JADRO }}-${{ hashFiles('sklenik/jadro.config', 'sklenik/jadro-odroid.config') }}
       - name: Jadro Linux z kernel.org + nastavenie SKLENÍKA pre Odroid C4
         if: steps.pamat.outputs.cache-hit != 'true'
         run: |
@@ -153,11 +155,14 @@ jobs:
           done
           scripts/kconfig/merge_config.sh -m .config ../sklenik/jadro.config ../sklenik/jadro-odroid.config
           make -s olddefconfig
-          make -s -j"$(nproc)" Image amlogic/meson-sm1-odroid-c4.dtb
-          mkdir -p ../jadro-vystup/odroid
-          cp arch/arm64/boot/Image arch/arm64/boot/dts/amlogic/meson-sm1-odroid-c4.dtb ../jadro-vystup/odroid/
-          cp .config ../jadro-vystup/odroid/jadro-c4.config
-          ls -l ../jadro-vystup/odroid
+          # popisy hardvéru: Odroid C4 a referenčná doska krabičiek S905X3 (X96 Air – gigabit a 100 Mb/s) pre X96 Max Plus
+          dtb="meson-sm1-odroid-c4 meson-sm1-x96-air-gbit meson-sm1-x96-air"
+          make -s -j"$(nproc)" Image $(for d in $dtb; do printf 'amlogic/%s.dtb ' "$d"; done)
+          mkdir -p ../jadro-vystup/amlogic/dtb/amlogic
+          cp arch/arm64/boot/Image ../jadro-vystup/amlogic/
+          for d in $dtb; do cp "arch/arm64/boot/dts/amlogic/$d.dtb" ../jadro-vystup/amlogic/dtb/amlogic/; done
+          cp .config ../jadro-vystup/amlogic/jadro-s905x3.config
+          ls -lR ../jadro-vystup/amlogic
       - name: Uloženie zostaveného jadra do pamäte
         if: steps.pamat.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -166,10 +171,10 @@ jobs:
           key: ${{ steps.pamat.outputs.cache-primary-key }}
       - name: Kontrola nastavenia jadra – ovládače Odroidu C4 musia byť priamo v jadre
         run: |
-          k=jadro-vystup/odroid/jadro-c4.config
+          k=jadro-vystup/amlogic/jadro-s905x3.config
           chyb=0
           {
-            echo "### Jadro Odroid C4 – Linux ${ODROID_JADRO} ($(du -h jadro-vystup/odroid/Image | cut -f1))"
+            echo "### Jadro Amlogic S905X3 (Odroid C4, X96 Max Plus) – Linux ${ODROID_JADRO} ($(du -h jadro-vystup/amlogic/Image | cut -f1))"
             grep -qx "# CONFIG_MODULES is not set" "$k" && echo "- ✅ bez modulov (všetko v jadre)" || { echo "- ❌ jadro má moduly"; chyb=1; }
             for riadok in $(grep -E '^CONFIG_[A-Z0-9_]+=y$' sklenik/jadro-odroid.config); do
               if grep -qxF "$riadok" "$k"; then echo "- ✅ \`$riadok\`"; else echo "- ❌ \`$riadok\` chýba"; chyb=1; fi
@@ -179,21 +184,21 @@ jobs:
           grep -qx "# CONFIG_MODULES is not set" "$k"
       - uses: actions/upload-artifact@v4
         with:
-          name: jadro-c4
+          name: jadro-s905x3
           path: jadro-vystup
 
   uboot-odroid:
-    name: Zavádzač Odroid C4 (U-Boot + časti Amlogic)
+    name: Zavádzače Amlogic (Odroid C4, X96 Max Plus)
     # nástroj Amlogic na podpísanie zavádzača existuje len pre procesory x86-64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Pamäť zostaveného zavádzača
+      - name: Pamäť zostavených zavádzačov
         id: pamat
         uses: actions/cache/restore@v4
         with:
           path: uboot-vystup
-          key: uboot-c4-${{ env.UBOOT_TAG }}-${{ env.FIP_COMMIT }}
+          key: uboot-amlogic-${{ env.UBOOT_TAG }}-${{ env.FIP_COMMIT }}-${{ hashFiles('sklenik/boot/amlogic/*') }}
       - name: U-Boot (odroid-c4_defconfig) a podpísanie nástrojom Amlogic
         if: steps.pamat.outputs.cache-hit != 'true'
         run: |
@@ -201,6 +206,7 @@ jobs:
             python3-dev python3-setuptools python3-pyelftools swig gcc-aarch64-linux-gnu
           curl -sSfL "https://github.com/u-boot/u-boot/archive/refs/tags/${UBOOT_TAG}.tar.gz" | tar xz
           curl -sSfL "https://github.com/LibreELEC/amlogic-boot-fip/archive/${FIP_COMMIT}.tar.gz" | tar xz
+          cp -r "u-boot-${UBOOT_TAG#v}" u-boot-x96
           cd "u-boot-${UBOOT_TAG#v}"
           make -s CROSS_COMPILE=aarch64-linux-gnu- odroid-c4_defconfig
           make -s -j"$(nproc)" CROSS_COMPILE=aarch64-linux-gnu-
@@ -209,21 +215,235 @@ jobs:
           ./build-fip.sh odroid-c4 "../u-boot-${UBOOT_TAG#v}/u-boot.bin" ../fip-vystup
           cp ../fip-vystup/u-boot.bin.sd.bin ../uboot-vystup/
           ls -l ../fip-vystup ../uboot-vystup
+      - name: X96 Max Plus – U-Boot na reťazové spustenie (u-boot.ext) a skripty pôvodného zavádzača (R117)
+        if: steps.pamat.outputs.cache-hit != 'true'
+        run: |
+          # Krabička štartuje vždy z vlastnej pamäte eMMC (zavádzač Androidu). Ten po stlačení tlačidla v konektore
+          # AV spustí aml_autoscript z karty, odvtedy pri každom štarte s905_autoscript a ten náš U-Boot – žiadne
+          # podpisovanie ani zápis do krabičky okrem poradia štartu. U-Boot je zostavený pre referenčnú dosku
+          # krabičiek s S905X3 (popis hardvéru X96 Air z hlavného Linuxu), pamäť nastavenia NIKDE (nikdy nezapisuje).
+          cd u-boot-x96
+          make -s CROSS_COMPILE=aarch64-linux-gnu- bananapi-m5_defconfig
+          printf '#include "meson-sm1-u-boot.dtsi"\n' > arch/arm/dts/meson-sm1-x96-air-gbit-u-boot.dtsi
+          scripts/config --set-str DEFAULT_DEVICE_TREE "amlogic/meson-sm1-x96-air-gbit" \
+            --set-str IDENT_STRING " SKLENIK x96-max-plus" \
+            --enable ENV_IS_NOWHERE --disable ENV_IS_IN_MMC --disable ENV_IS_IN_FAT \
+            --set-val BOOTDELAY 1
+          make -s CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          grep -E '^CONFIG_(DEFAULT_DEVICE_TREE|ENV_IS_NOWHERE|TEXT_BASE|BOOTDELAY)=' .config
+          if grep -E '^CONFIG_ENV_IS_IN_[A-Z0-9_]+=y' .config; then echo "U-Boot by zapisoval nastavenie"; exit 1; fi
+          make -s -j"$(nproc)" CROSS_COMPILE=aarch64-linux-gnu-
+          mkdir -p ../uboot-vystup/x96
+          cp u-boot.bin ../uboot-vystup/x96/u-boot.ext
+          for s in aml_autoscript s905_autoscript; do
+            grep -v '^#' "../sklenik/boot/amlogic/$s.cmd" > "/tmp/$s.txt"
+            tools/mkimage -C none -A arm -T script -n "SKLENIK $s" -d "/tmp/$s.txt" "../uboot-vystup/x96/$s"
+          done
+          ls -l ../uboot-vystup/x96
+      - name: Uloženie zostavených zavádzačov do pamäte
+        if: steps.pamat.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: uboot-vystup
+          key: ${{ steps.pamat.outputs.cache-primary-key }}
+      - name: Kontrola – zavádzač Odroidu sa zmestí pred oddiel karty (4 MiB), u-boot.ext je U-Boot
+        run: |
+          v=$(stat -c %s uboot-vystup/u-boot.bin.sd.bin)
+          echo "### Zavádzač Odroid C4 – U-Boot ${UBOOT_TAG}: $v B, sha256 $(sha256sum uboot-vystup/u-boot.bin.sd.bin | cut -c1-16)…" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$v" -gt 65536 && test "$v" -le $((8192 * 512))
+          x=uboot-vystup/x96/u-boot.ext
+          echo "### X96 Max Plus – u-boot.ext $(stat -c %s $x) B, sha256 $(sha256sum $x | cut -c1-16)…" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -aq "SKLENIK x96-max-plus" "$x"
+          grep -aq "amlogic/meson-sm1-x96-air-gbit.dtb" "$x"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uboot-c4
+          path: uboot-vystup
+
+  jadro-allwinner:
+    name: Jadro – Allwinner H618 (Tanix TX68; hlavné jadro Linux)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+      - name: Pamäť zostaveného jadra
+        id: pamat
+        uses: actions/cache/restore@v4
+        with:
+          path: jadro-vystup
+          key: jadro-h618-${{ env.ODROID_JADRO }}-${{ hashFiles('sklenik/jadro.config', 'sklenik/jadro-allwinner.config') }}
+      - name: Jadro Linux z kernel.org + nastavenie SKLENÍKA pre Allwinner H618
+        if: steps.pamat.outputs.cache-hit != 'true'
+        run: |
+          sh nastroje/balicky.sh bc bison flex libssl-dev make gcc xz-utils
+          curl -sSfL "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${ODROID_JADRO}.tar.xz" | tar xJ
+          cd "linux-${ODROID_JADRO}"
+          make -s defconfig
+          # platformy iných výrobcov preč – zostane len Allwinner sunxi
+          for a in $(grep -oE '^config ARCH_[A-Z0-9_]+' arch/arm64/Kconfig.platforms | cut -d' ' -f2); do
+            [ "$a" = ARCH_SUNXI ] || scripts/config --disable "$a"
+          done
+          scripts/kconfig/merge_config.sh -m .config ../sklenik/jadro.config ../sklenik/jadro-allwinner.config
+          make -s olddefconfig
+          # popis hardvéru Transpeed 8K618-T – rovnaká doska H618 + AXP313 + DDR3 ako Tanix TX68
+          make -s -j"$(nproc)" Image allwinner/sun50i-h618-transpeed-8k618-t.dtb
+          mkdir -p ../jadro-vystup/allwinner/dtb/allwinner
+          cp arch/arm64/boot/Image ../jadro-vystup/allwinner/
+          cp arch/arm64/boot/dts/allwinner/sun50i-h618-transpeed-8k618-t.dtb ../jadro-vystup/allwinner/dtb/allwinner/
+          cp .config ../jadro-vystup/allwinner/jadro-h618.config
+          ls -lR ../jadro-vystup/allwinner
+      - name: Uloženie zostaveného jadra do pamäte
+        if: steps.pamat.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: jadro-vystup
+          key: ${{ steps.pamat.outputs.cache-primary-key }}
+      - name: Kontrola nastavenia jadra – ovládače H618 musia byť priamo v jadre
+        run: |
+          k=jadro-vystup/allwinner/jadro-h618.config
+          {
+            echo "### Jadro Allwinner H618 (Tanix TX68) – Linux ${ODROID_JADRO} ($(du -h jadro-vystup/allwinner/Image | cut -f1))"
+            grep -qx "# CONFIG_MODULES is not set" "$k" && echo "- ✅ bez modulov (všetko v jadre)" || echo "- ❌ jadro má moduly"
+            for riadok in $(grep -E '^CONFIG_[A-Z0-9_]+=y$' sklenik/jadro-allwinner.config); do
+              if grep -qxF "$riadok" "$k"; then echo "- ✅ \`$riadok\`"; else echo "- ❌ \`$riadok\` chýba"; fi
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          for riadok in $(grep -E '^CONFIG_[A-Z0-9_]+=y$' sklenik/jadro-allwinner.config); do grep -qxF "$riadok" "$k" || exit 1; done
+          grep -qx "# CONFIG_MODULES is not set" "$k"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: allwinner-jadro
+          path: jadro-vystup
+
+  uboot-allwinner:
+    name: Zavádzač Allwinner H618 (U-Boot + ARM Trusted Firmware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Pamäť zostaveného zavádzača
+        id: pamat
+        uses: actions/cache/restore@v4
+        with:
+          path: uboot-vystup
+          key: uboot-h618-${{ env.UBOOT_TAG }}-${{ env.TFA_TAG }}
+      - name: ARM Trusted Firmware (BL31) a U-Boot (transpeed-8k618-t_defconfig)
+        if: steps.pamat.outputs.cache-hit != 'true'
+        run: |
+          sh nastroje/balicky.sh build-essential bc bison flex libssl-dev libgnutls28-dev uuid-dev \
+            python3-dev python3-setuptools python3-pyelftools swig gcc-aarch64-linux-gnu
+          curl -sSfL "https://github.com/ARM-software/arm-trusted-firmware/archive/refs/tags/${TFA_TAG}.tar.gz" | tar xz
+          curl -sSfL "https://github.com/u-boot/u-boot/archive/refs/tags/${UBOOT_TAG}.tar.gz" | tar xz
+          cd "arm-trusted-firmware-${TFA_TAG#v}"
+          make -s CROSS_COMPILE=aarch64-linux-gnu- PLAT=sun50i_h616 DEBUG=0 bl31
+          bl31="$(pwd)/build/sun50i_h616/release/bl31.bin"
+          cd "../u-boot-${UBOOT_TAG#v}"
+          # Transpeed 8K618-T: H618, správca napájania AXP313, DDR3 – rovnaká doska ako Tanix TX68
+          make -s CROSS_COMPILE=aarch64-linux-gnu- transpeed-8k618-t_defconfig
+          scripts/config --set-str IDENT_STRING " SKLENIK tanix-tx68" --enable ENV_IS_NOWHERE \
+            --disable ENV_IS_IN_MMC --disable ENV_IS_IN_FAT --set-val BOOTDELAY 1
+          make -s CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          if grep -E '^CONFIG_ENV_IS_IN_[A-Z0-9_]+=y' .config; then echo "U-Boot by zapisoval nastavenie"; exit 1; fi
+          make -s -j"$(nproc)" CROSS_COMPILE=aarch64-linux-gnu- BL31="$bl31" SCP=/dev/null
+          mkdir -p ../uboot-vystup
+          cp u-boot-sunxi-with-spl.bin ../uboot-vystup/
+          ls -l ../uboot-vystup
       - name: Uloženie zostaveného zavádzača do pamäte
         if: steps.pamat.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: uboot-vystup
           key: ${{ steps.pamat.outputs.cache-primary-key }}
-      - name: Kontrola – zavádzač sa zmestí pred oddiel karty (4 MiB)
+      - name: Kontrola – zavádzač sa zmestí pred oddiel karty (od 8 KiB do 4 MiB)
         run: |
-          v=$(stat -c %s uboot-vystup/u-boot.bin.sd.bin)
-          echo "### Zavádzač Odroid C4 – U-Boot ${UBOOT_TAG}: $v B, sha256 $(sha256sum uboot-vystup/u-boot.bin.sd.bin | cut -c1-16)…" | tee -a "$GITHUB_STEP_SUMMARY"
-          test "$v" -gt 65536 && test "$v" -le $((8192 * 512))
+          z=uboot-vystup/u-boot-sunxi-with-spl.bin
+          v=$(stat -c %s $z)
+          echo "### Zavádzač Tanix TX68 – U-Boot ${UBOOT_TAG} + TF-A ${TFA_TAG}: $v B, sha256 $(sha256sum $z | cut -c1-16)…" | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$v" -gt 32768 && test "$v" -le $((8192 * 512 - 8192))
+          grep -aq "SKLENIK tanix-tx68" $z
+          grep -aq "allwinner/sun50i-h618-transpeed-8k618-t.dtb" $z
       - uses: actions/upload-artifact@v4
         with:
-          name: uboot-c4
+          name: allwinner-uboot
           path: uboot-vystup
+
+  obraz-allwinner:
+    name: Karta Allwinner (Tanix TX68) a skúška štartu jadra v QEMU
+    needs: [jadro-allwinner, uboot-allwinner, klic]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+      - name: Nástroje
+        run: sh nastroje/balicky.sh dosfstools mtools fdisk qemu-system-arm device-tree-compiler
+      - uses: actions/download-artifact@v4
+        with:
+          name: allwinner-jadro
+          path: jadra
+      - uses: actions/download-artifact@v4
+        with:
+          name: allwinner-uboot
+          path: uboot
+      - uses: actions/download-artifact@v4
+        with:
+          name: klic-v8
+          path: klic
+      - name: Zavádzací oddiel – jadro, systém v pamäti, nastavenie
+        run: |
+          mkdir -p boot/allwinner boot/extlinux
+          python3 nastroje/initramfs.py klic/klic boot/initramfs8.cpio.gz
+          cp jadra/allwinner/Image jadra/allwinner/jadro-h618.config boot/allwinner/
+          cp -r jadra/allwinner/dtb boot/
+          cp sklenik/boot/allwinner/extlinux.conf boot/extlinux/
+          cp sklenik/boot/sklenik.txt boot/
+          # R118: popis Transpeed 8K618-T upravený pre Tanix TX68 – meno, všetky štyri radiče USB (TX68 má zásuvky
+          # aj na druhom páre), Wi-Fi (mmc@4021000) bez napájania – zatiaľ ju nepodporujeme (R112)
+          f=boot/dtb/allwinner/sun50i-h618-transpeed-8k618-t.dtb
+          fdtput -t s "$f" / model "Tanix TX68"
+          for u in usb@5310000 usb@5310400 usb@5311000 usb@5311400; do fdtput -t s "$f" "/soc/$u" status okay; done
+          fdtput -t s "$f" /soc/mmc@4021000 status disabled
+          echo "$f: $(fdtget "$f" / model)"
+          printf 'SKLENÍK %s – karta pre Tanix TX68 (Allwinner H618)\njadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-allwinner.config (allwinner/jadro-h618.config)\nzavádzač (od 8 KiB, pred oddielom): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+, transpeed-8k618-t_defconfig) + https://github.com/ARM-software/arm-trusted-firmware/tree/%s (BSD-3-Clause, BL31)\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
+            "$GITHUB_SHA" "$ODROID_JADRO" "$UBOOT_TAG" "$TFA_TAG" > boot/ZDROJE.txt
+          ls -lR boot | head -40
+      - name: Obraz karty
+        run: |
+          mkdir -p obraz
+          mkfs.vfat -F 32 -n SKLENIK -C obraz/boot.img 262144 > /dev/null
+          mcopy -s -i obraz/boot.img boot/* ::
+          truncate -s 260M obraz/sklenik-allwinner.img
+          printf 'label: dos\nstart=8192, type=c, bootable\n' | sfdisk -q obraz/sklenik-allwinner.img
+          dd if=obraz/boot.img of=obraz/sklenik-allwinner.img bs=512 seek=8192 conv=notrunc status=none
+          rm obraz/boot.img
+          # zavádzač od 8 KiB (sektor 16) – tam ho hľadá zavádzací kód čipu Allwinner; tabuľka oddielov ostane
+          dd if=uboot/u-boot-sunxi-with-spl.bin of=obraz/sklenik-allwinner.img bs=1024 seek=8 conv=notrunc status=none
+          sfdisk -l obraz/sklenik-allwinner.img
+      - name: Kontrola – Tanix TX68 (zavádzač, tabuľka oddielov, jadro, popis hardvéru)
+        run: |
+          echo "### Tanix TX68" >> "$GITHUB_STEP_SUMMARY"
+          python3 nastroje/kontrola_allwinner.py obraz/sklenik-allwinner.img uboot/u-boot-sunxi-with-spl.bin boot | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Skúška štartu jadra a KLÍČA v QEMU (procesor Cortex-A53 ako H618)
+        run: |
+          # Tanix TX68 QEMU nemá – jadro a systém sa skúšajú na všeobecnom stroji bez obrazovky (ako TX68 dnes)
+          qemu-system-aarch64 -M virt,gic-version=2 -cpu cortex-a53 -m 1G -kernel boot/allwinner/Image \
+            -initrd boot/initramfs8.cpio.gz -nographic -no-reboot \
+            -append "earlycon=pl011,0x9000000 console=ttyAMA0 rdinit=/init sklenik.skuska=1 loglevel=7" > qemu-h618.log 2>&1 &
+          q=$!
+          for i in $(seq 1 120); do grep -q "SKLENÍK pripravený" qemu-h618.log && break; kill -0 $q 2>/dev/null || break; sleep 2; done
+          kill $q 2>/dev/null || true
+          echo "#### Jadro Allwinner H618 na procesore Cortex-A53 (nie celý TX68)" >> "$GITHUB_STEP_SUMMARY"
+          grep "KLÍČ" qemu-h618.log | sed 's/^/    /' | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -q "SKLENÍK pripravený" qemu-h618.log || { tail -40 qemu-h618.log; exit 1; }
+          if grep -q "KLÍČ: bez obrazovky – stav na kontrolkách klávesnice" qemu-h618.log; then
+            echo "✅ bez obrazovky hovorí SKLENÍK kontrolkami klávesnice (R119)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ slepý režim sa nezapol" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sklenik-allwinner
+          path: |
+            obraz/sklenik-allwinner.img
+            qemu-h618.log
+          if-no-files-found: warn
 
   obraz:
     name: Univerzálna karta a skúšky štartu v QEMU
@@ -266,16 +486,30 @@ jobs:
           cp firmver/* jadra/*.dtb jadra/*.img jadra/*.config boot/
           cp sklenik/boot/config.txt sklenik/boot/cmdline.txt sklenik/boot/sklenik.txt boot/
           mkdir -p boot/overlays && cp prekrytia/*.dtbo boot/overlays/
-          # Odroid C4: jadro a popis hardvéru v odroid/, nastavenie zavádzača U-Boot v extlinux/
-          cp -r jadra/odroid sklenik/boot/extlinux boot/
+          # Amlogic S905X3 (Odroid C4, X96 Max Plus): spoločné jadro v amlogic/, popisy hardvéru v dtb/amlogic/
+          # (U-Boot si vyberie podľa svojho fdtfile), nastavenie zavádzača U-Boot v extlinux/
+          mkdir -p boot/amlogic boot/dtb
+          cp jadra/amlogic/Image jadra/amlogic/jadro-s905x3.config boot/amlogic/
+          cp -r jadra/amlogic/dtb/amlogic boot/dtb/
+          cp -r sklenik/boot/extlinux boot/
           # R96: Odroid C4 – rýchle režimy SD (UHS) preč z popisu hardvéru, aby fungoval reštart zo SD karty
           # (karta by ostala v režime 1,8 V a zavádzač ju po reštarte neprečíta); systém beží z pamäte, takže
           # pomalšia karta po štarte takmer nevadí. eMMC (mmc@ffe07000) zostáva v plnej rýchlosti.
           for v in sd-uhs-sdr12 sd-uhs-sdr25 sd-uhs-sdr50 sd-uhs-sdr104; do
-            fdtput -d boot/odroid/meson-sm1-odroid-c4.dtb /soc/mmc@ffe05000 "$v"
+            fdtput -d boot/dtb/amlogic/meson-sm1-odroid-c4.dtb /soc/mmc@ffe05000 "$v"
           done
-          printf 'SKLENÍK %s – univerzálna karta pre Raspberry Pi 1, 2, 3, 4, 5, Zero, Zero W, Zero 2 W a Odroid C4\njadro: https://github.com/raspberrypi/linux/tree/%s + sklenik/jadro.config (úplné nastavenie v jadro-*.config)\nfirmvér: https://github.com/raspberrypi/firmware/tree/%s/boot (LICENCE.broadcom)\nOdroid C4 – jadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-odroid.config (odroid/jadro-c4.config)\nOdroid C4 – zavádzač (prvé 4 MiB karty): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+) a podpísané časti Amlogic https://github.com/LibreELEC/amlogic-boot-fip/tree/%s/odroid-c4\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
-            "$GITHUB_SHA" "$JADRO_TAG" "$FIRMVER_TAG" "$ODROID_JADRO" "$UBOOT_TAG" "$FIP_COMMIT" > boot/ZDROJE.txt
+          # R117: X96 Max Plus – popis referenčnej dosky krabičiek S905X3 (X96 Air) s menom krabičky; Wi-Fi
+          # (mmc@ffe03000) bez napájania – zatiaľ ju nepodporujeme a v plastovej krabičke by len hriala (R112)
+          for d in meson-sm1-x96-air-gbit:"Amediatech X96 Max Plus" meson-sm1-x96-air:"Amediatech X96 Max Plus (Ethernet 100 Mb/s)"; do
+            f="boot/dtb/amlogic/${d%%:*}.dtb"
+            fdtput -t s "$f" / model "${d#*:}"
+            fdtput -t s "$f" /soc/mmc@ffe03000 status disabled
+            echo "$f: $(fdtget "$f" / model) – Wi-Fi $(fdtget "$f" /soc/mmc@ffe03000 status)"
+          done
+          # pôvodný zavádzač krabičky hľadá skripty a u-boot.ext v koreni karty
+          cp uboot/x96/aml_autoscript uboot/x96/s905_autoscript uboot/x96/u-boot.ext boot/
+          printf 'SKLENÍK %s – univerzálna karta pre Raspberry Pi 1, 2, 3, 4, 5, Zero, Zero W, Zero 2 W, Odroid C4 a X96 Max Plus\njadro: https://github.com/raspberrypi/linux/tree/%s + sklenik/jadro.config (úplné nastavenie v jadro-*.config)\nfirmvér: https://github.com/raspberrypi/firmware/tree/%s/boot (LICENCE.broadcom)\nAmlogic S905X3 (Odroid C4, X96 Max Plus) – jadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-odroid.config (amlogic/jadro-s905x3.config)\nOdroid C4 – zavádzač (prvé 4 MiB karty): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+) a podpísané časti Amlogic https://github.com/LibreELEC/amlogic-boot-fip/tree/%s/odroid-c4\nX96 Max Plus – u-boot.ext: https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+, bananapi-m5_defconfig + popis X96 Air), skripty sklenik/boot/amlogic/\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
+            "$GITHUB_SHA" "$JADRO_TAG" "$FIRMVER_TAG" "$ODROID_JADRO" "$UBOOT_TAG" "$FIP_COMMIT" "$UBOOT_TAG" > boot/ZDROJE.txt
           ls -l boot
           du -sh boot
       - name: Kontrola – každý model dostane svoje jadro a svoj systém
@@ -286,7 +520,7 @@ jobs:
         run: |
           mkdir -p obraz
           mkfs.vfat -F 32 -n SKLENIK -C obraz/boot.img 262144 > /dev/null
-          mcopy -i obraz/boot.img boot/* ::
+          mcopy -s -i obraz/boot.img boot/* ::
           # oddiel začína na 4 MiB – miesto pred ním zostane voľné (zavádzače iných dosiek, napr. Odroid)
           truncate -s 260M obraz/sklenik-rpi.img
           printf 'label: dos\nstart=8192, type=c, bootable\n' | sfdisk -q obraz/sklenik-rpi.img
@@ -298,9 +532,9 @@ jobs:
           dd if="$z" of=obraz/sklenik-rpi.img conv=notrunc bs=512 skip=1 seek=1 status=none
           dd if="$z" of=obraz/sklenik-rpi.img conv=notrunc bs=1 count=440 status=none
           sfdisk -l obraz/sklenik-rpi.img
-      - name: Kontrola – Odroid C4 (zavádzač, tabuľka oddielov, jadro, popis hardvéru)
+      - name: Kontrola – Odroid C4 a X96 Max Plus (zavádzače, tabuľka oddielov, jadro, popisy hardvéru, skripty)
         run: |
-          echo "### Odroid C4" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Odroid C4 a X96 Max Plus" >> "$GITHUB_STEP_SUMMARY"
           python3 nastroje/kontrola_odroid.py obraz/sklenik-rpi.img uboot/u-boot.bin.sd.bin boot | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Karta s nastavením od SADIČA (meno a jazyk) pre skúšku
         run: |
@@ -410,10 +644,10 @@ jobs:
             -M virt,gic-version=2 -cpu cortex-a76 -m 1G -kernel boot/kernel_2712.img -initrd boot/initramfs8.cpio.gz \
             -append "earlycon=pl011,0x9000000 console=ttyAMA0 $spolocne" \
             || echo "⚠️ jadro RPi 5 na všeobecnom stroji nenaštartovalo – overí sa na skutočnom RPi 5" | tee -a "$GITHUB_STEP_SUMMARY"
-          # Odroid C4 QEMU nemá – jeho jadro a systém sa skúšajú na všeobecnom stroji s procesorom Cortex-A55
-          # (ako S905X3); zavádzač a ovládače dosky sa overia až na skutočnom Odroide
-          skusaj_bez_obrazovky "Jadro Odroid C4 na procesore Cortex-A55 (nie celý Odroid)" qemu-odroid.log qemu-system-aarch64 \
-            -M virt,gic-version=2 -cpu cortex-a55 -m 1G -kernel boot/odroid/Image -initrd boot/initramfs8.cpio.gz \
+          # Odroid C4 ani X96 QEMU nemá – ich spoločné jadro a systém sa skúšajú na všeobecnom stroji s procesorom
+          # Cortex-A55 (ako S905X3); zavádzače a ovládače dosiek sa overia až na skutočných zariadeniach
+          skusaj_bez_obrazovky "Jadro Amlogic S905X3 na procesore Cortex-A55 (nie celý Odroid ani X96)" qemu-odroid.log qemu-system-aarch64 \
+            -M virt,gic-version=2 -cpu cortex-a55 -m 1G -kernel boot/amlogic/Image -initrd boot/initramfs8.cpio.gz \
             -append "earlycon=pl011,0x9000000 console=ttyAMA0 $spolocne" || chyby=$((chyby+1))
           test $chyby -eq 0
       - uses: actions/upload-artifact@v4

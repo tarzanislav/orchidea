@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Kontrola karty SKLENÍKA pre Odroid C4 (R88).
+"""Kontrola karty SKLENÍKA pre dosky Amlogic S905X3: Odroid C4 (R88) a X96 Max Plus (R117).
 
-Odroid C4 v emulátore spustiť nejde, preto táto kontrola overí všetko, čo sa overiť dá bez dosky:
+Ani jedna doska sa v emulátore spustiť nedá, preto táto kontrola overí všetko, čo sa overiť dá bez dosky:
   - zavádzač (U-Boot podpísaný nástrojom Amlogic) je na karte presne tam, kde ho hľadá procesor S905X3:
     prvých 440 bajtov 1. sektora a od 2. sektora ďalej, a celý sa zmestí pred oddiel (4 MiB),
   - tabuľka oddielov zostala nedotknutá (Raspberry Pi aj Windows kartu prečítajú ako predtým),
   - oddiel je označený ako zavádzací (U-Boot hľadá extlinux/extlinux.conf na takom oddiele),
-  - extlinux.conf ukazuje na súbory, ktoré na karte sú,
-  - jadro je 64-bitové (Image pre ARM64) a popis hardvéru je naozaj pre Odroid C4.
+  - extlinux.conf ukazuje na súbory, ktoré na karte sú (popis hardvéru podľa fdtfile každého zavádzača),
+  - jadro je 64-bitové (Image pre ARM64) a popisy hardvéru sú naozaj pre Odroid C4 a krabičku X96,
+  - X96 Max Plus: skripty pôvodného zavádzača krabičky sú platné obrazy U-Boot (typ skript, kontrolné
+    súčty sedia) a spúšťajú náš u-boot.ext; ten nikdy nezapisuje nastavenie a hľadá správny popis hardvéru.
 
 Použitie: python3 nastroje/kontrola_odroid.py <obraz karty> <u-boot.bin.sd.bin> <priečinok zavádzacieho oddielu>
 Len štandardná knižnica Pythonu.
@@ -15,6 +17,7 @@ Len štandardná knižnica Pythonu.
 
 import struct
 import sys
+import zlib
 from pathlib import Path
 
 ODDIEL_OD = 8192  # sektor, kde začína oddiel (4 MiB)
@@ -34,7 +37,7 @@ def nacitaj_extlinux(cesta: Path) -> dict:
             if v_zazname:
                 break
             v_zazname = True
-        elif v_zazname and kluc in {"LINUX", "KERNEL", "INITRD", "FDT", "APPEND"}:
+        elif v_zazname and kluc in {"LINUX", "KERNEL", "INITRD", "FDT", "FDTDIR", "APPEND"}:
             hodnoty[kluc] = hodnota.strip()
     return hodnoty
 
@@ -93,6 +96,58 @@ def vlastnosti_uzla(dtb: bytes, meno_uzla: str) -> set:
     return vysledok
 
 
+def skript_ubootu(data: bytes) -> tuple[str | None, str]:
+    """Overí obraz U-Boot typu skript (mkimage -T script). Vráti (chyba alebo None, text skriptu)."""
+    if len(data) < 72:
+        return "príliš krátky", ""
+    magic, hcrc, _, velkost, _, _, dcrc, _, _, typ, komp = struct.unpack_from(">IIIIIIIBBBB", data, 0)
+    if magic != 0x27051956:
+        return f"nie je obraz U-Boot (magic {magic:#x})", ""
+    hlavicka = bytearray(data[:64])
+    hlavicka[4:8] = b"\0\0\0\0"
+    if zlib.crc32(hlavicka) != hcrc:
+        return "kontrolný súčet hlavičky nesedí", ""
+    telo = data[64 : 64 + velkost]
+    if len(telo) != velkost or zlib.crc32(telo) != dcrc:
+        return "kontrolný súčet obsahu nesedí", ""
+    if typ != 6 or komp != 0:
+        return f"typ {typ} / kompresia {komp} – čaká sa skript bez kompresie", ""
+    # obsah skriptu: dĺžky častí (32 b) ukončené nulou, potom časti
+    dlzky, i = [], 0
+    while True:
+        (d,) = struct.unpack_from(">I", telo, i)
+        i += 4
+        if d == 0:
+            break
+        dlzky.append(d)
+    return None, telo[i : i + dlzky[0]].decode("ascii", errors="replace") if dlzky else ""
+
+
+def uzol_vlastnost(dtb: bytes, meno_uzla: str, vlastnost: str) -> bytes | None:
+    """Hodnota vlastnosti uzla s daným menom (prvý výskyt)."""
+    _, _, struct_od, retazce_od = struct.unpack_from(">IIII", dtb, 0)
+    i, cesta = struct_od, []
+    while i < len(dtb):
+        (token,) = struct.unpack_from(">I", dtb, i)
+        i += 4
+        if token == 1:
+            koniec = dtb.index(b"\0", i)
+            cesta.append(dtb[i:koniec].decode())
+            i = (koniec + 4) & ~3
+        elif token == 2:
+            cesta.pop()
+        elif token == 3:
+            dlzka, meno_od = struct.unpack_from(">II", dtb, i)
+            hodnota = dtb[i + 8 : i + 8 + dlzka]
+            i = (i + 8 + dlzka + 3) & ~3
+            m = dtb[retazce_od + meno_od : dtb.index(b"\0", retazce_od + meno_od)].decode()
+            if cesta and cesta[-1] == meno_uzla and m == vlastnost:
+                return hodnota
+        elif token == 9:
+            break
+    return None
+
+
 def main() -> int:
     obraz = Path(sys.argv[1]).read_bytes()[: (ODDIEL_OD + 1) * 512]
     zavadzac = Path(sys.argv[2]).read_bytes()
@@ -129,13 +184,19 @@ def main() -> int:
     )
 
     e = nacitaj_extlinux(boot / "extlinux" / "extlinux.conf")
-    for kluc in ("LINUX", "INITRD", "FDT"):
+    for kluc in ("LINUX", "INITRD"):
         subor = e.get(kluc, "")
         over(
             bool(subor) and (boot / subor.lstrip("/")).is_file(),
             f"extlinux.conf {kluc} {subor} – súbor na karte je",
             f"extlinux.conf {kluc} {subor or '(chýba)'} – súbor na karte nie je",
         )
+    fdtdir = e.get("FDTDIR", "")
+    over(
+        bool(fdtdir) and "FDT" not in e,
+        f"extlinux.conf FDTDIR {fdtdir} – popis hardvéru si vyberie zavádzač podľa svojej dosky",
+        "extlinux.conf nemá FDTDIR (alebo má aj pevné FDT)",
+    )
     over("rdinit=/init" in e.get("APPEND", ""), "jadro spustí KLÍČ (rdinit=/init)", "chýba rdinit=/init")
 
     jadro_cesta = boot / e.get("LINUX", "x").lstrip("/")
@@ -144,27 +205,71 @@ def main() -> int:
         over(hlavicka[56:60] == b"ARM\x64", "jadro je 64-bitové (Image pre ARM64)", "jadro nie je Image pre ARM64")
         priznaky = struct.unpack_from("<Q", hlavicka, 24)[0]
         over((priznaky >> 1) & 3 == 1, "jadro má stránky 4 kB", "jadro nemá stránky 4 kB")
-    dtb_cesta = boot / e.get("FDT", "x").lstrip("/")
-    if dtb_cesta.is_file():
-        dtb = dtb_cesta.read_bytes()
+
+    def popis(subor: str, kompat_dosky: bytes, model_ma: str, bez_uhs: bool, bez_wifi: bool) -> None:
+        cesta = boot / fdtdir.lstrip("/") / subor
+        if not cesta.is_file():
+            over(False, "", f"{fdtdir}/{subor} na karte nie je")
+            return
+        dtb = cesta.read_bytes()
         model = (vlastnost_korena_dtb(dtb, "model") or b"").rstrip(b"\0").decode(errors="replace")
         kompat = (vlastnost_korena_dtb(dtb, "compatible") or b"").split(b"\0")
         over(
-            b"hardkernel,odroid-c4" in kompat and b"amlogic,sm1" in kompat,
-            f"popis hardvéru: {model} (hardkernel,odroid-c4, amlogic,sm1)",
-            f"popis hardvéru nie je pre Odroid C4: {model} {kompat}",
+            kompat_dosky in kompat and b"amlogic,sm1" in kompat and model_ma in model,
+            f"{subor}: {model} ({kompat_dosky.decode()}, amlogic,sm1)",
+            f"{subor} nie je správny popis: {model} {kompat}",
         )
-        sd = vlastnosti_uzla(dtb, "mmc@ffe05000")
-        uhs = sorted(v for v in sd if v.startswith("sd-uhs"))
+        if bez_uhs:
+            sd = vlastnosti_uzla(dtb, "mmc@ffe05000")
+            uhs = sorted(v for v in sd if v.startswith("sd-uhs"))
+            over(
+                bool(sd) and not uhs,
+                f"{subor}: SD karta bez rýchlych režimov UHS – reštart zo SD funguje (R96)",
+                f"{subor}: SD karta má režimy {uhs or 'uzol chýba'} – reštart zo SD by zamrzol",
+            )
+        if bez_wifi:
+            stav = uzol_vlastnost(dtb, "mmc@ffe03000", "status")
+            over(
+                stav == b"disabled\0",
+                f"{subor}: Wi-Fi bez napájania (R112)",
+                f"{subor}: Wi-Fi nie je vypnutá ({stav!r})",
+            )
+
+    # Odroid C4: fdtfile podľa dosky = amlogic/meson-sm1-odroid-c4.dtb
+    popis("amlogic/meson-sm1-odroid-c4.dtb", b"hardkernel,odroid-c4", "ODROID-C4", True, False)
+    # X96 Max Plus: fdtfile nášho u-boot.ext = amlogic/meson-sm1-x96-air-gbit.dtb (+ verzia 100 Mb/s)
+    popis("amlogic/meson-sm1-x96-air-gbit.dtb", b"amediatech,x96-air-gbit", "X96 Max Plus", False, True)
+    popis("amlogic/meson-sm1-x96-air.dtb", b"amediatech,x96-air", "X96 Max Plus (Ethernet 100", False, True)
+
+    # X96 Max Plus – reťaz štartu: pôvodný zavádzač → aml_autoscript (raz) → s905_autoscript → u-boot.ext
+    for meno, musi, nesmie in (
+        ("aml_autoscript", ["saveenv", "storeboot", "s905_autoscript", "fatload mmc 0", "fatload usb", "upgrade_step 2"], []),
+        ("s905_autoscript", ["u-boot.ext", "go 0x01000000", "fatload mmc 0", "fatload usb"], ["saveenv", "store ", "mmc write"]),
+    ):
+        cesta = boot / meno
+        if not cesta.is_file():
+            over(False, "", f"{meno} na karte nie je")
+            continue
+        chyba, text = skript_ubootu(cesta.read_bytes())
+        chyba = chyba or next((f"chýba „{m}“" for m in musi if m not in text), None)
+        chyba = chyba or next((f"obsahuje zakázané „{n}“" for n in nesmie if n in text), None)
+        over(chyba is None, f"{meno}: platný skript U-Boot ({len(text)} znakov)", f"{meno}: {chyba}")
+    ext = boot / "u-boot.ext"
+    if ext.is_file():
+        u = ext.read_bytes()
         over(
-            bool(sd) and not uhs,
-            "SD karta bez rýchlych režimov UHS – reštart zo SD funguje (R96)",
-            f"SD karta má režimy {uhs or 'uzol chýba'} – reštart zo SD by zamrzol",
+            b"SKLENIK x96-max-plus" in u and b"amlogic/meson-sm1-x96-air-gbit.dtb" in u,
+            f"u-boot.ext ({len(u)} B): náš U-Boot pre X96, hľadá popis meson-sm1-x96-air-gbit.dtb",
+            "u-boot.ext nie je náš U-Boot pre X96",
         )
+        over(len(u) < 2 << 20, "u-boot.ext má menej ako 2 MB (nahrá sa na 0x01000000, skripty sú na 0x09000000)", "u-boot.ext je príliš veľký")
+    else:
+        over(False, "", "u-boot.ext na karte nie je")
+
     if chyby:
         print(f"❌ chýb: {len(chyby)}")
         return 1
-    print("✅ karta je pripravená pre Odroid C4 (zavádzač a ovládače dosky sa overia na skutočnom Odroide)")
+    print("✅ karta je pripravená pre Odroid C4 a X96 Max Plus (zavádzače a ovládače dosiek sa overia na skutočných zariadeniach)")
     return 0
 
 

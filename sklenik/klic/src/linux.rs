@@ -303,11 +303,12 @@ fn zmeraj_kartu(zariadenie: &str, bajtov: u64, priebeh: &dyn Fn(u64)) -> std::io
 
 /// Karta, ktorej rýchlosť sa meria: tá, z ktorej SKLENÍK štartoval (má SKLENIK.TXT), inak prvá SD/eMMC.
 fn vyber_kartu(supis: &Supis, nastavenie: &Option<(String, NastavenieZariadenia)>) -> Option<Ulozisko> {
+    // nosič, z ktorého SKLENÍK naštartoval (karta alebo USB kľúč – X96 Max Plus vie oboje); inak prvá karta
     nastavenie
         .as_ref()
         .and_then(|(cesta, _)| supis.ulozisko.iter().find(|u| format!("/dev/{}", u.meno) == *cesta))
+        .filter(|u| u.meno.starts_with("mmcblk") || u.meno.starts_with("sd"))
         .or_else(|| supis.ulozisko.iter().find(|u| u.meno.starts_with("mmcblk")))
-        .filter(|u| u.meno.starts_with("mmcblk"))
         .cloned()
 }
 
@@ -555,6 +556,17 @@ pub fn spusti() {
             None
         }
     };
+    // R119: bez obrazovky (Tanix TX68 – jadro zatiaľ nemá HDMI pre H618) hovorí SKLENÍK kontrolkami klávesnice
+    let kontrolky = Arc::new(Mutex::new(StavKontroliek {
+        slepy: false,
+        teplota: None,
+        ciel: profil.ciel,
+        strop: profil.strop,
+    }));
+    if pid1 && !len_sledovanie {
+        spusti_kontrolky(kontrolky.clone());
+    }
+    let mut slepy_hlaseny = false;
     let mut eee = SledovanieEee::nove(&supis);
     let mut vytazenie = Vytazenie::nove();
     let mut kmsg = Hlasenia::otvor(&model);
@@ -600,6 +612,16 @@ pub fn spusti() {
             if pid1 {
                 sys::zber_procesov();
                 eee.krok();
+            }
+            if let Ok(mut k) = kontrolky.lock() {
+                k.teplota = teplota;
+                k.slepy = pid1 && displej.is_none();
+                if k.slepy && !slepy_hlaseny {
+                    hlas(
+                        "bez obrazovky – stav na kontrolkách klávesnice (Num Lock bliká = beží; každú minútu teplota: Scroll Lock desiatky, Caps Lock jednotky)",
+                    );
+                    slepy_hlaseny = true;
+                }
             }
             // v pokoji sa strážca prebúdza zriedkavejšie
             let pokoj = teplota.unwrap_or(0.0) < regulator.profil().ciel - 10.0;
@@ -781,6 +803,128 @@ pub fn spusti() {
             }
         };
     }
+}
+
+/// Čo ukazujú kontrolky klávesnice v slepom režime (R119).
+struct StavKontroliek {
+    /// Doska nemá obrazovku – kontrolky hovoria.
+    slepy: bool,
+    teplota: Option<f64>,
+    ciel: f64,
+    strop: f64,
+}
+
+/// Kontrolky (LED) Num/Caps/Scroll Lock.
+const LED_NUM: u16 = 0;
+const LED_CAPS: u16 = 1;
+const LED_SCROLL: u16 = 2;
+
+/// Klávesnice, ktoré majú kontrolky (`/dev/input/eventN` s schopnosťou LED).
+fn klavesnice_s_kontrolkami() -> Vec<fs::File> {
+    let mut v = Vec::new();
+    for z in fs::read_dir("/sys/class/input").into_iter().flatten().flatten() {
+        let meno = z.file_name().to_string_lossy().into_owned();
+        if !meno.starts_with("event") {
+            continue;
+        }
+        let led = citaj(z.path().join("device/capabilities/led")).unwrap_or_default();
+        if led.trim().is_empty() || led.trim() == "0" {
+            continue;
+        }
+        if let Ok(f) = fs::OpenOptions::new().write(true).open(format!("/dev/input/{meno}")) {
+            v.push(f);
+        }
+    }
+    v
+}
+
+/// Udalosť `struct input_event` (čas, typ, kód, hodnota) v pamäťovom tvare jadra danej architektúry.
+fn udalost_vstupu(typ: u16, kod: u16, hodnota: i32) -> Vec<u8> {
+    let mut b = Vec::with_capacity(24);
+    b.extend_from_slice(&(0 as core::ffi::c_long).to_ne_bytes());
+    b.extend_from_slice(&(0 as core::ffi::c_long).to_ne_bytes());
+    b.extend_from_slice(&typ.to_ne_bytes());
+    b.extend_from_slice(&kod.to_ne_bytes());
+    b.extend_from_slice(&hodnota.to_ne_bytes());
+    b
+}
+
+fn nastav_kontrolky(klavesnice: &mut [fs::File], num: bool, caps: bool, scroll: bool) {
+    let mut b = Vec::new();
+    for (kod, zapnuta) in [(LED_NUM, num), (LED_CAPS, caps), (LED_SCROLL, scroll)] {
+        b.extend(udalost_vstupu(0x11, kod, zapnuta as i32)); // EV_LED
+    }
+    b.extend(udalost_vstupu(0, 0, 0)); // EV_SYN
+    for k in klavesnice.iter_mut() {
+        let _ = k.write_all(&b);
+    }
+}
+
+/// Teplota v bliknutiach: (desiatky, jednotky) zaokrúhlené na celé stupne; 0 jednotiek = jedno dlhé bliknutie.
+fn teplota_v_bliknutiach(t: f64) -> (u32, u32) {
+    let c = t.round().clamp(0.0, 99.0) as u32;
+    (c / 10, c % 10)
+}
+
+/// R119: vlákno kontroliek – Num Lock krátko blikne každé 2 s (žijem), Caps Lock svieti nad cieľom, Scroll
+/// Lock pri strope; raz za minútu sa ohlási teplota (Scroll Lock desiatky, Caps Lock jednotky).
+fn spusti_kontrolky(stav: Arc<Mutex<StavKontroliek>>) {
+    std::thread::spawn(move || {
+        let pauza = |ms| std::thread::sleep(Duration::from_millis(ms));
+        let mut posledna_teplota = Instant::now();
+        let mut zhasnute = true;
+        loop {
+            let (slepy, teplota, ciel, strop) = match stav.lock() {
+                Ok(s) => (s.slepy, s.teplota, s.ciel, s.strop),
+                Err(_) => return,
+            };
+            let mut k = klavesnice_s_kontrolkami();
+            if !slepy || k.is_empty() {
+                if !zhasnute && !k.is_empty() {
+                    nastav_kontrolky(&mut k, false, false, false);
+                }
+                zhasnute = true;
+                pauza(5000);
+                continue;
+            }
+            zhasnute = false;
+            let teple = teplota.is_some_and(|t| t >= ciel);
+            let horuce = teplota.is_some_and(|t| t >= strop - 3.0);
+            if let Some(t) = teplota
+                && posledna_teplota.elapsed() >= Duration::from_secs(60)
+            {
+                posledna_teplota = Instant::now();
+                let (desiatky, jednotky) = teplota_v_bliknutiach(t);
+                nastav_kontrolky(&mut k, false, false, false);
+                pauza(1500);
+                for _ in 0..desiatky {
+                    nastav_kontrolky(&mut k, false, false, true);
+                    pauza(350);
+                    nastav_kontrolky(&mut k, false, false, false);
+                    pauza(350);
+                }
+                pauza(1000);
+                if jednotky == 0 {
+                    nastav_kontrolky(&mut k, false, true, false);
+                    pauza(1500);
+                    nastav_kontrolky(&mut k, false, false, false);
+                } else {
+                    for _ in 0..jednotky {
+                        nastav_kontrolky(&mut k, false, true, false);
+                        pauza(350);
+                        nastav_kontrolky(&mut k, false, false, false);
+                        pauza(350);
+                    }
+                }
+                pauza(1500);
+            }
+            // žijem: Num Lock krátko blikne
+            nastav_kontrolky(&mut k, true, teple, horuce);
+            pauza(200);
+            nastav_kontrolky(&mut k, false, teple, horuce);
+            pauza(1800);
+        }
+    });
 }
 
 /// Vyťaženie procesora z `/proc/stat` (podiel času, keď zapnuté jadrá pracovali) – pre strážcu (R110).
@@ -997,6 +1141,23 @@ fn dolezite_hlasenie(zaznam: &str, najvyssia_uroven: u32) -> Option<String> {
 #[cfg(test)]
 mod skusky {
     use super::*;
+
+    #[test]
+    fn kontrolky_klavesnice() {
+        // 53 °C = 5× Scroll Lock, 3× Caps Lock; 60 °C = 6× a jedno dlhé
+        assert_eq!(teplota_v_bliknutiach(53.4), (5, 3));
+        assert_eq!(teplota_v_bliknutiach(59.6), (6, 0));
+        assert_eq!(teplota_v_bliknutiach(-3.0), (0, 0));
+        assert_eq!(teplota_v_bliknutiach(140.0), (9, 9));
+        // struct input_event: 2× long (čas) + typ + kód + hodnota
+        let u = udalost_vstupu(0x11, LED_CAPS, 1);
+        assert_eq!(u.len(), 2 * size_of::<core::ffi::c_long>() + 8);
+        let o = 2 * size_of::<core::ffi::c_long>();
+        assert_eq!(
+            (u16::from_ne_bytes([u[o], u[o + 1]]), u16::from_ne_bytes([u[o + 2], u[o + 3]])),
+            (0x11, 1)
+        );
+    }
 
     #[test]
     fn vytazenie_z_proc_stat() {

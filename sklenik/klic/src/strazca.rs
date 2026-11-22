@@ -32,8 +32,12 @@ impl Profil {
     /// RPi 4 a 5 – 75 °C; cieľ je o 10 °C nižšie (vlastník: minimalizovať teplotu).
     /// Teplotný profil podľa modelu. Odroid C4 (Amlogic S905X3, 12 nm) má rovnaký opatrný profil ako
     /// RPi 3 – na doske bez chladiča je to bezpečná voľba, kým sa nezmeria na skutočnom zariadení.
+    /// TV krabičky (X96 Max Plus, Tanix TX68 – R117, R118) sú v uzavretej plastovej krabičke bez vetrania
+    /// a známe prehrievaním (vlastník: „zvlášť X96“) – o 5 °C prísnejší profil.
     pub fn pre_model(model: &str) -> Profil {
-        if model.contains("Raspberry Pi 4")
+        if je_tv_krabicka(model) {
+            Profil { ciel: 55.0, strop: 65.0 }
+        } else if model.contains("Raspberry Pi 4")
             || model.contains("Raspberry Pi 5")
             || model.contains("Raspberry Pi 400")
         {
@@ -42,6 +46,11 @@ impl Profil {
             Profil { ciel: 60.0, strop: 70.0 }
         }
     }
+}
+
+/// TV krabička (podľa mena modelu v popise hardvéru, ktoré dáva SKLENÍK na karte).
+pub fn je_tv_krabicka(model: &str) -> bool {
+    ["X96", "Tanix", "TANIX", "TX68"].iter().any(|m| model.contains(m))
 }
 
 /// Úrovne výkonu z dostupných taktov a počtu jadier. Napätie rastie s taktom, takže príkon jadra sa
@@ -431,5 +440,9 @@ mod skusky {
         assert_eq!(Profil::pre_model("Raspberry Pi 3 Model B Plus Rev 1.3").strop, 70.0);
         assert_eq!(Profil::pre_model("Raspberry Pi 5 Model B Rev 1.0").strop, 75.0);
         assert_eq!(Profil::pre_model("niečo iné").strop, 70.0);
+        assert_eq!(Profil::pre_model("Hardkernel ODROID-C4").strop, 70.0);
+        let x96 = Profil::pre_model("Amediatech X96 Max Plus");
+        assert_eq!((x96.ciel, x96.strop), (55.0, 65.0));
+        assert_eq!(Profil::pre_model("Tanix TX68").strop, 65.0);
     }
 }
