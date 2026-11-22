@@ -144,7 +144,7 @@ done
 rm -f w.img oddiel.img kopia.bin
 echo "✅ ISO Windows rozbalené na FAT32 a každý súbor sedí"
 # to isté ISO s nízkou hranicou: sources (okrem boot.wim) idú na druhý oddiel NTFS
-SADIC_SKUSKA=1 SADIC_SKUSKA_HRANICA=50000 "$S" napal-obraz win.iso w2.img 400
+SADIC_SKUSKA=1 SADIC_SKUSKA_HRANICA=50000 "$S" napal-obraz win.iso w2.img 96
 oddiel w2.img 2
 ntfsfix -n oddiel.img | grep -q "processed successfully" || chyba "NTFS druhého oddielu"
 (cd win && find sources -type f ! -name boot.wim) | while read -r f; do

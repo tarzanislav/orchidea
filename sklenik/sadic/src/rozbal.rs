@@ -140,8 +140,10 @@ pub fn napal_subory<F: Read + Seek>(
         Some(_) => {
             // prvý oddiel: súbory + rezerva, zarovnaný; rastie, kým sa súbory nezmestia
             let z = zarovnanie / s;
-            let mut dlzka =
-                (strom1.velkost_suborov() * 21 / 20 + 64 * MIB).max(100 * MIB).div_ceil(zarovnanie) * z;
+            let mut dlzka = (strom1.velkost_suborov() * 21 / 20 + 64 * MIB)
+                .max(if velkost >= 1 << 30 { 100 * MIB } else { 0 })
+                .div_ceil(zarovnanie)
+                * z;
             let f = loop {
                 let f = Fat32::navrhni(dlzka, sektor, zaciatok, zarovnanie, None, &menovka1)?;
                 if f.potrebne_klastre(&strom1) + 16 <= f.klastre as u64 {
