@@ -179,6 +179,17 @@ pub struct Nastavenie {
     pub wifi: Option<String>,
     pub wifi_heslo: Option<String>,
     pub jazyk: Option<String>,
+    /// Samomeranie pri štarte (R122): `Some(false)` = vypnuté; inak zapnuté.
+    pub meranie: Option<bool>,
+}
+
+/// Hodnota áno/nie (`ano`, `áno`, `1`, `zapnute` / `nie`, `0`, `vypnute`).
+pub fn ano_nie(v: &str) -> Option<bool> {
+    match v.trim().to_lowercase().as_str() {
+        "ano" | "áno" | "1" | "zapnute" | "zapnuté" | "yes" | "on" => Some(true),
+        "nie" | "0" | "vypnute" | "vypnuté" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 impl Nastavenie {
@@ -194,9 +205,15 @@ impl Nastavenie {
                 "wifi" => n.wifi = v,
                 "wifi_heslo" => n.wifi_heslo = v,
                 "jazyk" => n.jazyk = v,
+                "meranie" => {
+                    n.meranie = Some(
+                        ano_nie(v.as_deref().unwrap_or(""))
+                            .ok_or_else(|| "meranie: ano alebo nie".to_string())?,
+                    )
+                }
                 _ => {
                     return Err(format!(
-                        "neznáme nastavenie „{k}“ (povolené: meno, wifi, wifi_heslo, jazyk)"
+                        "neznáme nastavenie „{k}“ (povolené: meno, wifi, wifi_heslo, jazyk, meranie)"
                     ));
                 }
             }
@@ -255,6 +272,9 @@ impl Nastavenie {
         if let Some(j) = &self.jazyk {
             t += &format!("jazyk={j}\n");
         }
+        if let Some(m) = self.meranie {
+            t += &format!("meranie={}\n", if m { "ano" } else { "nie" });
+        }
         t
     }
 }
@@ -266,6 +286,8 @@ pub struct NastavenieZariadenia {
     pub wifi: Option<String>,
     pub wifi_psk: Option<[u8; 32]>,
     pub jazyk: Option<String>,
+    /// Samomeranie pri štarte (R122): `Some(false)` = vypnuté, inak zapnuté.
+    pub meranie: Option<bool>,
 }
 
 impl NastavenieZariadenia {
@@ -298,6 +320,10 @@ impl NastavenieZariadenia {
                 {
                     n.jazyk = Some(v.to_ascii_lowercase())
                 }
+                "meranie" => match ano_nie(v) {
+                    Some(m) => n.meranie = Some(m),
+                    None => upozornenia.push(format!("riadok {}: meranie má byť ano alebo nie", i + 1)),
+                },
                 "meno" | "wifi" | "jazyk" => {
                     upozornenia.push(format!("riadok {}: neplatná hodnota „{k}“", i + 1))
                 }
@@ -597,15 +623,24 @@ mod skusky {
             wifi: Some("Domov".into()),
             wifi_heslo: Some("tajneheslo".into()),
             jazyk: Some("sk".into()),
+            meranie: Some(false),
         };
         let mut text = n.text();
+        assert!(text.contains("meranie=nie\n"));
         text += "   \n# poznámka\nfarba=zelena\nmeno-zle\n";
         let (z, upozornenia) = NastavenieZariadenia::z_textu(&text);
         assert_eq!(z.meno.as_deref(), Some("dielna-1"));
         assert_eq!(z.wifi.as_deref(), Some("Domov"));
         assert_eq!(z.wifi_psk, Some(wpa_psk("tajneheslo", "Domov")));
         assert_eq!(z.jazyk.as_deref(), Some("sk"));
+        assert_eq!(z.meranie, Some(false));
         assert_eq!(upozornenia.len(), 2, "{upozornenia:?}");
+        // samomeranie (R122): áno/nie aj ručne, neplatná hodnota je len upozornenie
+        assert_eq!(NastavenieZariadenia::z_textu("meranie=Áno").0.meranie, Some(true));
+        let (z, u) = NastavenieZariadenia::z_textu("meranie=možno");
+        assert_eq!((z.meranie, u.len()), (None, 1));
+        assert_eq!(Nastavenie::z_argumentov(["meranie=nie"].into_iter()).map(|n| n.meranie), Ok(Some(false)));
+        assert!(Nastavenie::z_argumentov(["meranie=snad"].into_iter()).is_err());
         assert!(!text.contains("tajneheslo"));
         // neplatné meno sa nepoužije
         let (z, u) = NastavenieZariadenia::z_textu("meno=Zlé Meno\njazyk=CS\nwifi_psk=12\n");

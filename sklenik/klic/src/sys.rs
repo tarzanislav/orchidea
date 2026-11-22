@@ -14,6 +14,7 @@ unsafe extern "C" {
         priznaky: c_ulong,
         data: *const c_void,
     ) -> c_int;
+    fn umount2(ciel: *const c_char, priznaky: c_int) -> c_int;
     fn reboot(prikaz: c_int) -> c_int;
     fn sync();
     fn waitpid(pid: c_int, stav: *mut c_int, volby: c_int) -> c_int;
@@ -24,6 +25,7 @@ unsafe extern "C" {
     fn swapon(cesta: *const c_char, priznaky: c_int) -> c_int;
     fn sched_setaffinity(pid: c_int, velkost: usize, maska: *const u64) -> c_int;
     fn sysconf(meno: c_int) -> core::ffi::c_long;
+    fn setpriority(druh: c_int, kto: u32, priorita: c_int) -> c_int;
     fn bind(fd: c_int, adresa: *const c_void, dlzka: u32) -> c_int;
     fn poll(fds: *mut PollFd, pocet: c_ulong, cakanie_ms: c_int) -> c_int;
     fn recv(fd: c_int, buf: *mut c_void, dlzka: usize, priznaky: c_int) -> isize;
@@ -40,6 +42,7 @@ struct PollFd {
 pub const MS_NOSUID: c_ulong = 2;
 pub const MS_NODEV: c_ulong = 4;
 pub const MS_NOEXEC: c_ulong = 8;
+pub const MS_NOATIME: c_ulong = 1024;
 
 const RB_POWER_OFF: c_int = 0x4321_fedc_u32 as c_int;
 const RB_AUTOBOOT: c_int = 0x0123_4567;
@@ -81,6 +84,39 @@ pub fn pripoj(zdroj: &str, ciel: &str, typ: &str, priznaky: c_ulong) -> io::Resu
     // SAFETY: všetky reťazce sú platné C reťazce žijúce počas volania, data je NULL.
     let r = unsafe { mount(z.as_ptr(), c.as_ptr(), t.as_ptr(), priznaky, std::ptr::null()) };
     if r == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Pripojí súborový systém s voľbami ovládača (napr. `flush` pre FAT – R122).
+pub fn pripoj_s_volbami(
+    zdroj: &str,
+    ciel: &str,
+    typ: &str,
+    priznaky: c_ulong,
+    volby: &str,
+) -> io::Result<()> {
+    let (z, c, t, v) = (cstr(zdroj)?, cstr(ciel)?, cstr(typ)?, cstr(volby)?);
+    // SAFETY: všetky reťazce sú platné C reťazce žijúce počas volania; volby sú text ukončený nulou.
+    let r = unsafe { mount(z.as_ptr(), c.as_ptr(), t.as_ptr(), priznaky, v.as_ptr() as *const c_void) };
+    if r == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Odpojí súborový systém (jadro pritom zapíše všetko, čo ešte nebolo zapísané).
+pub fn odpoj(ciel: &str) -> io::Result<()> {
+    let c = cstr(ciel)?;
+    // SAFETY: platný C reťazec žijúci počas volania; bez príznakov.
+    if unsafe { umount2(c.as_ptr(), 0) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Najnižšia priorita pre volajúce vlákno (nice 19) – práca na pozadí nepredbehne nič iné (R122).
+pub fn nizka_priorita() -> io::Result<()> {
+    // SAFETY: PRIO_PROCESS (0) s kto = 0 je na Linuxe volajúce vlákno; len celé čísla.
+    if unsafe { setpriority(0, 0, 19) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Zapíše všetky vyrovnávacie pamäte jadra na disky.
+pub fn zapis_vyrovnavacie() {
+    // SAFETY: sync nemá parametre ani výsledok.
+    unsafe { sync() }
 }
 
 /// Zapíše vyrovnávacie pamäte na disk a vypne zariadenie (alebo reštartuje).

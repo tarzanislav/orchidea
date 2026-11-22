@@ -4,8 +4,10 @@
 use crate::obrazovka::{self, Eee, FormatBodu, Jazyk, MeranieKarty, Stav};
 use crate::periferie::{Supis, Ulozisko};
 use crate::poda::Poda;
+use crate::samomeranie::{self, NL, ZNACKA_NOSICA, ZNACKA_PORADIA, nadpis};
 use crate::strazca::{Hardver, Profil, Regulator, Uroven, stupen_ventilatora, urovne};
 use crate::sys;
+use crate::zaznam;
 use orchidea_pismo::{Pismo, Platno};
 use sklenik_karta::NastavenieZariadenia;
 use std::fs;
@@ -515,6 +517,10 @@ pub fn spusti() {
         }
     };
     nastav_zariadenie(&nastavenie);
+    // R122: samomeranie – len ako PID 1 (pripája kartu); vypne sa nastavením `meranie=nie` v SKLENIK.TXT
+    let mut merania = pid1.then(zaznam::Riadenie::default);
+    let predpona_merania = samomeranie::predpona(&model, "", zaznam::seriove_cislo().as_deref());
+    let mut vytazenie_teraz: Option<f64> = None;
     let pismo = Pismo::stonka();
     let mut displej = if len_sledovanie { None } else { Displej::otvor() };
     let profil = Profil::pre_model(&model);
@@ -552,8 +558,13 @@ pub fn spusti() {
     let mut zobrazene: Option<(i64, usize)> = None;
     let mut zobrazeny_cas: Option<u64> = None;
     #[allow(clippy::type_complexity)]
-    let mut zobrazene_ine: Option<(Option<Eee>, Vec<String>, Option<Result<usize, usize>>, Vec<String>)> =
-        None;
+    let mut zobrazene_ine: Option<(
+        Option<Eee>,
+        Vec<String>,
+        Option<Result<usize, usize>>,
+        Vec<String>,
+        Option<obrazovka::Samomeranie>,
+    )> = None;
     let mut krokov = 0u32;
     // R99: hardvérový strážny časovač – ak sa KLÍČ zasekne na 15 s, doska sa sama reštartuje
     // v emulátore QEMU sa časovač nespráva ako na doske (reštartuje hneď) – v skúške sa vynechá
@@ -619,6 +630,7 @@ pub fn spusti() {
             posledny_krok = Instant::now();
             teplota = hw.teplota();
             let v = vytazenie.krok();
+            vytazenie_teraz = v;
             let uroven = match teplota {
                 Some(t) => regulator.krok_s_vytazenim(t, dt, v),
                 // R99: snímač teploty bol, ale nedá sa prečítať (napr. zlyhal firmvér) – nevieme, že je
@@ -657,6 +669,10 @@ pub fn spusti() {
                     );
                     slepy_hlaseny = true;
                 }
+            }
+            // R122: bod krivky teploty – z hodnôt, ktoré strážca práve odčítal (nič sa nemeria navyše)
+            if let Some(m) = merania.as_mut() {
+                m.bod(teplota, uroven.vykon, uroven.takt_khz / 1000, v);
             }
             // v pokoji sa strážca prebúdza zriedkavejšie
             let pokoj = teplota.unwrap_or(0.0) < regulator.profil().ciel - 10.0;
@@ -730,13 +746,157 @@ pub fn spusti() {
         }
         let nove_meranie = meranie_karty != zobrazene_meranie;
         let pamat_vysledok = test_pamate.lock().ok().and_then(|g| *g);
-        let ine = (eee.stav(), kmsg.posledne(2), pamat_vysledok, siet_chyby.clone());
+        // v skúške sa počká aj na koniec merania karty (najviac 60 s)
+        let meranie_bezi =
+            matches!(meranie_karty, MeranieKarty::Caka | MeranieKarty::Bezi(_)) && !merana_karta.is_empty();
+        // aj na skúšku pamäte (R120)
+        let pamat_bezi = pamat_vysledok.is_none();
+        // R122: samomeranie začne, keď je systém pripravený – skúška pamäte a meranie karty (ktoré procesor
+        // na chvíľu zaťažia) sú hotové, takže meranie teploty neovplyvnia
+        let vypnute = nastavenie.as_ref().is_some_and(|(_, n)| n.meranie == Some(false));
+        let merania_teraz = merania.as_mut().filter(|_| !vypnute);
+        if let Some(m) = merania_teraz {
+            if let Some(sprava) = m.dokonci() {
+                hlas(&format!("samomeranie: {sprava}"));
+            }
+            let up = uptime().unwrap_or(0.0);
+            if ((!pamat_bezi && !meranie_bezi && (skuska || up >= 10.0)) || up >= 120.0) && m.zacni(up as u64)
+            {
+                hlas(
+                    "samomeranie: začiatok – záznamy v 0., 5., 10. a 30. minúte, krivka teploty každých 30 s",
+                );
+                let u = regulator.uroven();
+                m.bod(teplota, u.vykon, u.takt_khz / 1000, vytazenie_teraz);
+            }
+        }
+        let stav_merania = merania.as_ref().filter(|_| !vypnute).map(|m| m.stav());
+        let ine = (eee.stav(), kmsg.posledne(2), pamat_vysledok, siet_chyby.clone(), stav_merania);
         let nove_ine = zobrazene_ine.as_ref() != Some(&ine);
         let bezi_s = uptime().unwrap_or(0.0) as u64;
         let novy_cas = Some(bezi_s) != zobrazeny_cas;
         let n = nastavenie.as_ref().map(|(_, n)| n);
         let jazyk = Jazyk::z_kodu(n.and_then(|n| n.jazyk.as_deref()));
         let vsetko = zobrazene != Some(stav) || zmena_periferii || nove_meranie || nove_ine;
+        let postav_stav = || Stav {
+            model: &model,
+            meno: n.and_then(|n| n.meno.as_deref()),
+            teplota,
+            ciel: profil.ciel,
+            strop: profil.strop,
+            vykon: regulator.uroven().vykon,
+            podpatie: supis.podpatie,
+            podpatie_bolo,
+            supis: &supis,
+            pripravene_s: pripravene,
+            verzia: crate::VERZIA,
+            bezi_s,
+            meranie_karty: &meranie_karty,
+            merana_karta: &merana_karta,
+            poda: &poda,
+            zram_mb,
+            strazny_casovac: strazny.is_some(),
+            eee: ine.0,
+            hlasenia: &ine.1,
+            test_pamate: ine.2,
+            siet_chyby: &ine.3,
+            samomeranie: ine.4.as_ref(),
+        };
+        // R122: záznam samomerania – hlavná slučka len odčíta, čo už má; snímku stlačí a zapíše vlákno s
+        // najnižšou prioritou
+        if let Some(m) = merania.as_mut().filter(|_| !vypnute)
+            && let Some(uloha) = m.na_rade()
+        {
+            let p = match uloha {
+                zaznam::Uloha::Zaznam(minuta) => {
+                    // bod krivky v tejto minúte, ak ho krok strážcu ešte nezapísal (prebudenie udalosťou)
+                    let u = regulator.uroven();
+                    m.bod(teplota, u.vykon, u.takt_khz / 1000, vytazenie_teraz);
+                    let st = postav_stav();
+                    // obraz: presne to, čo je na obrazovke; bez obrazovky (Tanix) sa nakreslí 1280×720
+                    let (platno, opis) = match displej.as_ref().and_then(|d| d.predosle.clone()) {
+                        Some(p) => (Some(p), obrazovka::nakresli_s_opisom(&pismo, 320, 240, &st, jazyk).1),
+                        None => {
+                            let (p, o) = obrazovka::nakresli_s_opisom(&pismo, 1280, 720, &st, jazyk);
+                            (Some(p), o)
+                        }
+                    };
+                    let posledna = minuta == *samomeranie::MILNIKY_MIN.last().unwrap_or(&30);
+                    let mut text = format!("{}{NL}", "═".repeat(66));
+                    text +=
+                        &format!("SKLENÍK – samomeranie č. {ZNACKA_PORADIA} · záznam {minuta}. minúty{NL}");
+                    text += &format!(
+                        "zariadenie: {model} · meno: {} · verzia SKLENÍKA {}{NL}",
+                        st.meno.unwrap_or("–"),
+                        crate::VERZIA
+                    );
+                    text += &format!("zapísané na: {ZNACKA_NOSICA}{NL}");
+                    text += &format!(
+                        "čas: {} od zapnutia · {minuta}. minúta merania (začiatok pri „beží {}“){NL}",
+                        samomeranie::cas(bezi_s),
+                        samomeranie::cas(m.zaciatok_s().unwrap_or(0))
+                    );
+                    text += &nadpis("OBRAZOVKA (všetky riadky)");
+                    for r in &opis {
+                        text += &format!("  {r}{NL}");
+                    }
+                    text += &nadpis("STRÁŽCA TEPLOTY");
+                    text += &format!(
+                        "  teplota {} · cieľ {:.0} °C, strop {:.0} °C · úroveň {}/{} · jadrá {} · strop taktu {} MHz · výkon {:.0} % · vyťaženie {}{NL}",
+                        teplota.map_or("–".into(), |t| format!("{t:.1} °C")),
+                        profil.ciel,
+                        profil.strop,
+                        regulator.index() + 1,
+                        regulator.pocet_urovni(),
+                        u.jadra,
+                        u.takt_khz / 1000,
+                        u.vykon * 100.0,
+                        vytazenie_teraz.map_or("–".into(), |v| format!("{:.0} %", v * 100.0)),
+                    );
+                    text += &format!("  {}{NL}", rozpoznanie(&model, &poda, profil));
+                    text += &format!("  {}{NL}  SÚPIS – {}{NL}", poda.riadok(), supis.riadok());
+                    let mut dovetok = nadpis(if minuta == 0 {
+                        "VAROVANIA A CHYBY JADRA OD ŠTARTU"
+                    } else {
+                        "NOVÉ VAROVANIA A CHYBY JADRA"
+                    });
+                    kmsg.citaj();
+                    let varovania = kmsg.nenahlasene();
+                    if varovania.is_empty() {
+                        dovetok += &format!("  žiadne{NL}");
+                    }
+                    for v in varovania {
+                        dovetok += &format!("  {v}{NL}");
+                    }
+                    if posledna {
+                        dovetok += &nadpis("KRIVKA TEPLOTY (každých 30 s)");
+                        dovetok += &samomeranie::tabulka(m.krivka());
+                        dovetok += &nadpis("SÚHRN MERANIA");
+                        dovetok += &samomeranie::suhrn(m.krivka());
+                    }
+                    zaznam::Priprava {
+                        text,
+                        dovetok,
+                        platno,
+                        identifikovat: minuta == 0,
+                        spustaci_disk: nastavenie
+                            .as_ref()
+                            .map(|(c, _)| c.trim_start_matches("/dev/").to_string()),
+                        predpona: predpona_merania.clone(),
+                    }
+                }
+                zaznam::Uloha::Opakovanie => zaznam::Priprava {
+                    text: String::new(),
+                    dovetok: String::new(),
+                    platno: None,
+                    identifikovat: false,
+                    spustaci_disk: nastavenie
+                        .as_ref()
+                        .map(|(c, _)| c.trim_start_matches("/dev/").to_string()),
+                    predpona: predpona_merania.clone(),
+                },
+            };
+            m.spusti(uloha, p);
+        }
         if vsetko || novy_cas {
             match displej.as_mut() {
                 // R109: zmenili sa len hodiny – prekreslí sa len ich obdĺžnik (zlomok práce)
@@ -747,29 +907,7 @@ pub fn spusti() {
                     }
                 }
                 Some(d) => {
-                    let stav = Stav {
-                        model: &model,
-                        meno: n.and_then(|n| n.meno.as_deref()),
-                        teplota,
-                        ciel: profil.ciel,
-                        strop: profil.strop,
-                        vykon: regulator.uroven().vykon,
-                        podpatie: supis.podpatie,
-                        podpatie_bolo,
-                        supis: &supis,
-                        pripravene_s: pripravene,
-                        verzia: crate::VERZIA,
-                        bezi_s,
-                        meranie_karty: &meranie_karty,
-                        merana_karta: &merana_karta,
-                        poda: &poda,
-                        zram_mb,
-                        strazny_casovac: strazny.is_some(),
-                        eee: ine.0,
-                        hlasenia: &ine.1,
-                        test_pamate: ine.2,
-                        siet_chyby: &ine.3,
-                    };
+                    let stav = postav_stav();
                     let platno = obrazovka::nakresli(&pismo, d.sirka, d.vyska, &stav, jazyk);
                     let riadkov = d.ukaz(platno);
                     if skuska {
@@ -799,14 +937,11 @@ pub fn spusti() {
             zobrazene_ine = Some(ine);
         }
         krokov += 1;
-        // v skúške sa počká aj na koniec merania karty (najviac 60 s)
-        let meranie_bezi =
-            matches!(meranie_karty, MeranieKarty::Caka | MeranieKarty::Bezi(_)) && !merana_karta.is_empty();
-        // aj na skúšku pamäte (R120)
-        let pamat_bezi = test_pamate.lock().map(|g| g.is_none()).unwrap_or(false);
+        // R122: v skúške sa počká aj na prvý záznam samomerania (zápis na kartu emulátora)
+        let zaznam_bezi = merania.as_ref().is_some_and(|m| !vypnute && !m.prvy_vybaveny());
         if skuska
             && krokov >= 3
-            && (!(meranie_bezi || pamat_bezi) || start.elapsed() > Duration::from_secs(60))
+            && (!(meranie_bezi || pamat_bezi || zaznam_bezi) || start.elapsed() > Duration::from_secs(150))
         {
             hlas(&format!(
                 "SKLENÍK pripravený (štart KLÍČA {:.2} s, verzia {})",
@@ -1128,6 +1263,11 @@ fn ozivi_usb() -> usize {
 struct Hlasenia {
     subor: Option<fs::File>,
     zoznam: Vec<String>,
+    /// Všetky varovania a chyby jadra od štartu (aj neškodné a z iných častí) – pre správu samomerania
+    /// (R122). Najviac 120: prvých 60 (štart) a najnovšie.
+    vsetky: Vec<String>,
+    /// Koľko z `vsetky` už bolo v správe samomerania.
+    nahlasene: usize,
     /// Najvyššia (najmenej závažná) úroveň, ktorá sa ešte ukáže: na RPi len chyby (ovládač USB RPi 1–3
     /// pri každom štarte píše neškodné varovanie), inde aj varovania.
     uroven: u32,
@@ -1138,7 +1278,13 @@ impl Hlasenia {
         use std::os::unix::fs::OpenOptionsExt;
         // O_NONBLOCK – čítanie skončí, keď sú prečítané všetky záznamy
         let subor = fs::OpenOptions::new().read(true).custom_flags(0o4000).open("/dev/kmsg").ok();
-        Hlasenia { subor, zoznam: Vec::new(), uroven: if model.contains("Raspberry Pi") { 3 } else { 4 } }
+        Hlasenia {
+            subor,
+            zoznam: Vec::new(),
+            vsetky: Vec::new(),
+            nahlasene: 0,
+            uroven: if model.contains("Raspberry Pi") { 3 } else { 4 },
+        }
     }
 
     fn citaj(&mut self) {
@@ -1149,7 +1295,17 @@ impl Hlasenia {
             match f.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if let Some(h) = dolezite_hlasenie(&String::from_utf8_lossy(&buf[..n]), self.uroven)
+                    let zaznam = String::from_utf8_lossy(&buf[..n]);
+                    if let Some(h) = varovanie_jadra(&zaznam) {
+                        if self.vsetky.len() >= 120 {
+                            self.vsetky.remove(60);
+                            if self.nahlasene > 60 {
+                                self.nahlasene -= 1;
+                            }
+                        }
+                        self.vsetky.push(h);
+                    }
+                    if let Some(h) = dolezite_hlasenie(&zaznam, self.uroven)
                         && self.zoznam.last() != Some(&h)
                     {
                         self.zoznam.push(h);
@@ -1168,6 +1324,60 @@ impl Hlasenia {
     fn posledne(&self, n: usize) -> Vec<String> {
         self.zoznam[self.zoznam.len().saturating_sub(n)..].to_vec()
     }
+
+    /// Varovania a chyby, ktoré ešte neboli v správe samomerania (R122).
+    fn nenahlasene(&mut self) -> Vec<String> {
+        let v = self.vsetky[self.nahlasene.min(self.vsetky.len())..].to_vec();
+        self.nahlasene = self.vsetky.len();
+        v
+    }
+}
+
+/// Rozpoznal KLÍČ zariadenie? (R122 – riadok správy samomerania)
+fn rozpoznanie(model: &str, poda: &Poda, profil: Profil) -> String {
+    let rodina = if model.contains("Raspberry Pi") {
+        Some("Raspberry Pi")
+    } else if model.contains("ODROID-C4") {
+        Some("Odroid C4")
+    } else if model.contains("X96") {
+        Some("X96 Max Plus (TV krabička)")
+    } else if model.contains("Tanix") || model.contains("TX68") {
+        Some("Tanix TX68 (TV krabička)")
+    } else {
+        None
+    };
+    let strazca = format!("profil strážcu: cieľ {:.0} °C, strop {:.0} °C", profil.ciel, profil.strop);
+    match (rodina, poda.cip.as_deref()) {
+        (Some(r), Some(c)) => format!("rozpoznanie: ✓ {r}, čip {c} – {strazca}"),
+        (Some(r), None) => format!("rozpoznanie: ⚠ {r}, ale čip nerozpoznaný – {strazca}"),
+        (None, c) => format!(
+            "rozpoznanie: ⚠ neznáme zariadenie (čip {}) – všeobecný {strazca}",
+            c.unwrap_or("nerozpoznaný")
+        ),
+    }
+}
+
+/// Neškodné hlásenia, ktoré sa na obrazovke neukazujú (v správe samomerania zostanú): napr. bezdrôtový
+/// prijímač klávesnice a myši má rozhranie bez prerušení, ktoré jadro preskočí – zariadenia fungujú.
+const NESKODNE: [&str; 1] = ["couldn't find an input interrupt endpoint"];
+
+/// Záznam `/dev/kmsg` s úrovňou varovanie alebo chyba – pre správu samomerania (čas od štartu, úroveň, text).
+fn varovanie_jadra(zaznam: &str) -> Option<String> {
+    let (hlavicka, text) = zaznam.split_once(';')?;
+    let mut h = hlavicka.split(',');
+    let uroven = h.next()?.parse::<u32>().ok()? & 7;
+    let cas_us = h.nth(1).and_then(|c| c.parse::<u64>().ok()).unwrap_or(0);
+    let text = text.lines().next()?.trim();
+    if uroven > 4 || text.starts_with("KLÍČ") {
+        return None;
+    }
+    let druh = match uroven {
+        0..=2 => "KRITICKÉ",
+        3 => "chyba",
+        _ => "varovanie",
+    };
+    let text: String = text.chars().take(200).collect();
+    Some(format!("[{:>8.3} s] {druh}: {text}", cas_us as f64 / 1e6))
 }
 
 /// Záznam `/dev/kmsg` (`úroveň,poradie,čas,príznaky;text`) – vráti text, ak je to varovanie alebo chyba
@@ -1176,7 +1386,7 @@ fn dolezite_hlasenie(zaznam: &str, najvyssia_uroven: u32) -> Option<String> {
     let (hlavicka, text) = zaznam.split_once(';')?;
     let uroven = hlavicka.split(',').next()?.parse::<u32>().ok()? & 7;
     let text = text.lines().next()?.trim();
-    if uroven > najvyssia_uroven || text.starts_with("KLÍČ") {
+    if uroven > najvyssia_uroven || text.starts_with("KLÍČ") || NESKODNE.iter().any(|n| text.contains(n)) {
         return None;
     }
     let maly = text.to_lowercase();
@@ -1257,6 +1467,15 @@ mod skusky {
         assert!(dolezite_hlasenie("11,4,4,-;usb 1-1: device descriptor read/64, error -71", 4).is_some());
         // na RPi len chyby: varovanie ovládača USB pri štarte sa neukazuje
         assert_eq!(dolezite_hlasenie("4,6,6,-;WARN::dwc_otg_hcd_init:1074: FIQ DMA bounce buffers", 3), None);
+        // neškodné hlásenie bezdrôtového prijímača sa na obrazovke neukáže, v správe áno (R122)
+        let prijimac = "3,7,1500000,-;usbhid 1-1.3:1.1: couldn't find an input interrupt endpoint";
+        assert_eq!(dolezite_hlasenie(prijimac, 4), None);
+        assert_eq!(
+            varovanie_jadra(prijimac).as_deref(),
+            Some("[   1.500 s] chyba: usbhid 1-1.3:1.1: couldn't find an input interrupt endpoint")
+        );
+        assert_eq!(varovanie_jadra("6,1,1,-;usb 1-1: new high-speed USB device"), None);
+        assert!(varovanie_jadra("4,2,2,-;random: warning").is_some_and(|t| t.contains("varovanie")));
         let dlhy = format!("3,5,5,-;usb {}", "x".repeat(200));
         assert_eq!(dolezite_hlasenie(&dlhy, 4).map(|t| t.chars().count()), Some(101));
     }

@@ -89,6 +89,10 @@ jobs:
               else echo "- ⚪ \`$riadok\` (pre tento procesor neplatí alebo ho jadro nastavilo inak)"; fi
             done
           } | tee -a "$GITHUB_STEP_SUMMARY"
+          # R122: bez FAT a znakových sád v jadre by samomeranie nemohlo zapisovať na kartu
+          for riadok in CONFIG_VFAT_FS=y CONFIG_NLS_CODEPAGE_437=y CONFIG_NLS_ISO8859_1=y; do
+            grep -qxF "$riadok" "jadro-vystup/jadro-${{ matrix.id }}.config" || { echo "❌ $riadok chýba v jadre (samomeranie R122)"; exit 1; }
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: jadro-${{ matrix.id }}
@@ -613,6 +617,21 @@ jobs:
             echo "✅ KLÍČ čaká na udalosti jadra (R113)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "❌ KLÍČ nesleduje udalosti jadra" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "udalosti" qemu-rpi3.log | head; chyby=$((chyby+1))
+          fi
+          # R122: samomeranie – KLÍČ zapísal záznam 0. minúty na kartu emulátora; priečinok MERANIA sa skopíruje
+          # z oddielu FAT (od 4 MiB) a správa aj snímka PNG sa overia nezávisle (obrázok sa neuchováva)
+          if grep -q "KLÍČ: samomeranie: záznam 0. minúty zapísaný na SD karta (mmcblk0p1)" qemu-rpi3.log; then
+            echo "✅ $(grep -o 'KLÍČ: samomeranie: záznam 0. minúty zapísaný.*' qemu-rpi3.log | head -1) (R122)" | tee -a "$GITHUB_STEP_SUMMARY"
+            rozmer=$(grep -o "obrazovka: [0-9]*×[0-9]*" qemu-rpi3.log | head -1 | grep -o "[0-9]*×[0-9]*")
+            rm -rf meranie
+            if MTOOLS_SKIP_CHECK=1 mcopy -s -i karta.img@@4194304 ::MERANIA meranie \
+              && python3 nastroje/kontrola_merania.py meranie "${rozmer%×*}" "${rozmer#*×}" | tee -a "$GITHUB_STEP_SUMMARY"; then :
+            else
+              echo "❌ samomeranie – súbory na karte nie sú v poriadku" | tee -a "$GITHUB_STEP_SUMMARY"; chyby=$((chyby+1))
+            fi
+            rm -rf meranie
+          else
+            echo "❌ samomeranie nezapísalo záznam na kartu" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "samomeranie" qemu-rpi3.log | head; chyby=$((chyby+1))
           fi
           if grep -q "KLÍČ: karta mmcblk0: čítanie" qemu-rpi3.log; then
             echo "✅ KLÍČ zmeral rýchlosť karty: $(grep -o 'karta mmcblk0: čítanie.*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"

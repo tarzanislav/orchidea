@@ -2,7 +2,8 @@
 //!
 //! Beží ako PID 1 na Raspberry Pi: pripojí systémové súborové systémy, zistí model, spíše periférie a zapne
 //! sieť, spustí tepelného strážcu, ukáže stav na obrazovke a sériovej linke a stará sa o procesy. Celý systém beží z pamäte,
-//! karta sa po štarte takmer nepoužíva. Na iných systémoch KLÍČ nič nerobí.
+//! karta sa po štarte takmer nepoužíva – len samomeranie (R122) na ňu štyrikrát zapíše výsledky skúšky.
+//! Na iných systémoch KLÍČ nič nerobí.
 
 #![deny(unsafe_code)]
 
@@ -30,10 +31,16 @@ mod test_pamate;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod poda;
 
+// samomeranie (R122) – mená súborov, poradie, krivka teploty, identifikácia; skúša sa na každom systéme
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod samomeranie;
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 mod sys;
+#[cfg(target_os = "linux")]
+mod zaznam;
 
 /// Verzia SKLENÍKA (dátum a odtlačok zostavenia z CI) – na obrazovke, aby bolo vidieť, ktorá karta beží.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]

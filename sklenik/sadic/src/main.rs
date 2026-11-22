@@ -33,7 +33,7 @@ const POMOC: &str = "SADIČ – zapisovač obrazov SKLENÍKA
   sadic priprav <obraz.img> [nastavenie]         zapíše nastavenie priamo do súboru obrazu
   sadic skusobny-obraz <súbor.img> [MB]          malý obraz na skúšky
 
-  nastavenie: meno=… wifi=… wifi_heslo=… jazyk=…   (heslo sa neukladá, len kľúč WPA)
+  nastavenie: meno=… wifi=… wifi_heslo=… jazyk=… meranie=ano/nie   (heslo sa neukladá, len kľúč WPA)
   --potvrdzujem <disk>   potvrdenie bez otázky (napr. v skriptoch)";
 
 /// Chyba s návratovým kódom: 1 = chyba, 2 = zápis odmietnutý poistkou.

@@ -7,6 +7,7 @@
 use crate::periferie::{DruhVstupu, Supis};
 use crate::poda::Poda;
 use orchidea_pismo::{Farba, Pismo, Platno};
+use std::cell::RefCell;
 
 const POZADIE: Farba = 0x0F1C15;
 const CIARA: Farba = 0x2A4535;
@@ -102,6 +103,23 @@ pub struct Stav<'a> {
     pub test_pamate: Option<Result<usize, usize>>,
     /// Sieťové rozhrania, ktoré sa nedali zapnúť – čip siete neodpovedá (R120).
     pub siet_chyby: &'a [String],
+    /// Samomeranie (R122) – `None`, ak je vypnuté.
+    pub samomeranie: Option<&'a Samomeranie>,
+}
+
+/// Samomeranie (R122) – čo ukazuje riadok „Meranie“.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Samomeranie {
+    /// Čaká sa, kým bude systém pripravený (skúška pamäte, meranie karty).
+    Pripravuje,
+    /// Beží: záznamy (minúta, podaril sa zápis?), ďalší záznam pri `pri_s` sekundách hodín „beží“
+    /// a poradové číslo merania (známe po prvom zápise). Text sa mení len pri zázname – žiadne prekresľovanie
+    /// celej obrazovky každú minútu, ktoré by meranie teploty ovplyvnilo.
+    Bezi { zaznamy: Vec<(u32, bool)>, pri_s: u64, poradie: Option<u32> },
+    /// Všetko je zapísané: poradové číslo a nosič (napr. „SD karta“).
+    Hotove { poradie: u32, nosic: String },
+    /// Meranie skončilo, ale zápis sa nepodaril – skúša sa znova; dôvod.
+    Nezapisane(String),
 }
 
 /// Úsporný režim Ethernetu (EEE).
@@ -236,6 +254,19 @@ fn velkost_disku(bajtov: u64, j: Jazyk) -> String {
 
 /// Nakreslí stavovú obrazovku v rozlíšení `sirka` × `vyska`.
 pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -> Platno {
+    nakresli_s_opisom(pismo, sirka, vyska, s, j).0
+}
+
+/// Nakreslí stavovú obrazovku a vráti aj jej text po riadkoch – pre správu samomerania (R122). Text obsahuje
+/// všetky riadky, aj tie, ktoré sa na malú obrazovku nezmestili.
+pub fn nakresli_s_opisom(
+    pismo: &Pismo,
+    sirka: usize,
+    vyska: usize,
+    s: &Stav,
+    j: Jazyk,
+) -> (Platno, Vec<String>) {
+    let opis = RefCell::new(Vec::new());
     let mut p = Platno::nove(sirka, vyska, POZADIE);
     let r = Rozmery::pre(sirka, vyska);
     let Rozmery { v, h, m, mv, pravy } = r;
@@ -248,6 +279,7 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     p.text(pismo, &model, pravy - w, y, 0.8 * v, h * 0.8, TLMENY);
     // verzia karty pod modelom – aby bolo hneď vidieť, ktorá karta beží
     let verzia = format!("{} {}", j.t("verzia", "verze", "version"), s.verzia);
+    opis.borrow_mut().push(format!("SKLENÍK · {} · {verzia} · {}", s.model, hodiny_text(s.bezi_s, j)));
     let wv = pismo.sirka(&verzia, 0.65 * v, h * 0.7);
     p.text(pismo, &verzia, pravy - wv, y + 1.2 * v, 0.65 * v, h * 0.7, TLMENY);
     // hodiny od zapnutia – každú sekundu sa prekreslí len ich obdĺžnik (R109)
@@ -260,6 +292,7 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     y += 3.0 * v;
     match s.meno {
         Some(meno) => {
+            opis.borrow_mut().push(format!("{}: {meno}", j.t("meno", "jméno", "name")));
             let (velkost, hrubka) = zmesti(pismo, meno, sirka_mena, 2.2 * v, v * 0.16, 0.5);
             let meno = pismo.skrat(meno, sirka_mena, velkost, hrubka);
             p.text(pismo, &meno, m, y, velkost, hrubka, TEXT);
@@ -270,6 +303,7 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
                 "bez jména – jméno nastavíte SADIČEM",
                 "no name – set it with SADIČ",
             );
+            opis.borrow_mut().push(t.to_string());
             let (velkost, hrubka) = zmesti(pismo, t, sirka_mena, v, h, 0.6);
             let t = pismo.skrat(t, sirka_mena, velkost, hrubka);
             p.text(pismo, &t, m, y - 0.6 * v, velkost, hrubka, TLMENY);
@@ -291,17 +325,25 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         j.t("Procesor", "Procesor", "Processor"),
         j.t("Pamäť", "Paměť", "Memory"),
         j.t("Jadro", "Jádro", "Kernel"),
+        j.t("Meranie", "Měření", "Self-test"),
     ];
     let stlpec = m + popisy.iter().map(|t| pismo.sirka(t, v, h)).fold(0.0, f32::max) + 1.5 * v;
     // riadkov je podľa počtu sietí a úložísk – rozostup sa prispôsobí, aby sa zmestili všetky
     let hlasenia = s.hlasenia.len().min(2);
-    let riadkov = 8 + s.supis.siet.len().clamp(1, 2) + s.supis.ulozisko.len().clamp(1, 2) + hlasenia;
+    let riadkov = 8
+        + s.supis.siet.len().clamp(1, 2)
+        + s.supis.ulozisko.len().clamp(1, 2)
+        + hlasenia
+        + usize::from(s.samomeranie.is_some());
     // posledný riadok musí ostať nad pätou (tri riadky malého písma)
     let spodok = vyska as f32 - mv - 4.0 * v;
     let volne = spodok - (y + 0.4 * v);
     let krok = (volne / riadkov as f32).clamp(1.3 * v, 1.8 * v);
     // dlhý riadok sa najprv zmenší (najviac na 70 %), až potom skráti – nič dôležité sa neodreže (R116)
     let riadok = |p: &mut Platno, y: &mut f32, popis: &str, casti: &[(&str, Farba)]| {
+        // text pre správu (R122) – zapíše sa aj riadok, ktorý sa už na obrazovku nezmestí
+        let text: Vec<&str> = casti.iter().map(|(t, _)| t.trim()).filter(|t| !t.is_empty()).collect();
+        opis.borrow_mut().push(format!("  {popis:<11} {}", text.join(" ")));
         *y += krok;
         if *y > spodok + 0.5 {
             return;
@@ -341,6 +383,12 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         popisy[0],
         &[(&teplota.0, TEXT), ("–", TLMENY), (teplota.1, teplota.2), ("·", TLMENY), (&vykon, TLMENY)],
     );
+    // R122: samomeranie hneď pod teplotou – je to to, na čo sa pri skúške čaká
+    if let Some(m) = s.samomeranie {
+        let casti = riadok_merania(m, j);
+        let casti: Vec<(&str, Farba)> = casti.iter().map(|(t, f)| (t.as_str(), *f)).collect();
+        riadok(&mut p, &mut y, popisy[11], &casti);
+    }
     let napajanie = match (s.podpatie, s.podpatie_bolo) {
         (Some(true), _) => (
             j.t(
@@ -605,15 +653,30 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         riadok(&mut p, &mut y, if i == 0 { popisy[10] } else { "" }, &[(hlasenie, JANTAROVA)]);
     }
 
-    // päta
-    let paticka = j.t(
-        "Systém beží z pamäte – napájanie môžete kedykoľvek odpojiť.",
-        "Systém běží z paměti – napájení můžete kdykoli odpojit.",
-        "The system runs from memory – you can unplug the power at any time.",
-    );
+    // päta – počas samomerania (R122) sa napájanie nemá odpájať, kým sa výsledky nezapíšu na kartu
+    let meranie_bezi = s.samomeranie.is_some_and(|m| !matches!(m, Samomeranie::Hotove { .. }));
+    let (paticka, farba_paticky) = if meranie_bezi {
+        (
+            j.t(
+                "Prebieha meranie – napájanie odpojte až po nápise HOTOVÉ.",
+                "Probíhá měření – napájení odpojte až po nápisu HOTOVO.",
+                "Self-test running – unplug the power only after DONE.",
+            ),
+            JANTAROVA,
+        )
+    } else {
+        (
+            j.t(
+                "Systém beží z pamäte – napájanie môžete kedykoľvek odpojiť.",
+                "Systém běží z paměti – napájení můžete kdykoli odpojit.",
+                "The system runs from memory – you can unplug the power at any time.",
+            ),
+            TLMENY,
+        )
+    };
     let maly = 0.75 * v;
     let yp = vyska as f32 - mv;
-    p.text(pismo, &pismo.skrat(paticka, pravy - m, maly, h * 0.8), m, yp, maly, h * 0.8, TLMENY);
+    p.text(pismo, &pismo.skrat(paticka, pravy - m, maly, h * 0.8), m, yp, maly, h * 0.8, farba_paticky);
     let co_dalej = j.t(
         "SKLENÍK beží správne. Programy ORCHIDEA pribudnú v ďalšej verzii.",
         "SKLENÍK běží správně. Programy ORCHIDEA přibudou v další verzi.",
@@ -647,7 +710,68 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
         info += &format!(" · {} ✓", j.t("strážny časovač", "hlídací časovač", "watchdog"));
     }
     p.text(pismo, &pismo.skrat(&info, pravy - m, maly, h * 0.8), m, yp - 1.5 * maly, maly, h * 0.8, TLMENY);
-    p
+    let mut opis = opis.into_inner();
+    opis.extend([co_dalej.to_string(), info, paticka.to_string()]);
+    (p, opis)
+}
+
+/// Časti riadku „Meranie“ (R122) s farbami.
+fn riadok_merania(m: &Samomeranie, j: Jazyk) -> Vec<(String, Farba)> {
+    match m {
+        Samomeranie::Pripravuje => vec![(
+            j.t(
+                "začne, keď bude systém pripravený…",
+                "začne, až bude systém připraven…",
+                "starts when the system is ready…",
+            )
+            .into(),
+            TLMENY,
+        )],
+        Samomeranie::Bezi { zaznamy, pri_s, poradie } => {
+            let mut v = Vec::new();
+            if let Some(c) = poradie {
+                v.push((format!("č. {c:02} ·"), TEXT));
+            }
+            for &minuta in &crate::samomeranie::MILNIKY_MIN {
+                let (znak, farba) = match zaznamy.iter().find(|z| z.0 == minuta) {
+                    Some((_, true)) => ("✓", ZELENA),
+                    Some((_, false)) => ("✗", JANTAROVA),
+                    None => ("…", TLMENY),
+                };
+                v.push((format!("{minuta} {znak}"), farba));
+            }
+            // písmo STONKA nemá úvodzovky – čas sa píše ako hodiny vpravo hore („beží 12:05“)
+            v.push((
+                format!(
+                    "· {}: {}",
+                    j.t("ďalší záznam", "další záznam", "next record"),
+                    hodiny_text(*pri_s, j)
+                ),
+                TLMENY,
+            ));
+            v
+        }
+        Samomeranie::Hotove { poradie, nosic } => vec![
+            (
+                j.t(
+                    "HOTOVÉ – kartu môžete vybrať",
+                    "HOTOVO – kartu můžete vyjmout",
+                    "DONE – you can remove the card",
+                )
+                .into(),
+                ZELENA,
+            ),
+            (format!("· č. {poradie:02} · {nosic}"), TLMENY),
+        ],
+        Samomeranie::Nezapisane(dovod) => vec![
+            (format!("{} {dovod}", j.t("nedá sa zapísať:", "nelze zapsat:", "cannot write:")), CERVENA),
+            (
+                j.t("· zasuňte USB kľúč (FAT32)", "· zasuňte USB disk (FAT32)", "· insert a FAT32 USB stick")
+                    .into(),
+                JANTAROVA,
+            ),
+        ],
+    }
 }
 
 /// Uloženie bodu v pamäti obrazovky (z popisu jadra `fb_var_screeninfo`).
@@ -751,6 +875,7 @@ mod skusky {
             hlasenia: &[],
             test_pamate: Some(Ok(64)),
             siet_chyby: &[],
+            samomeranie: None,
             vykon: 1.0,
             podpatie: Some(false),
             podpatie_bolo: false,
@@ -852,6 +977,51 @@ mod skusky {
         assert_eq!(zmesti(&pismo, "krátky", 1000.0, 20.0, 2.0, 0.7), (20.0, 2.0));
         let (v, _) = zmesti(&pismo, "veľmi dlhý text, ktorý sa nezmestí", 50.0, 20.0, 2.0, 0.7);
         assert_eq!(v, 14.0, "najviac na 70 %");
+    }
+
+    #[test]
+    fn samomeranie_na_obrazovke_a_v_opise() {
+        // R122: riadok „Meranie“, päta počas merania a textový opis všetkých riadkov pre správu
+        let pismo = Pismo::stonka();
+        let s = supis();
+        let mut st = stav(&s, Some(45.0));
+        let (_, opis) = nakresli_s_opisom(&pismo, 1920, 1080, &st, Jazyk::Sk);
+        assert!(
+            opis[0].contains("Raspberry Pi 3 Model B Plus Rev 1.3") && opis[0].contains("f26272c"),
+            "{opis:?}"
+        );
+        assert!(opis.iter().any(|r| r.contains("Teplota") && r.contains("45,0 °C – chladné")), "{opis:?}");
+        assert!(opis.iter().any(|r| r.contains("Pamäť") && r.contains("overená ✓")), "{opis:?}");
+        assert!(!opis.iter().any(|r| r.contains("Meranie")));
+        assert!(opis.last().is_some_and(|r| r.contains("kedykoľvek")));
+        let bezi = Samomeranie::Bezi { zaznamy: vec![(0, true), (5, false)], pri_s: 725, poradie: Some(3) };
+        st.samomeranie = Some(&bezi);
+        let (p, opis) = nakresli_s_opisom(&pismo, 1920, 1080, &st, Jazyk::Sk);
+        let r = opis.iter().find(|r| r.contains("Meranie")).cloned().unwrap_or_default();
+        for cast in ["č. 03", "0 ✓", "5 ✗", "10 …", "30 …", "ďalší záznam: beží 12:05"] {
+            assert!(r.contains(cast), "chýba „{cast}“: {r}");
+        }
+        assert!(opis.last().is_some_and(|r| r.contains("až po nápise HOTOVÉ")));
+        assert!(p.body.contains(&JANTAROVA));
+        let hotove = Samomeranie::Hotove { poradie: 3, nosic: "SD karta".into() };
+        st.samomeranie = Some(&hotove);
+        let (_, opis) = nakresli_s_opisom(&pismo, 1920, 1080, &st, Jazyk::Sk);
+        assert!(
+            opis.iter().any(|r| r.contains("HOTOVÉ – kartu môžete vybrať · č. 03 · SD karta")),
+            "{opis:?}"
+        );
+        assert!(opis.last().is_some_and(|r| r.contains("kedykoľvek")));
+        // aj na malej obrazovke je kresba v poriadku a opis má aj riadky, ktoré sa na ňu nezmestili
+        let chyba = Samomeranie::Nezapisane("karta nie je".into());
+        st.samomeranie = Some(&chyba);
+        for (w, h) in [(320, 240), (800, 480)] {
+            for j in [Jazyk::Sk, Jazyk::Cs, Jazyk::En] {
+                let (p, o) = nakresli_s_opisom(&pismo, w, h, &st, j);
+                assert!((0.01..0.4).contains(&podiel_textu(&p)), "{w}×{h}");
+                assert!(o.iter().any(|r| r.contains("USB")) && o.len() >= 16, "{o:?}");
+                assert_eq!(p, nakresli(&pismo, w, h, &st, j));
+            }
+        }
     }
 
     #[test]

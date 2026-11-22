@@ -16,6 +16,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// Uloženie plátna do obrázka PNG (vlastný kód, R122).
+pub mod png;
+
 /// Výška malého písmena (k výške veľkého písmena 1).
 pub const VYSKA_MALEHO: f32 = 0.7;
 /// Najvyšší bod znakov vrátane diakritiky nad veľkými písmenami.
@@ -131,6 +134,8 @@ const ZNAKY: &[(char, f32, &str)] = &[
     ('#', 0.66, "M 0.2 0 L 0.3 1 M 0.42 0 L 0.52 1 M 0.02 0.33 L 0.62 0.33 M 0.06 0.67 L 0.66 0.67"),
     ('…', 0.56, "M 0 0 L 0 0.005 M 0.28 0 L 0.28 0.005 M 0.56 0 L 0.56 0.005"),
     ('✓', 0.62, "M 0 0.36 L 0.22 0.08 L 0.62 0.72"),
+    // krížik (zápis sa nepodaril) – mierne nepravidelný, aby sa nepoplietol so znamienkom ×
+    ('✗', 0.56, "M 0.04 0.66 L 0.54 0.04 M 0.06 0.06 L 0.5 0.70"),
 ];
 
 /// Znamienka diakritiky (súradnice voči kotve znamienka).
@@ -476,7 +481,7 @@ mod skusky {
     use super::*;
 
     const ABECEDA: &str = "AÁÄBCČDĎEÉĚFGHIÍJKLĹĽMNŇOÓÔÖPQRŔŘSŠTŤUÚŮÜVWXYÝZŽ\
-        aáäbcčdďeéěfghiíjklĺľmnňoóôöpqrŕřsštťuúůüvwxyýzž0123456789.,:;-–+=/()[]<>%°!?\"'_×·•*#…✓";
+        aáäbcčdďeéěfghiíjklĺľmnňoóôöpqrŕřsštťuúůüvwxyýzž0123456789.,:;-–+=/()[]<>%°!?\"'_×·•*#…✓✗";
 
     fn plocha(p: &Platno, pozadie: Farba) -> usize {
         p.body.iter().filter(|&&b| b != pozadie).count()
