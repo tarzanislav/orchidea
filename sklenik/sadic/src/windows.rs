@@ -241,6 +241,21 @@ impl Drop for Zarovnany {
     }
 }
 
+/// Zopakuje operáciu, kým disk hlási, že nie je pripravený (ERROR_NOT_READY 21, ERROR_IO_DEVICE 1117) –
+/// najviac asi 10 s.
+fn znova(mut f: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    let mut pokus = 0;
+    loop {
+        match f() {
+            Err(e) if pokus < 40 && matches!(e.raw_os_error(), Some(21) | Some(1117)) => {
+                pokus += 1;
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            r => return r,
+        }
+    }
+}
+
 /// Otvorený fyzický disk. Pri zápise drží uzamknuté a odpojené všetky jeho zväzky.
 pub struct Disk {
     h: Rukovat,
@@ -289,13 +304,19 @@ impl Disk {
         Ok(())
     }
 
-    /// Zapíše dáta od posunu (dĺžka sa doplní nulami na celé sektory).
+    /// Zapíše dáta od posunu (dĺžka sa doplní nulami na celé sektory). Ak Windows práve znovu číta tabuľku
+    /// oddielov (napr. hneď po predchádzajúcom zápise), disk chvíľu hlási „nie je pripravené“ – vtedy sa
+    /// pokus zopakuje.
     pub fn zapis(&mut self, posun: u64, data: &[u8]) -> io::Result<()> {
         let s = self.sektor as usize;
         let n = data.len().div_ceil(s) * s;
         let kus = self.buf.kus(n);
         kus[..data.len()].copy_from_slice(data);
         kus[data.len()..].fill(0);
+        znova(|| self.zapis_buf(posun, n))
+    }
+
+    fn zapis_buf(&mut self, posun: u64, n: usize) -> io::Result<()> {
         self.posun(posun)?;
         let mut zapisane = 0u32;
         // SAFETY: buffer je zarovnaný a má n bajtov.
@@ -314,6 +335,13 @@ impl Disk {
     pub fn citaj(&mut self, posun: u64, ciel: &mut [u8]) -> io::Result<()> {
         let s = self.sektor as usize;
         let n = ciel.len().div_ceil(s) * s;
+        znova(|| self.citaj_buf(posun, n, ciel.len()))?;
+        let len = ciel.len();
+        ciel.copy_from_slice(&self.buf.kus(n)[..len]);
+        Ok(())
+    }
+
+    fn citaj_buf(&mut self, posun: u64, n: usize, treba: usize) -> io::Result<()> {
         self.posun(posun)?;
         let mut precitane = 0u32;
         // SAFETY: buffer je zarovnaný a má aspoň n bajtov.
@@ -322,11 +350,9 @@ impl Disk {
         {
             return Err(io::Error::last_os_error());
         }
-        if (precitane as usize) < ciel.len() {
-            return Err(io::Error::other(format!("prečítaných {precitane} z {} bajtov", ciel.len())));
+        if (precitane as usize) < treba {
+            return Err(io::Error::other(format!("prečítaných {precitane} z {treba} bajtov")));
         }
-        let len = ciel.len();
-        ciel.copy_from_slice(&self.buf.kus(n)[..len]);
         Ok(())
     }
 
