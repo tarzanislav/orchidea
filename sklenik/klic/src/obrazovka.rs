@@ -98,6 +98,10 @@ pub struct Stav<'a> {
     pub eee: Option<Eee>,
     /// Hlásenia jadra o chybách zariadení (karta, USB, obrazovka) – diagnostika (R115).
     pub hlasenia: &'a [String],
+    /// Skúška pamäte RAM (R120): `None` – beží, `Ok(MB)` – v poriadku, `Err(MB)` – chyba na danom MB.
+    pub test_pamate: Option<Result<usize, usize>>,
+    /// Sieťové rozhrania, ktoré sa nedali zapnúť – čip siete neodpovedá (R120).
+    pub siet_chyby: &'a [String],
 }
 
 /// Úsporný režim Ethernetu (EEE).
@@ -415,7 +419,20 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
     if s.poda.uzly_numa > 1 {
         doplnok += &format!("· NUMA {}", s.poda.uzly_numa);
     }
-    riadok(&mut p, &mut y, popisy[9], &[(&pamat, TEXT), (doplnok.trim_end(), TLMENY)]);
+    // R120: skúška pamäte pri štarte
+    let (overena, farba_pamate) = match s.test_pamate {
+        Some(Ok(_)) => (format!("· {} ✓", j.t("overená", "ověřena", "verified")), ZELENA),
+        Some(Err(m)) => {
+            (format!("· {} {m} MB", j.t("CHYBA PAMÄTE na", "CHYBA PAMĚTI na", "MEMORY ERROR at")), CERVENA)
+        }
+        None => (String::new(), TLMENY),
+    };
+    riadok(
+        &mut p,
+        &mut y,
+        popisy[9],
+        &[(&pamat, TEXT), (&overena, farba_pamate), (doplnok.trim_end(), TLMENY)],
+    );
 
     let obrazovka = s
         .supis
@@ -485,7 +502,19 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
             ),
             (false, Some(true)) => (j.t("kábel pripojený", "kabel připojen", "cable connected"), ZELENA),
             (false, Some(false)) => (j.t("bez kábla", "bez kabelu", "no cable"), TLMENY),
+            // R120: rozhranie sa nedalo zapnúť – čip siete (PHY) neodpovedá
+            (false, None) if s.siet_chyby.contains(&r.meno) => {
+                (j.t("čip siete neodpovedá", "čip sítě neodpovídá", "network chip not responding"), CERVENA)
+            }
             (false, None) => (j.t("vypnuté", "vypnuto", "off"), TLMENY),
+        };
+        // R120: dohodnutá rýchlosť – ukáže aj verziu dosky (X96 Max Plus: 1 Gb/s alebo 100 Mb/s)
+        let rychlost = match r.rychlost_mbs {
+            Some(v) if r.spojenie == Some(true) && v >= 1000 => {
+                format!("· {} Gb/s", j.cislo(v as f64 / 1000.0, 0))
+            }
+            Some(v) if r.spojenie == Some(true) => format!("· {v} Mb/s"),
+            _ => String::new(),
         };
         let meno = format!("{} –", r.meno);
         let eee = match (i, s.eee, r.spojenie) {
@@ -503,7 +532,7 @@ pub fn nakresli(pismo: &Pismo, sirka: usize, vyska: usize, s: &Stav, j: Jazyk) -
             &mut p,
             &mut y,
             if i == 0 { popisy[4] } else { "" },
-            &[(&meno, TEXT), (stav, farba), (eee, TLMENY)],
+            &[(&meno, TEXT), (stav, farba), (&rychlost, TEXT), (eee, TLMENY)],
         );
     }
 
@@ -677,6 +706,7 @@ mod skusky {
                 adresa: String::new(),
                 bezdrotove: false,
                 spojenie: Some(true),
+                rychlost_mbs: Some(1000),
             }],
             ulozisko: vec![Ulozisko {
                 druh: "SD".into(),
@@ -719,6 +749,8 @@ mod skusky {
             strazny_casovac: true,
             eee: Some(Eee::Aktivny),
             hlasenia: &[],
+            test_pamate: Some(Ok(64)),
+            siet_chyby: &[],
             vykon: 1.0,
             podpatie: Some(false),
             podpatie_bolo: false,

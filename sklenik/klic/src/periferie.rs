@@ -33,6 +33,8 @@ pub struct Rozhranie {
     pub bezdrotove: bool,
     /// Je pripojený kábel (alebo sieť)? `None` – rozhranie ešte nie je zapnuté.
     pub spojenie: Option<bool>,
+    /// Dohodnutá rýchlosť spojenia (Mb/s) – skúška súčiastok (R120): napr. X96 Max Plus 1000 alebo 100.
+    pub rychlost_mbs: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +211,11 @@ impl Supis {
                     "0" => Some(false),
                     _ => None,
                 }),
+                // jadro hlási -1 (alebo chybu), kým nie je spojenie
+                rychlost_mbs: citaj(r.join("speed"))
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .filter(|&v| v > 0)
+                    .map(|v| v as u32),
                 meno,
             });
         }
@@ -327,13 +334,14 @@ impl Supis {
                 .iter()
                 .map(|r| {
                     let druh = if r.bezdrotove { "Wi-Fi" } else { "kábel" };
+                    let rychlost = r.rychlost_mbs.map_or(String::new(), |v| format!(" {v} Mb/s"));
                     let stav = match (r.spojenie, r.bezdrotove) {
                         (Some(true), _) => "spojené",
                         (Some(false), false) => "kábel nepripojený",
                         (Some(false), true) => "bez siete",
                         (None, _) => "vypnuté",
                     };
-                    format!("{} {druh} {} – {stav}", r.meno, r.adresa)
+                    format!("{} {druh} {} – {stav}{rychlost}", r.meno, r.adresa)
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -472,6 +480,7 @@ mod skusky {
             .subor("sys/class/net/lo/address", "00:00:00:00:00:00")
             .subor("sys/class/net/eth0/address", "b8:27:eb:00:00:01")
             .subor("sys/class/net/eth0/carrier", "1")
+            .subor("sys/class/net/eth0/speed", "1000")
             .subor("sys/class/net/eth0/device/.x", "")
             .subor("sys/class/net/wlan0/device/.x", "")
             .subor("sys/class/net/sit0/address", "00:00:00:00")
@@ -517,6 +526,7 @@ mod skusky {
         assert_eq!(p.siet.len(), 2);
         assert_eq!(p.siet[0].meno, "eth0");
         assert_eq!(p.siet[0].spojenie, Some(true));
+        assert_eq!(p.siet[0].rychlost_mbs, Some(1000));
         assert!(!p.siet[0].bezdrotove);
         assert!(p.siet[1].bezdrotove);
         assert_eq!(p.siet[1].spojenie, None);

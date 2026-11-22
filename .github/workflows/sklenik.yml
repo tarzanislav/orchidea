@@ -431,6 +431,7 @@ jobs:
           echo "#### Jadro Allwinner H618 na procesore Cortex-A53 (nie celý TX68)" >> "$GITHUB_STEP_SUMMARY"
           grep "KLÍČ" qemu-h618.log | sed 's/^/    /' | tee -a "$GITHUB_STEP_SUMMARY"
           grep -q "SKLENÍK pripravený" qemu-h618.log || { tail -40 qemu-h618.log; exit 1; }
+          grep -q "KLÍČ: test pamäte: .* v poriadku" qemu-h618.log && echo "✅ $(grep -o 'KLÍČ: test pamäte: .*' qemu-h618.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY" || { echo "❌ test pamäte"; exit 1; }
           if grep -q "KLÍČ: bez obrazovky – stav na kontrolkách klávesnice" qemu-h618.log; then
             echo "✅ bez obrazovky hovorí SKLENÍK kontrolkami klávesnice (R119)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
@@ -602,6 +603,11 @@ jobs:
             echo "✅ $(grep -o 'KLÍČ: zram: .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "❌ KLÍČ nezapol zram" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "zram" qemu-rpi3.log | head; chyby=$((chyby+1))
+          fi
+          if grep -q "KLÍČ: test pamäte: .* v poriadku" qemu-rpi3.log; then
+            echo "✅ $(grep -o 'KLÍČ: test pamäte: .*' qemu-rpi3.log | head -1) (R120)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ test pamäte neprešiel" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "pamäte" qemu-rpi3.log | head; chyby=$((chyby+1))
           fi
           if grep -q "KLÍČ: udalosti jadra: sledované" qemu-rpi3.log; then
             echo "✅ KLÍČ čaká na udalosti jadra (R113)" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -160,7 +160,9 @@ fn pripoj_systemove() {
 }
 
 /// Zapne všetky sieťové rozhrania (ovládače sú v jadre, rozhrania však jadro necháva vypnuté).
-fn zapni_siet() {
+/// Zapne sieťové rozhrania. Vráti mená rozhraní, ktoré sa zapnúť nedali (čip siete neodpovedá – R120).
+fn zapni_siet() -> Vec<String> {
+    let mut chyby = Vec::new();
     for z in fs::read_dir("/sys/class/net").into_iter().flatten().flatten() {
         // lo a skutočné sieťové karty; virtuálne tunely jadra (sit0 …) sa nezapínajú
         if let Some(meno) = z.file_name().to_str()
@@ -169,10 +171,14 @@ fn zapni_siet() {
             match sys::zapni_rozhranie(meno) {
                 Ok(true) => hlas(&format!("sieť: rozhranie {meno} zapnuté")),
                 Ok(false) => {}
-                Err(e) => hlas(&format!("sieť: rozhranie {meno} sa nepodarilo zapnúť: {e}")),
+                Err(e) => {
+                    hlas(&format!("sieť: rozhranie {meno} sa nepodarilo zapnúť: {e} – čip siete neodpovedá"));
+                    chyby.push(meno.to_string());
+                }
             }
         }
     }
+    chyby
 }
 
 /// Grafická obrazovka (framebuffer jadra) – zapisujú sa len zmenené riadky.
@@ -462,9 +468,33 @@ pub fn spusti() {
     let model = citaj("/proc/device-tree/model").unwrap_or_else(|| "neznáme zariadenie".into());
     let mut poda = crate::poda::nacitaj(Path::new("/"));
     test_jadier(&mut poda);
-    if pid1 {
-        zapni_siet();
+    // R120: skúška pamäte vo vlastnom vlákne (zlomok sekundy) – výsledok sa ukáže, keď dobehne
+    let test_pamate: Arc<Mutex<Option<Result<usize, usize>>>> = Arc::new(Mutex::new(None));
+    {
+        let vysledok = test_pamate.clone();
+        let mb = crate::test_pamate::velkost_mb(poda.dostupna_kb);
+        std::thread::spawn(move || {
+            let r = match crate::test_pamate::otestuj(mb) {
+                Ok(t) => {
+                    hlas(&format!("test pamäte: {mb} MB v poriadku ({:.2} s)", t.as_secs_f64()));
+                    Ok(mb)
+                }
+                Err(c) => {
+                    hlas(&format!(
+                        "test pamäte: CHYBA na {} MB – zapísané {:#018x}, prečítané {:#018x}",
+                        c.bajt >> 20,
+                        c.ocakavane,
+                        c.precitane
+                    ));
+                    Err(c.bajt >> 20)
+                }
+            };
+            if let Ok(mut g) = vysledok.lock() {
+                *g = Some(r);
+            }
+        });
     }
+    let mut siet_chyby = if pid1 { zapni_siet() } else { Vec::new() };
     let mut supis = Supis::nacitaj(Path::new("/"));
     let mut podpatie_bolo = supis.podpatie == Some(true);
     let mut nastavenie = nacitaj_nastavenie(&supis);
@@ -521,7 +551,9 @@ pub fn spusti() {
 
     let mut zobrazene: Option<(i64, usize)> = None;
     let mut zobrazeny_cas: Option<u64> = None;
-    let mut zobrazene_ine: Option<(Option<Eee>, Vec<String>)> = None;
+    #[allow(clippy::type_complexity)]
+    let mut zobrazene_ine: Option<(Option<Eee>, Vec<String>, Option<Result<usize, usize>>, Vec<String>)> =
+        None;
     let mut krokov = 0u32;
     // R99: hardvérový strážny časovač – ak sa KLÍČ zasekne na 15 s, doska sa sama reštartuje
     // v emulátore QEMU sa časovač nespráva ako na doske (reštartuje hneď) – v skúške sa vynechá
@@ -559,6 +591,7 @@ pub fn spusti() {
     // R119: bez obrazovky (Tanix TX68 – jadro zatiaľ nemá HDMI pre H618) hovorí SKLENÍK kontrolkami klávesnice
     let kontrolky = Arc::new(Mutex::new(StavKontroliek {
         slepy: false,
+        porucha: false,
         teplota: None,
         ciel: profil.ciel,
         strop: profil.strop,
@@ -615,6 +648,8 @@ pub fn spusti() {
             }
             if let Ok(mut k) = kontrolky.lock() {
                 k.teplota = teplota;
+                k.porucha = !poda.chybne_jadra.is_empty()
+                    || matches!(test_pamate.lock().ok().and_then(|g| *g), Some(Err(_)));
                 k.slepy = pid1 && displej.is_none();
                 if k.slepy && !slepy_hlaseny {
                     hlas(
@@ -636,7 +671,7 @@ pub fn spusti() {
             let zmena = novy != supis;
             if zmena {
                 if pid1 && novy.siet.len() != supis.siet.len() {
-                    zapni_siet();
+                    siet_chyby = zapni_siet();
                 }
                 // obrazovka sa môže objaviť až po štarte (ovládač grafiky Odroidu) alebo zmeniť rozlíšenie
                 if !len_sledovanie && novy.obrazovky != supis.obrazovky {
@@ -694,7 +729,8 @@ pub fn spusti() {
             hlas(&format!("meranie karty stojí pri {mb} MB – karta neodpovedá"));
         }
         let nove_meranie = meranie_karty != zobrazene_meranie;
-        let ine = (eee.stav(), kmsg.posledne(2));
+        let pamat_vysledok = test_pamate.lock().ok().and_then(|g| *g);
+        let ine = (eee.stav(), kmsg.posledne(2), pamat_vysledok, siet_chyby.clone());
         let nove_ine = zobrazene_ine.as_ref() != Some(&ine);
         let bezi_s = uptime().unwrap_or(0.0) as u64;
         let novy_cas = Some(bezi_s) != zobrazeny_cas;
@@ -731,6 +767,8 @@ pub fn spusti() {
                         strazny_casovac: strazny.is_some(),
                         eee: ine.0,
                         hlasenia: &ine.1,
+                        test_pamate: ine.2,
+                        siet_chyby: &ine.3,
                     };
                     let platno = obrazovka::nakresli(&pismo, d.sirka, d.vyska, &stav, jazyk);
                     let riadkov = d.ukaz(platno);
@@ -764,7 +802,12 @@ pub fn spusti() {
         // v skúške sa počká aj na koniec merania karty (najviac 60 s)
         let meranie_bezi =
             matches!(meranie_karty, MeranieKarty::Caka | MeranieKarty::Bezi(_)) && !merana_karta.is_empty();
-        if skuska && krokov >= 3 && (!meranie_bezi || start.elapsed() > Duration::from_secs(60)) {
+        // aj na skúšku pamäte (R120)
+        let pamat_bezi = test_pamate.lock().map(|g| g.is_none()).unwrap_or(false);
+        if skuska
+            && krokov >= 3
+            && (!(meranie_bezi || pamat_bezi) || start.elapsed() > Duration::from_secs(60))
+        {
             hlas(&format!(
                 "SKLENÍK pripravený (štart KLÍČA {:.2} s, verzia {})",
                 cas_startu.as_secs_f64(),
@@ -809,6 +852,8 @@ pub fn spusti() {
 struct StavKontroliek {
     /// Doska nemá obrazovku – kontrolky hovoria.
     slepy: bool,
+    /// Porucha (chybné jadro alebo pamäť, R100/R120) – všetky tri kontrolky rýchlo blikajú.
+    porucha: bool,
     teplota: Option<f64>,
     ciel: f64,
     strop: f64,
@@ -874,8 +919,8 @@ fn spusti_kontrolky(stav: Arc<Mutex<StavKontroliek>>) {
         let mut posledna_teplota = Instant::now();
         let mut zhasnute = true;
         loop {
-            let (slepy, teplota, ciel, strop) = match stav.lock() {
-                Ok(s) => (s.slepy, s.teplota, s.ciel, s.strop),
+            let (slepy, porucha, teplota, ciel, strop) = match stav.lock() {
+                Ok(s) => (s.slepy, s.porucha, s.teplota, s.ciel, s.strop),
                 Err(_) => return,
             };
             let mut k = klavesnice_s_kontrolkami();
@@ -888,6 +933,15 @@ fn spusti_kontrolky(stav: Arc<Mutex<StavKontroliek>>) {
                 continue;
             }
             zhasnute = false;
+            // porucha: všetky tri kontrolky rýchlo blikajú (5 s), potom ďalej bežné hlásenia
+            if porucha {
+                for _ in 0..10 {
+                    nastav_kontrolky(&mut k, true, true, true);
+                    pauza(250);
+                    nastav_kontrolky(&mut k, false, false, false);
+                    pauza(250);
+                }
+            }
             let teple = teplota.is_some_and(|t| t >= ciel);
             let horuce = teplota.is_some_and(|t| t >= strop - 3.0);
             if let Some(t) = teplota
@@ -1126,8 +1180,24 @@ fn dolezite_hlasenie(zaznam: &str, najvyssia_uroven: u32) -> Option<String> {
         return None;
     }
     let maly = text.to_lowercase();
-    const SLOVA: [&str; 12] =
-        ["mmc", "sdhci", "usb", "hub", "dwc", "xhci", "hdmi", "drm", "edid", "regulator", "deferred", "phy"];
+    const SLOVA: [&str; 16] = [
+        "mmc",
+        "sdhci",
+        "usb",
+        "hub",
+        "dwc",
+        "xhci",
+        "hdmi",
+        "drm",
+        "edid",
+        "regulator",
+        "deferred",
+        "phy",
+        "stmmac",
+        "ethernet",
+        "mdio",
+        "eth0",
+    ];
     if !SLOVA.iter().any(|s| maly.contains(s)) {
         return None;
     }

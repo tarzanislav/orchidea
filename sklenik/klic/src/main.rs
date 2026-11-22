@@ -22,6 +22,10 @@ mod periferie;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod test_jadier;
 
+// skúška pamäte RAM pri štarte (R120)
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod test_pamate;
+
 // PÔDA – profil hardvéru zo súborov jadra; skúša sa na každom systéme na vymyslenom strome
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod poda;
