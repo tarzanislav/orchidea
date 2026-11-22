@@ -576,6 +576,11 @@ pub fn nakresli_s_opisom(
             Some(v) if r.spojenie == Some(true) => format!("· {v} Mb/s"),
             _ => String::new(),
         };
+        // čip siete (ovládač jadra) – na TV krabičkách býva iný, ako udáva výrobca
+        let rychlost = match &r.cip {
+            Some(c) => format!("{rychlost} · {}", c.split(" (").next().unwrap_or(c)),
+            None => rychlost,
+        };
         let meno = format!("{} –", r.meno);
         let eee = match (i, s.eee, r.spojenie) {
             (0, Some(Eee::Aktivny), Some(true)) => {
@@ -919,6 +924,7 @@ mod skusky {
                 bezdrotove: false,
                 spojenie: Some(true),
                 rychlost_mbs: Some(1000),
+                cip: None,
             }],
             ulozisko: vec![Ulozisko {
                 druh: "SD".into(),

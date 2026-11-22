@@ -35,6 +35,9 @@ pub struct Rozhranie {
     pub spojenie: Option<bool>,
     /// Dohodnutá rýchlosť spojenia (Mb/s) – skúška súčiastok (R120): napr. X96 Max Plus 1000 alebo 100.
     pub rychlost_mbs: Option<u32>,
+    /// Čip siete (PHY): meno ovládača v jadre a ID čipu, napr. „RTL8211F Gigabit Ethernet (0x001cc916)“ –
+    /// TV krabičky ho často menia aj pri rovnakom mene krabičky.
+    pub cip: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +219,18 @@ impl Supis {
                     .and_then(|v| v.parse::<i64>().ok())
                     .filter(|&v| v > 0)
                     .map(|v| v as u32),
+                cip: {
+                    let ovladac = fs::read_link(r.join("phydev/driver"))
+                        .ok()
+                        .and_then(|c| c.file_name().map(|n| n.to_string_lossy().into_owned()));
+                    let id = citaj(r.join("phydev/phy_id"));
+                    match (ovladac, id) {
+                        (Some(o), Some(i)) => Some(format!("{o} ({i})")),
+                        (Some(o), None) => Some(o),
+                        (None, Some(i)) => Some(format!("čip {i}")),
+                        (None, None) => None,
+                    }
+                },
                 meno,
             });
         }
@@ -335,6 +350,10 @@ impl Supis {
                 .map(|r| {
                     let druh = if r.bezdrotove { "Wi-Fi" } else { "kábel" };
                     let rychlost = r.rychlost_mbs.map_or(String::new(), |v| format!(" {v} Mb/s"));
+                    let rychlost = match &r.cip {
+                        Some(c) => format!("{rychlost}, čip {c}"),
+                        None => rychlost,
+                    };
                     let stav = match (r.spojenie, r.bezdrotove) {
                         (Some(true), _) => "spojené",
                         (Some(false), false) => "kábel nepripojený",

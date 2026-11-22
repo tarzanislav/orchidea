@@ -408,6 +408,29 @@ pub fn identifikacia() -> String {
             format!("obrazovka: {meno} {fb} (popis monitora EDID jadro nemá – obrazovku nastavil firmvér)"),
         );
     }
+    // čipy siete na zbernici MDIO (adresa, ID čipu, ovládač) – TV krabičky majú často iný čip, ako udáva
+    // výrobca; podľa toho sa nastaví popis hardvéru
+    if let Ok(z) = std::fs::read_dir("/sys/bus/mdio_bus/devices") {
+        let mut cipy: Vec<String> = z
+            .flatten()
+            .map(|d| {
+                let cesta = d.path();
+                let id = citaj(cesta.join("phy_id")).unwrap_or_else(|| "?".into());
+                let ovladac = std::fs::read_link(cesta.join("driver"))
+                    .ok()
+                    .and_then(|c| c.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| "bez ovládača".into());
+                format!("{} – ID {id}, {ovladac}", d.file_name().to_string_lossy())
+            })
+            .collect();
+        cipy.sort();
+        if cipy.is_empty() {
+            riadok(&mut t, "čip siete (MDIO): jadro nenašlo žiadny");
+        }
+        for c in cipy {
+            riadok(&mut t, format!("čip siete (MDIO): {c}"));
+        }
+    }
     // vstupné zariadenia podľa jadra
     if let Some(v) = citaj("/proc/bus/input/devices") {
         let mena: Vec<&str> = v
