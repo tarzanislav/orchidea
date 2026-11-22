@@ -36,8 +36,9 @@ with open(sys.argv[1], "rb") as f, open("oddiel.img", "wb") as o:
 EOF
 }
 
-echo "== 1. formátovanie (NTFS, FAT32, exFAT; MBR, GPT; malé aj veľké disky)"
+echo "== 1. formátovanie (NTFS, FAT32, exFAT, ext4/3/2; MBR, GPT; malé aj veľké disky)"
 for v in "300 ntfs mbr menovka=Škola_NTFS" "2000 ntfs gpt menovka=Data" \
+         "300 ext4 mbr menovka=Linux_ext4" "40000 ext4 gpt" "3000 ext3 mbr" "1000 ext2 gpt menovka=stary" \
          "300 fat32 mbr menovka=Škola" "300 exfat gpt menovka=Fotky_2026" "300 exfat mbr klaster=4K" \
          "8000 auto mbr menovka=OSEM" "33000 auto gpt menovka=VELKA" "64000 fat32 mbr"; do
   set -- $v; mb=$1; shift
@@ -46,7 +47,10 @@ for v in "300 ntfs mbr menovka=Škola_NTFS" "2000 ntfs gpt menovka=Data" \
   if [[ " $* " == *" gpt "* ]]; then sgdisk -v f.img | grep -q "No problems found" || chyba "GPT ($v)"; fi
   oddiel f.img 1
   podpis=$(dd if=oddiel.img bs=1 skip=3 count=5 status=none)
-  if [[ "$podpis" == "EXFAT" ]]; then
+  if [[ "$(dd if=oddiel.img bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr -d ' ')" == "53ef" ]]; then
+    e2fsck -fn oddiel.img || chyba "e2fsck ($v)"
+    dumpe2fs -h oddiel.img 2>/dev/null | grep -E "volume name|features"
+  elif [[ "$podpis" == "EXFAT" ]]; then
     fsck.exfat -n oddiel.img | tail -1
   elif [[ "$podpis" == "NTFS " ]]; then
     ntfsfix -n oddiel.img | grep -q "processed successfully" || chyba "NTFS ($v)"

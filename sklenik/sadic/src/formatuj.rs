@@ -21,10 +21,21 @@ pub enum System {
     Ntfs,
     Fat32,
     ExFat,
+    Ext4,
+    Ext3,
+    Ext2,
 }
 
 /// Ponuka systémov v poradí vlastníka: najprv NTFS, FAT32, exFAT a linuxové, potom ostatné.
-pub const PONUKA: &[System] = &[System::Automaticky, System::Ntfs, System::Fat32, System::ExFat];
+pub const PONUKA: &[System] = &[
+    System::Automaticky,
+    System::Ntfs,
+    System::Fat32,
+    System::ExFat,
+    System::Ext4,
+    System::Ext3,
+    System::Ext2,
+];
 
 impl System {
     /// Text v ponuke okna.
@@ -41,6 +52,9 @@ impl System {
             "ntfs" => Some(System::Ntfs),
             "fat32" | "fat" => Some(System::Fat32),
             "exfat" => Some(System::ExFat),
+            "ext4" => Some(System::Ext4),
+            "ext3" => Some(System::Ext3),
+            "ext2" => Some(System::Ext2),
             _ => None,
         }
     }
@@ -51,6 +65,9 @@ impl System {
             System::Ntfs => "NTFS",
             System::Fat32 => "FAT32",
             System::ExFat => "exFAT",
+            System::Ext4 => "ext4",
+            System::Ext3 => "ext3",
+            System::Ext2 => "ext2",
         }
     }
 
@@ -58,6 +75,7 @@ impl System {
     pub fn typ(self) -> Typ {
         match self {
             System::Fat32 => Typ::Fat32,
+            System::Ext4 | System::Ext3 | System::Ext2 => Typ::Linux,
             _ => Typ::ExFat, // exFAT aj NTFS: 0x07 / základné dáta
         }
     }
@@ -93,6 +111,18 @@ pub fn navrhni(
                 return Err("NTFS zatiaľ len s klastrom 4 KB (ako predvolí Windows)".into());
             }
             Box::new(Ntfs::navrhni(sektory, sektor, zaciatok, menovka)?)
+        }
+        System::Ext4 | System::Ext3 | System::Ext2 => {
+            if klaster.is_some_and(|k| k != 4096) {
+                return Err("ext zatiaľ len s blokom 4 KB".into());
+            }
+            let druh = match system {
+                System::Ext4 => crate::ext::Druh::Ext4,
+                System::Ext3 => crate::ext::Druh::Ext3,
+                _ => crate::ext::Druh::Ext2,
+            };
+            let _ = zaciatok;
+            Box::new(crate::ext::Ext::navrhni(sektory, sektor, druh, menovka)?)
         }
     })
 }

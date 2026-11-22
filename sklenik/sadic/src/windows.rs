@@ -267,7 +267,27 @@ pub struct Disk {
 
 impl Disk {
     /// Otvorí disk; pri `na_zapis` najprv uzamkne a odpojí jeho zväzky (Windows do nich potom nezapisuje).
+    /// Ak Windows ešte znovu číta oddiely disku (napr. hneď po predchádzajúcom napálení), rukoväť otvorená
+    /// v tej chvíli ostane „nepripravená“ – preto sa disk najprv skúšobne prečíta (pri zápise sa prvý
+    /// sektor aj zapíše späť nezmenený) a pri chybe sa všetko zavrie a otvorí znova (najviac asi 20 s).
     pub fn otvor(cislo: u32, na_zapis: bool) -> io::Result<Disk> {
+        let mut pokus = 0;
+        loop {
+            let mut d = Disk::otvor_raz(cislo, na_zapis)?;
+            let n = d.sektor as usize;
+            let skuska = d.citaj_buf(0, n, n).and_then(|_| if na_zapis { d.zapis_buf(0, n) } else { Ok(()) });
+            match skuska {
+                Err(e) if pokus < 40 && matches!(e.raw_os_error(), Some(21) | Some(1117) | Some(1167)) => {
+                    drop(d);
+                    pokus += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                _ => return Ok(d),
+            }
+        }
+    }
+
+    fn otvor_raz(cislo: u32, na_zapis: bool) -> io::Result<Disk> {
         let systemove = systemove_disky();
         let mut zamky = Vec::new();
         if na_zapis {

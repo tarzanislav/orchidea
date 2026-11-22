@@ -345,6 +345,17 @@ jobs:
             Write-Output $kontrola
             if ($kontrola -notmatch 'found no problems') { throw "chkdsk našiel chyby v $($f[3]) (kód $kod)" }
           }
+          # ext4: Windows ho nečíta, ale musí vidieť linuxový oddiel (kontrolu e2fsck robí linuxová úloha)
+          foreach ($f in @(@('ext4', 'gpt', '{0fc63daf-8483-4772-8e79-3d69d8477de4}'), @('ext3', 'mbr', '131'))) {
+            & $s formatuj $n $f[0] $f[1] "menovka=LINUX" --potvrdzujem $n --dovol-virtualny
+            if ($LASTEXITCODE) { throw "formátovanie $($f[0]) zlyhalo" }
+            Update-Disk -Number $n
+            Start-Sleep -Seconds 2
+            $p = Get-Partition -DiskNumber $n | Select-Object -First 1
+            $typ = if ($f[1] -eq 'gpt') { "$($p.GptType)" } else { "$($p.MbrType)" }
+            Write-Output "Windows vidí oddiel $($f[0]): typ $typ, $($p.Size) B"
+            if ($typ -ne $f[2]) { throw "$($f[0]): typ oddielu $typ, čakal som $($f[2])" }
+          }
           $vystup = & $s skontroluj $n --potvrdzujem $n --dovol-virtualny 2>&1 | Out-String
           $kod = $LASTEXITCODE
           Write-Output $vystup
