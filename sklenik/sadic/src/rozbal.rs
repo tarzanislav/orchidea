@@ -1,12 +1,12 @@
 //! Napálenie ISO, ktoré nie je hybridné (inštalačné ISO Windows a iné): súbory sa rozbalia na nový
 //! zväzok FAT32, z ktorého štartuje každý počítač s UEFI. Súbory nad 4 GB (install.wim) sa na FAT32
-//! nezmestia – vtedy vznikne druhý oddiel exFAT s priečinkom `sources` (rozdelenie podľa osvedčeného
-//! postupu „FAT32 na štart + väčší oddiel na inštaláciu“). Všetko sa po zápise overí spätným čítaním.
+//! nezmestia – vtedy vznikne druhý oddiel **NTFS** (alebo exFAT) s priečinkom `sources` (osvedčený postup
+//! „FAT32 na štart + NTFS na inštaláciu“). Všetko sa po zápise overí spätným čítaním.
 
 use crate::Faza;
 use crate::ciel::{self, Ciel, KUS};
-use crate::exfat::ExFat;
 use crate::fat32::Fat32;
+use crate::formatuj::System;
 use crate::iso::{self, Rozbor};
 use crate::oddiely::{self, Oddiel, Schema, Typ};
 use crate::subory::{Strom, Zapisany};
@@ -16,9 +16,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const MIB: u64 = 1 << 20;
 
-/// Rozdelenie súborov: prvý oddiel FAT32 (štart) a voliteľne druhý exFAT (veľké súbory).
+/// Hranica súboru pre FAT32 (pri skúškach sa dá znížiť cez SADIC_SKUSKA_HRANICA, aby sa rozdelenie
+/// na dva oddiely dalo overiť aj s malým ISO).
+fn hranica() -> u64 {
+    if std::env::var("SADIC_SKUSKA").as_deref() == Ok("1")
+        && let Some(h) = std::env::var("SADIC_SKUSKA_HRANICA").ok().and_then(|v| v.parse().ok())
+    {
+        return h;
+    }
+    iso::HRANICA_FAT32
+}
+
+/// Rozdelenie súborov: prvý oddiel FAT32 (štart) a voliteľne druhý (NTFS/exFAT, veľké súbory).
 pub fn rozdelenie(r: &Rozbor) -> (Strom, Option<Strom>) {
-    if r.nad_4gb().is_empty() {
+    let hranica = hranica();
+    if !r.polozky.iter().any(|p| !p.priecinok && p.velkost > hranica) {
         return (Strom::z_poloziek(&r.polozky, |_| true), None);
     }
     let na_druhy = |p: &iso::Polozka| -> bool {
@@ -27,7 +39,7 @@ pub fn rozdelenie(r: &Rozbor) -> (Strom, Option<Strom>) {
             // inštalácia Windows: celý priečinok sources okrem boot.wim (ten štartuje inštalátor)
             c.starts_with("sources/") && c != "sources/boot.wim"
         } else {
-            !p.priecinok && p.velkost > iso::HRANICA_FAT32
+            !p.priecinok && p.velkost > hranica
         }
     };
     let prvy = Strom::z_poloziek(&r.polozky, |p| {
@@ -60,6 +72,7 @@ pub struct Napalene {
     pub suborov: usize,
     pub bajtov: u64,
     pub dva_oddiely: bool,
+    pub druhy: System,
     pub schema: Schema,
 }
 
@@ -69,9 +82,17 @@ impl Napalene {
             "Rozbalené: {} ({}) na {}, tabuľka {}{}. Štart cez UEFI (ponuka štartu býva na F12, F11, F8 alebo Esc).",
             crate::disk::pocet(self.suborov, "súbor", "súbory", "súborov"),
             crate::disk::velkost(self.bajtov),
-            if self.dva_oddiely { "FAT32 + exFAT (súbory nad 4 GB)" } else { "FAT32" },
+            if self.dva_oddiely {
+                format!("FAT32 + {} (súbory nad 4 GB)", self.druhy.nazov())
+            } else {
+                "FAT32".into()
+            },
             self.schema.nazov(),
-            if self.dva_oddiely { " – rozdelenie na dva oddiely je zatiaľ skúšobné" } else { "" }
+            if self.dva_oddiely && self.druhy == System::ExFat {
+                " – s exFAT je to zatiaľ skúšobné"
+            } else {
+                ""
+            }
         )
     }
 }
@@ -82,6 +103,7 @@ pub fn napal_subory<F: Read + Seek>(
     zdroj: &mut F,
     r: &Rozbor,
     schema: Schema,
+    druhy: System,
     priebeh: &mut dyn FnMut(Faza, u64, u64),
     zrus: &AtomicBool,
 ) -> Result<Napalene, String> {
@@ -119,7 +141,7 @@ pub fn napal_subory<F: Read + Seek>(
             // prvý oddiel: súbory + rezerva, zarovnaný; rastie, kým sa súbory nezmestia
             let z = zarovnanie / s;
             let mut dlzka =
-                (strom1.velkost_suborov() * 21 / 20 + 128 * MIB).max(512 * MIB).div_ceil(zarovnanie) * z;
+                (strom1.velkost_suborov() * 21 / 20 + 64 * MIB).max(100 * MIB).div_ceil(zarovnanie) * z;
             let f = loop {
                 let f = Fat32::navrhni(dlzka, sektor, zaciatok, zarovnanie, None, &menovka1)?;
                 if f.potrebne_klastre(&strom1) + 16 <= f.klastre as u64 {
@@ -135,13 +157,16 @@ pub fn napal_subory<F: Read + Seek>(
                 u64::MAX
             }) / na_mib
                 * na_mib;
-            let e = ExFat::navrhni(dlzka2, sektor, zac2, zarovnanie, None, "INSTALL")?;
+            let e = crate::formatuj::navrhni(druhy, dlzka2, sektor, zac2, zarovnanie, None, "INSTALL")?;
+            if !e.zmesti_sa(strom2.as_ref().unwrap_or(&Strom::novy())) {
+                return Err("súbory sa na druhý oddiel nezmestia – disk je primalý".into());
+            }
             let o1 =
                 Oddiel { zaciatok, sektory: dlzka, typ: Typ::Fat32, meno: menovka1.clone(), aktivny: true };
             let o2 = Oddiel {
                 zaciatok: zac2,
                 sektory: dlzka2,
-                typ: Typ::ExFat,
+                typ: druhy.typ(),
                 meno: "INSTALL".into(),
                 aktivny: false,
             };
@@ -236,7 +261,7 @@ pub fn napal_subory<F: Read + Seek>(
             ));
         }
     }
-    Ok(Napalene { suborov: zapisane.len(), bajtov: potrebne, dva_oddiely: ex.is_some(), schema })
+    Ok(Napalene { suborov: zapisane.len(), bajtov: potrebne, dva_oddiely: ex.is_some(), druhy, schema })
 }
 
 #[cfg(test)]
@@ -258,6 +283,7 @@ mod skusky {
             &mut Cursor::new(&obraz),
             &r,
             Schema::Mbr,
+            System::Ntfs,
             &mut |_, _, _| {},
             &AtomicBool::new(false),
         )

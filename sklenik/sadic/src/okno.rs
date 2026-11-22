@@ -1079,11 +1079,10 @@ fn priprav_rozsirenu(s: &Stav) -> Result<(Praca, String), String> {
             Ok((Praca::Napal { iso: iso.display().to_string(), disk, schema, sucet }, zhrnutie))
         }
         U_FORMAT => {
-            let system = match vyber_combo(s, ID_SYSTEM) {
-                1 => System::Fat32,
-                2 => System::ExFat,
-                _ => System::Automaticky,
-            };
+            let system = crate::formatuj::PONUKA
+                .get(vyber_combo(s, ID_SYSTEM))
+                .copied()
+                .unwrap_or(System::Automaticky);
             let f = Formatovanie {
                 system,
                 schema,
@@ -1464,11 +1463,9 @@ extern "system" fn okno_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize 
                         U_NAPAL => nastav_iso(s, Some(PathBuf::from(&param))),
                         U_FORMAT => {
                             let (sys, menovka) = param.split_once(':').unwrap_or((&param, ""));
-                            let i = match sys {
-                                "fat32" => 1,
-                                "exfat" => 2,
-                                _ => 0,
-                            };
+                            let i = System::z_textu(sys)
+                                .and_then(|x| crate::formatuj::PONUKA.iter().position(|&y| y == x))
+                                .unwrap_or(0);
                             // SAFETY: naše prvky.
                             unsafe { SendMessageW(prvok(s.hwnd, ID_SYSTEM), CB_SETCURSEL, i, 0) };
                             nastav_text(prvok(s.hwnd, ID_MENOVKA), menovka);
@@ -1727,8 +1724,8 @@ pub fn spusti(dovol_virtualny: bool) -> i32 {
         prvok_novy(hwnd, "STATIC", "", SS_NOPREFIX, 0, ID_ROZBOR);
         let system =
             prvok_novy(hwnd, "COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, ID_SYSTEM);
-        for t in ["Automaticky", "FAT32", "exFAT"] {
-            let t = w(t);
+        for sys in crate::formatuj::PONUKA {
+            let t = w(sys.v_ponuke());
             SendMessageW(system, CB_ADDSTRING, 0, t.as_ptr() as isize);
         }
         SendMessageW(system, CB_SETCURSEL, 0, 0);

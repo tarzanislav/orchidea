@@ -173,7 +173,7 @@ jobs:
       - name: Nástroje na nezávislú kontrolu
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q dosfstools exfatprogs mtools gdisk xorriso isolinux syslinux-common genisoimage
+          sudo apt-get install -y -q dosfstools exfatprogs mtools gdisk xorriso isolinux syslinux-common genisoimage ntfs-3g
       - name: Zostavenie
         run: cargo build --locked --release -p sklenik-sadic
       - name: Formátovanie, rozbor ISO, napálenie, súbor nad 4 GB, skutočné ISO
@@ -293,7 +293,45 @@ jobs:
           $v = Get-Volume -DriveLetter $l
           if ($v.FileSystem -ne 'FAT32') { throw "ISO Windows: čakal som FAT32, je $($v.FileSystem)" }
           Write-Output "✅ ISO Windows rozbalené na FAT32 – Windows číta všetkých $pocet súborov rovnako ako z ISO"
-          foreach ($f in @(@('exfat', 'gpt', 'SKUSKA', 'exFAT'), @('fat32', 'mbr', 'KARTA', 'FAT32'))) {
+          # ISO Windows s nízkou hranicou: sources (okrem boot.wim) na druhom oddiele NTFS
+          $env:SADIC_SKUSKA_HRANICA = "50000"
+          & $s napal "$iso\win.iso" $n --potvrdzujem $n --dovol-virtualny
+          $kod = $LASTEXITCODE
+          Remove-Item Env:SADIC_SKUSKA_HRANICA
+          if ($kod) { throw "napálenie ISO Windows na FAT32 + NTFS zlyhalo" }
+          Update-Disk -Number $n
+          Start-Sleep -Seconds 3
+          $pis = @{}
+          foreach ($c in 1, 2) {
+            $p = Get-Partition -DiskNumber $n -PartitionNumber $c
+            if (-not $p.DriveLetter -or $p.DriveLetter -eq [char]0) {
+              $p | Add-PartitionAccessPath -AssignDriveLetter
+              $p = Get-Partition -DiskNumber $n -PartitionNumber $c
+            }
+            $pis[$c] = $p.DriveLetter
+          }
+          Write-Output "oddiel 1: $((Get-Volume -DriveLetter $pis[1]).FileSystem), oddiel 2: $((Get-Volume -DriveLetter $pis[2]).FileSystem)"
+          if ((Get-Volume -DriveLetter $pis[2]).FileSystem -ne 'NTFS') { throw "druhý oddiel nie je NTFS" }
+          $m = Mount-DiskImage -ImagePath "$iso\win.iso" -PassThru
+          $cd = "$(($m | Get-Volume).DriveLetter):\"
+          $chyby = 0; $pocet = 0
+          Get-ChildItem -LiteralPath $cd -Recurse -File | Where-Object { $_.Name -ne 'boot.catalog' } | ForEach-Object {
+            $rel = $_.FullName.Substring($cd.Length)
+            $na2 = $rel -like 'sources\*' -and $rel -ne 'sources\boot.wim'
+            $kopia = Join-Path "$(if ($na2) { $pis[2] } else { $pis[1] }):\" $rel
+            $pocet++
+            if (-not (Test-Path -LiteralPath $kopia)) { Write-Output "chýba: $kopia"; $chyby++ }
+            elseif ((Get-FileHash -LiteralPath $_.FullName).Hash -ne (Get-FileHash -LiteralPath $kopia).Hash) {
+              Write-Output "iný obsah: $kopia"; $chyby++
+            }
+          }
+          Dismount-DiskImage -ImagePath "$iso\win.iso" | Out-Null
+          if ($chyby) { throw "FAT32 + NTFS: $chyby chýb z $pocet súborov" }
+          $kontrola = chkdsk "$($pis[2]):" 2>&1 | Out-String
+          Write-Output $kontrola
+          if ($kontrola -notmatch 'found no problems') { throw "chkdsk našiel chyby v NTFS so súbormi z ISO" }
+          Write-Output "✅ FAT32 + NTFS: Windows číta všetkých $pocet súborov rovnako ako z ISO, chkdsk bez chýb"
+          foreach ($f in @(@('ntfs', 'mbr', 'NTFSKA', 'NTFS'), @('ntfs', 'gpt', 'NTFS_GPT', 'NTFS'), @('exfat', 'gpt', 'SKUSKA', 'exFAT'), @('fat32', 'mbr', 'KARTA', 'FAT32'))) {
             & $s formatuj $n $f[0] $f[1] "menovka=$($f[2])" --potvrdzujem $n --dovol-virtualny
             if ($LASTEXITCODE) { throw "formátovanie $($f[0]) zlyhalo" }
             $l = Pismeno $n

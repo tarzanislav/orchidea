@@ -27,6 +27,8 @@ mod iso;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod kontrola;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod ntfs;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod oddiely;
 #[cfg(windows)]
 mod okno;
@@ -64,7 +66,7 @@ const POMOC: &str = "SADIČ – zapisovač obrazov SKLENÍKA
   sadic napal <obraz.iso|.img|.zip> <disk> [mbr|gpt] [sucet=…]  napáli ISO (Linux, Windows …) a overí ho
   sadic formatuj <disk> [voľby]                  čisté formátovanie karty alebo USB disku
   sadic formatuj-obraz <súbor.img> <MB> [voľby]  naformátovaný obraz disku (aj na skúšky)
-  sadic napal-obraz <obraz.iso> <súbor.img> <MB> [mbr|gpt]  ISO „napálené“ do súboru obrazu disku
+  sadic napal-obraz <obraz.iso> <súbor.img> <MB> [mbr|gpt] [exfat]  ISO „napálené“ do súboru obrazu
   sadic skontroluj <disk> [uplne]                falošná kapacita, chybné miesta, rýchlosť; potom naformátuje
 
   nastavenie: meno=… wifi=… wifi_heslo=… jazyk=… meranie=ano/nie   (heslo sa neukladá, len kľúč WPA)
@@ -284,7 +286,9 @@ fn napal_obraz(iso_cesta: &str, cesta: &str, mb: &str, zvysok: &[&str]) -> Vysle
         }
         iso::Druh::Nezname => return Err(Chyba(1, "nie je to obraz disku ani ISO".into())),
         _ => {
-            let n = rozbal::napal_subory(&mut c, &mut f, &r, schema, &mut |_, _, _| {}, &zrus)
+            let druhy =
+                if zvysok.contains(&"exfat") { formatuj::System::ExFat } else { formatuj::System::Ntfs };
+            let n = rozbal::napal_subory(&mut c, &mut f, &r, schema, druhy, &mut |_, _, _| {}, &zrus)
                 .map_err(|e| Chyba(1, e))?;
             println!("✅ {cesta}: {}", n.text());
         }
@@ -779,8 +783,15 @@ mod platforma {
             crate::iso::Druh::Nezname => Err(Chyba(1, format!("{cesta}: nie je to obraz disku ani ISO"))),
             _ => {
                 let mut z = otvor_s_potvrdenim(cislo, dovol_virtualny, potvrd)?;
-                let n =
-                    crate::rozbal::napal_subory(&mut z, &mut File::open(&obraz)?, &r, schema, priebeh, zrus);
+                let n = crate::rozbal::napal_subory(
+                    &mut z,
+                    &mut File::open(&obraz)?,
+                    &r,
+                    schema,
+                    crate::formatuj::System::Ntfs,
+                    priebeh,
+                    zrus,
+                );
                 z.ohlas_nove_oddiely();
                 Ok(n.map_err(|e| Chyba(1, e))?.text())
             }

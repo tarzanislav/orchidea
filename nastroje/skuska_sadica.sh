@@ -36,16 +36,22 @@ with open(sys.argv[1], "rb") as f, open("oddiel.img", "wb") as o:
 EOF
 }
 
-echo "== 1. formátovanie (FAT32, exFAT; MBR, GPT; malé aj veľké disky)"
-for v in "300 fat32 mbr menovka=Škola" "300 exfat gpt menovka=Fotky_2026" "300 exfat mbr klaster=4K" \
+echo "== 1. formátovanie (NTFS, FAT32, exFAT; MBR, GPT; malé aj veľké disky)"
+for v in "300 ntfs mbr menovka=Škola_NTFS" "2000 ntfs gpt menovka=Data" \
+         "300 fat32 mbr menovka=Škola" "300 exfat gpt menovka=Fotky_2026" "300 exfat mbr klaster=4K" \
          "8000 auto mbr menovka=OSEM" "33000 auto gpt menovka=VELKA" "64000 fat32 mbr"; do
   set -- $v; mb=$1; shift
   "$S" formatuj-obraz f.img "$mb" "$@"
   sfdisk -d f.img | grep -q "start=" || chyba "chýba tabuľka oddielov ($v)"
   if [[ " $* " == *" gpt "* ]]; then sgdisk -v f.img | grep -q "No problems found" || chyba "GPT ($v)"; fi
   oddiel f.img 1
-  if [[ "$(dd if=oddiel.img bs=1 skip=3 count=5 status=none)" == "EXFAT" ]]; then
+  podpis=$(dd if=oddiel.img bs=1 skip=3 count=5 status=none)
+  if [[ "$podpis" == "EXFAT" ]]; then
     fsck.exfat -n oddiel.img | tail -1
+  elif [[ "$podpis" == "NTFS " ]]; then
+    ntfsfix -n oddiel.img | grep -q "processed successfully" || chyba "NTFS ($v)"
+    ntfsls -a -s oddiel.img | grep -q '\$UpCase' || chyba "NTFS metasúbory ($v)"
+    ntfsinfo -m oddiel.img | grep -E "Volume Name|Volume Version"
   else
     fsck.vfat -n oddiel.img | tail -1
   fi
@@ -122,8 +128,46 @@ fsck.vfat -n oddiel.img | tail -1
 done
 rm -f w.img oddiel.img kopia.bin
 echo "✅ ISO Windows rozbalené na FAT32 a každý súbor sedí"
+# to isté ISO s nízkou hranicou: sources (okrem boot.wim) idú na druhý oddiel NTFS
+SADIC_SKUSKA=1 SADIC_SKUSKA_HRANICA=50000 "$S" napal-obraz win.iso w2.img 400
+oddiel w2.img 2
+ntfsfix -n oddiel.img | grep -q "processed successfully" || chyba "NTFS druhého oddielu"
+(cd win && find sources -type f ! -name boot.wim) | while read -r f; do
+  ntfscat oddiel.img "/$f" > kopia.bin || chyba "na NTFS chýba $f"
+  cmp -s "win/$f" kopia.bin || chyba "obsah $f na NTFS nesedí"
+done
+oddiel w2.img 1
+mcopy -n -i oddiel.img ::sources/boot.wim kopia.bin && cmp -s win/sources/boot.wim kopia.bin || chyba "boot.wim na FAT32"
+rm -f w2.img oddiel.img kopia.bin
+echo "✅ FAT32 + NTFS: každý súbor sedí"
 
-echo "== 4. súbor nad 4 GB – FAT32 (štart) + exFAT (sources)"
+echo "== 3b. NTFS s veľkým priečinkom (B-strom indexu, 3 050 súborov)"
+rm -rf mnoho && mkdir -p mnoho/sources/sk-sk mnoho/efi/boot
+echo e > mnoho/efi/boot/bootx64.efi
+echo bm > mnoho/bootmgr
+head -c 100000 /dev/urandom > mnoho/sources/boot.wim
+python3 -c '
+import os, random
+random.seed(7)
+for i in range(3000):
+    n = "mnoho/sources/Knižnica_%05d_%s.dll" % (i, "x" * random.randint(0, 60))
+    open(n, "wb").write(os.urandom(random.randint(0, 20000)))
+for i in range(50):
+    open("mnoho/sources/sk-sk/súbor%d.mui" % i, "wb").write(os.urandom(random.randint(1, 3000)))
+'
+genisoimage -quiet -input-charset utf-8 -udf -J -joliet-long -V CCCOMA_X64FRE -o mnoho.iso mnoho
+SADIC_SKUSKA=1 SADIC_SKUSKA_HRANICA=50000 "$S" napal-obraz mnoho.iso m.img 400
+oddiel m.img 2
+ntfsfix -n oddiel.img | grep -q "processed successfully" || chyba "NTFS s veľkým priečinkom"
+pocet=$(ntfsls oddiel.img -p /sources | wc -l)
+[[ "$pocet" -ge 3001 ]] || chyba "v indexe chýbajú súbory ($pocet)"
+(cd mnoho && find sources -type f ! -name boot.wim) | while read -r f; do
+  ntfscat oddiel.img "/$f" | cmp -s - "mnoho/$f" || chyba "obsah $f nesedí"
+done
+rm -rf m.img oddiel.img mnoho mnoho.iso
+echo "✅ NTFS: 3 050 súborov nájdených cez index a každý sedí"
+
+echo "== 4. súbor nad 4 GB – FAT32 (štart) + NTFS alebo exFAT (sources)"
 rm -rf velke && mkdir -p velke/sources velke/efi/boot
 head -c 4404019200 /dev/urandom > velke/sources/install.wim
 head -c 100000 /dev/urandom > velke/sources/boot.wim
@@ -136,17 +180,23 @@ rm -f velke/sources/install.wim
 "$S" skumaj velke.iso | tee vystup.txt
 grep -q "súbor nad 4 GB: sources/install.wim" vystup.txt || chyba "súbor nad 4 GB"
 "$S" napal-obraz velke.iso v.img 6000 gpt
-rm -f velke.iso
 sgdisk -v v.img | grep -q "No problems found" || chyba "GPT dvoch oddielov"
 oddiel v.img 1
 fsck.vfat -n oddiel.img | tail -1
 mcopy -n -i oddiel.img ::sources/boot.wim kopia.bin && cmp -s velke/sources/boot.wim kopia.bin || chyba "boot.wim na FAT32"
 oddiel v.img 2
+ntfsfix -n oddiel.img | grep -q "processed successfully" || chyba "NTFS s install.wim"
+[[ "$(ntfscat oddiel.img /sources/install.wim | sha256sum | cut -d' ' -f1)" == "$sucet_wim" ]] || chyba "install.wim na NTFS nesedí"
+rm -f v.img oddiel.img
+echo "✅ veľký install.wim na NTFS sedí bajt po bajte"
+"$S" napal-obraz velke.iso v.img 6000 gpt exfat
+rm -f velke.iso
+oddiel v.img 2
 fsck.exfat -n oddiel.img | tail -1
 python3 "$NASTROJE/citaj_exfat.py" oddiel.img sources/install.wim | tee vystup.txt
 grep -q "^$sucet_wim " vystup.txt || chyba "install.wim na exFAT nesedí"
 rm -f v.img oddiel.img kopia.bin vystup.txt
-echo "✅ veľký install.wim na exFAT sedí bajt po bajte"
+echo "✅ veľký install.wim aj na exFAT sedí bajt po bajte"
 
 echo "== 5. skutočné ISO distribúcie (Alpine Linux) s kontrolným súčtom"
 URL=https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64

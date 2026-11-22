@@ -189,6 +189,7 @@ impl Fat32 {
     }
 
     /// Prázdny zväzok s menovkou: vyhradená oblasť, dve FAT a koreňový priečinok (klaster 2).
+    #[cfg(test)]
     pub fn naformatuj(
         &self,
         c: &mut dyn Ciel,
@@ -453,6 +454,29 @@ pub fn dlhe_meno(meno: &str, sucet: u8) -> Vec<[u8; 32]> {
         v.push(z);
     }
     v
+}
+
+impl crate::subory::Zvazok for Fat32 {
+    fn klaster_b(&self) -> u64 {
+        Fat32::klaster_b(self)
+    }
+    fn naplnene(
+        &self,
+        c: &mut dyn Ciel,
+        posun: u64,
+        strom: &Strom,
+        citaj: &mut Citaj,
+        priebeh: &mut dyn FnMut(u64, u64),
+        zrus: &AtomicBool,
+    ) -> io::Result<Vec<Zapisany>> {
+        Fat32::naplnene(self, c, posun, strom, citaj, priebeh, zrus)
+    }
+    fn over(&self, zaciatok: &[u8]) -> bool {
+        zaciatok.len() >= 90 && &zaciatok[82..90] == b"FAT32   "
+    }
+    fn zmesti_sa(&self, strom: &Strom) -> bool {
+        self.potrebne_klastre(strom) + 16 <= self.klastre as u64
+    }
 }
 
 #[cfg(test)]

@@ -197,6 +197,7 @@ impl ExFat {
     }
 
     /// Prázdny zväzok s menovkou.
+    #[cfg(test)]
     pub fn naformatuj(
         &self,
         c: &mut dyn Ciel,
@@ -407,6 +408,32 @@ fn sada(meno: &str, priecinok: bool, prvy: u32, dlzka: u64, pecat: u32) -> Vec<u
     }
     v[2..4].copy_from_slice(&k.to_le_bytes());
     v
+}
+
+impl crate::subory::Zvazok for ExFat {
+    fn klaster_b(&self) -> u64 {
+        ExFat::klaster_b(self)
+    }
+    fn naplnene(
+        &self,
+        c: &mut dyn Ciel,
+        posun: u64,
+        strom: &Strom,
+        citaj: &mut Citaj,
+        priebeh: &mut dyn FnMut(u64, u64),
+        zrus: &AtomicBool,
+    ) -> io::Result<Vec<Zapisany>> {
+        ExFat::naplnene(self, c, posun, strom, citaj, priebeh, zrus)
+    }
+    fn over(&self, zaciatok: &[u8]) -> bool {
+        zaciatok.len() >= 11 && &zaciatok[3..11] == b"EXFAT   "
+    }
+    fn zmesti_sa(&self, strom: &Strom) -> bool {
+        let k = self.klaster_b();
+        let subory: u64 = strom.subory().iter().map(|&u| strom.uzly[u].velkost.div_ceil(k)).sum();
+        let priecinky = strom.priecinky().len() as u64 * 2;
+        (self.koren() as u64 - 2) + subory + priecinky + 16 <= self.klastre as u64
+    }
 }
 
 #[cfg(test)]

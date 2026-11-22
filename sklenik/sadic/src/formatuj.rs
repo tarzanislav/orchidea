@@ -6,7 +6,9 @@ use crate::Faza;
 use crate::ciel::{self, Ciel};
 use crate::exfat::ExFat;
 use crate::fat32::Fat32;
+use crate::ntfs::Ntfs;
 use crate::oddiely::{self, Oddiel, Schema, Typ};
+use crate::subory::{Strom, Zvazok};
 use std::sync::atomic::AtomicBool;
 
 const MIB: u64 = 1 << 20;
@@ -16,14 +18,27 @@ const MIB: u64 = 1 << 20;
 pub enum System {
     /// Podľa veľkosti (ako SD karty: do 32 GB FAT32, väčšie exFAT).
     Automaticky,
+    Ntfs,
     Fat32,
     ExFat,
 }
 
+/// Ponuka systémov v poradí vlastníka: najprv NTFS, FAT32, exFAT a linuxové, potom ostatné.
+pub const PONUKA: &[System] = &[System::Automaticky, System::Ntfs, System::Fat32, System::ExFat];
+
 impl System {
+    /// Text v ponuke okna.
+    pub fn v_ponuke(self) -> &'static str {
+        match self {
+            System::Automaticky => "Automaticky",
+            s => s.nazov(),
+        }
+    }
+
     pub fn z_textu(t: &str) -> Option<System> {
         match t.to_ascii_lowercase().as_str() {
             "auto" | "automaticky" => Some(System::Automaticky),
+            "ntfs" => Some(System::Ntfs),
             "fat32" | "fat" => Some(System::Fat32),
             "exfat" => Some(System::ExFat),
             _ => None,
@@ -33,8 +48,17 @@ impl System {
     pub fn nazov(self) -> &'static str {
         match self {
             System::Automaticky => "automaticky",
+            System::Ntfs => "NTFS",
             System::Fat32 => "FAT32",
             System::ExFat => "exFAT",
+        }
+    }
+
+    /// Druh oddielu v tabuľke MBR/GPT.
+    pub fn typ(self) -> Typ {
+        match self {
+            System::Fat32 => Typ::Fat32,
+            _ => Typ::ExFat, // exFAT aj NTFS: 0x07 / základné dáta
         }
     }
 
@@ -46,6 +70,31 @@ impl System {
             s => s,
         }
     }
+}
+
+/// Navrhne zväzok daného systému (bez zápisu); chyba, ak sa na oddiel nedá.
+#[allow(clippy::too_many_arguments)]
+pub fn navrhni(
+    system: System,
+    sektory: u64,
+    sektor: u32,
+    zaciatok: u64,
+    zarovnanie: u64,
+    klaster: Option<u32>,
+    menovka: &str,
+) -> Result<Box<dyn Zvazok>, String> {
+    Ok(match system {
+        System::Fat32 => Box::new(Fat32::navrhni(sektory, sektor, zaciatok, zarovnanie, klaster, menovka)?),
+        System::ExFat | System::Automaticky => {
+            Box::new(ExFat::navrhni(sektory, sektor, zaciatok, zarovnanie, klaster, menovka)?)
+        }
+        System::Ntfs => {
+            if klaster.is_some_and(|k| k != 4096) {
+                return Err("NTFS zatiaľ len s klastrom 4 KB (ako predvolí Windows)".into());
+            }
+            Box::new(Ntfs::navrhni(sektory, sektor, zaciatok, menovka)?)
+        }
+    })
 }
 
 /// Čo a ako naformátovať.
@@ -141,32 +190,11 @@ pub fn formatuj(
     let sektor = c.sektor();
     let s = sektor as u64;
     let system = f.system.pre(velkost);
-    let typ = if system == System::Fat32 { Typ::Fat32 } else { Typ::ExFat };
+    let typ = system.typ();
     let mut oddiel = oddiely::jeden_oddiel(velkost, sektor, f.schema, typ, &f.menovka)?;
     let zarovnanie = oddiely::zarovnanie(velkost);
     // rozvrh súborového systému sa overí ešte pred prvým zápisom
-    enum Zvazok {
-        F(Fat32),
-        E(ExFat),
-    }
-    let zvazok = match system {
-        System::Fat32 => Zvazok::F(Fat32::navrhni(
-            oddiel.sektory,
-            sektor,
-            oddiel.zaciatok,
-            zarovnanie,
-            f.klaster,
-            &f.menovka,
-        )?),
-        _ => Zvazok::E(ExFat::navrhni(
-            oddiel.sektory,
-            sektor,
-            oddiel.zaciatok,
-            zarovnanie,
-            f.klaster,
-            &f.menovka,
-        )?),
-    };
+    let zvazok = navrhni(system, oddiel.sektory, sektor, oddiel.zaciatok, zarovnanie, f.klaster, &f.menovka)?;
     if oddiel.meno.is_empty() {
         oddiel.meno = "SADIČ".into();
     }
@@ -182,16 +210,17 @@ pub fn formatuj(
     }
     // 2. súborový systém
     let posun = oddiel.zaciatok * s;
-    let klaster = match &zvazok {
-        Zvazok::F(z) => {
-            z.naformatuj(c, posun, &mut |h, n| priebeh(Faza::Formatovanie, h, n), zrus).map_err(chyba)?;
-            z.klaster_b()
-        }
-        Zvazok::E(z) => {
-            z.naformatuj(c, posun, &mut |h, n| priebeh(Faza::Formatovanie, h, n), zrus).map_err(chyba)?;
-            z.klaster_b()
-        }
-    };
+    zvazok
+        .naplnene(
+            c,
+            posun,
+            &Strom::novy(),
+            &mut |_, _, _| Ok(()),
+            &mut |h, n| priebeh(Faza::Formatovanie, h, n),
+            zrus,
+        )
+        .map_err(chyba)?;
+    let klaster = zvazok.klaster_b();
     // 3. tabuľka oddielov až nakoniec: kým nie je, systém nevidí polovičný zväzok
     match f.schema {
         Schema::Mbr => {
@@ -214,10 +243,9 @@ pub fn formatuj(
     if z.first().map(|z| z.typ) != Some(ocakavany) {
         return Err("kontrola: tabuľka oddielov sa nezapísala správne".into());
     }
-    c.citaj(posun, &mut b).map_err(chyba)?;
-    let podpis: &[u8] = if system == System::Fat32 { b"FAT32   " } else { b"EXFAT   " };
-    let pole = if system == System::Fat32 { &b[82..90] } else { &b[3..11] };
-    if pole != podpis {
+    let mut z = vec![0u8; 4096];
+    c.citaj(posun, &mut z).map_err(chyba)?;
+    if !zvazok.over(&z) {
         return Err("kontrola: súborový systém sa nezapísal správne".into());
     }
     Ok(Zhrnutie { system, schema: f.schema, oddiel, klaster, zarovnanie, menovka: f.menovka.clone(), sektor })

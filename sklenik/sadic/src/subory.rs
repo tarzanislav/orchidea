@@ -16,6 +16,26 @@ pub struct Uzol {
 /// Dodávateľ dát súboru: (uzol, posun v súbore, kam) – napr. čítanie z ISO.
 pub type Citaj<'a> = dyn FnMut(usize, u64, &mut [u8]) -> std::io::Result<()> + 'a;
 
+/// Súborový systém, ktorý vie vytvoriť zväzok so stromom súborov (FAT32, exFAT, NTFS …).
+pub trait Zvazok {
+    /// Bajty na klaster (blok).
+    fn klaster_b(&self) -> u64;
+    /// Zapíše zväzok so súbormi; prázdny strom = čisté formátovanie.
+    fn naplnene(
+        &self,
+        c: &mut dyn crate::ciel::Ciel,
+        posun: u64,
+        strom: &Strom,
+        citaj: &mut Citaj,
+        priebeh: &mut dyn FnMut(u64, u64),
+        zrus: &std::sync::atomic::AtomicBool,
+    ) -> std::io::Result<Vec<Zapisany>>;
+    /// Sedí podpis na začiatku zväzku (prvých 4 KB)?
+    fn over(&self, zaciatok: &[u8]) -> bool;
+    /// Zmestí sa strom (s rezervou)?
+    fn zmesti_sa(&self, strom: &Strom) -> bool;
+}
+
 /// Strom; uzol 0 je koreňový priečinok.
 #[derive(Debug, Clone)]
 pub struct Strom {
