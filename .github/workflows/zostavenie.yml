@@ -173,7 +173,7 @@ jobs:
       - name: Nástroje na nezávislú kontrolu
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q dosfstools exfatprogs mtools gdisk xorriso isolinux syslinux-common genisoimage ntfs-3g hfsprogs udftools p7zip-full f2fs-tools
+          sudo apt-get install -y -q dosfstools exfatprogs mtools gdisk xorriso isolinux syslinux-common genisoimage ntfs-3g hfsprogs udftools p7zip-full f2fs-tools xfsprogs
       - name: Zostavenie
         run: cargo build --locked --release -p sklenik-sadic
       - name: Formátovanie, rozbor ISO, napálenie, súbor nad 4 GB, skutočné ISO

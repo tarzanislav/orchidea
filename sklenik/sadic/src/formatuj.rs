@@ -28,6 +28,8 @@ pub enum System {
     HfsPlus,
     /// F2FS – linuxový systém pre pamäte flash.
     F2fs,
+    /// XFS v5 – linuxový systém pre veľké disky.
+    Xfs,
     /// UDF 2.01 na celom disku – Windows, macOS aj Linux bez ovládačov.
     Udf,
 }
@@ -44,6 +46,7 @@ pub const PONUKA: &[System] = &[
     System::HfsPlus,
     System::F2fs,
     System::Udf,
+    System::Xfs,
 ];
 
 impl System {
@@ -54,6 +57,7 @@ impl System {
             System::HfsPlus => "HFS+ (Mac OS Extended)",
             System::Udf => "UDF (Windows, macOS aj Linux)",
             System::F2fs => "F2FS (Linux, pamäte flash)",
+            System::Xfs => "XFS (Linux, veľké disky)",
             s => s.nazov(),
         }
     }
@@ -70,6 +74,7 @@ impl System {
             "hfs+" | "hfsplus" | "hfs" | "mac" => Some(System::HfsPlus),
             "udf" => Some(System::Udf),
             "f2fs" => Some(System::F2fs),
+            "xfs" => Some(System::Xfs),
             _ => None,
         }
     }
@@ -86,6 +91,7 @@ impl System {
             System::HfsPlus => "HFS+",
             System::Udf => "UDF",
             System::F2fs => "F2FS",
+            System::Xfs => "XFS",
         }
     }
 
@@ -93,7 +99,7 @@ impl System {
     pub fn typ(self) -> Typ {
         match self {
             System::Fat32 => Typ::Fat32,
-            System::Ext4 | System::Ext3 | System::Ext2 | System::F2fs => Typ::Linux,
+            System::Ext4 | System::Ext3 | System::Ext2 | System::F2fs | System::Xfs => Typ::Linux,
             System::HfsPlus => Typ::Hfs,
             _ => Typ::ExFat, // exFAT aj NTFS: 0x07 / základné dáta
         }
@@ -154,6 +160,12 @@ pub fn navrhni(
                 return Err("F2FS má vždy blok 4 KB".into());
             }
             Box::new(crate::f2fs::F2fs::navrhni(sektory, sektor, zaciatok, menovka)?)
+        }
+        System::Xfs => {
+            if klaster.is_some_and(|k| k != 4096) {
+                return Err("XFS zatiaľ len s blokom 4 KB (ako predvolí mkfs.xfs)".into());
+            }
+            Box::new(crate::xfs::Xfs::navrhni(sektory, sektor, menovka)?)
         }
         System::Udf => {
             if klaster.is_some_and(|k| k != sektor) {

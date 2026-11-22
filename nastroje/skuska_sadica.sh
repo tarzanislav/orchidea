@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Skúška rozšíreného SADIČA na Linuxe nezávislými nástrojmi (fsck.vfat, fsck.exfat, e2fsck, ntfs-3g,
-# fsck.hfsplus, fsck.f2fs, 7-Zip a udfinfo pre UDF, sgdisk, mtools, xorriso, genisoimage): formátovanie, rozbor ISO, napálenie bit po bite
+# fsck.hfsplus, fsck.f2fs, xfs_repair, 7-Zip a udfinfo pre UDF, sgdisk, mtools, xorriso, genisoimage): formátovanie, rozbor ISO, napálenie bit po bite
 # aj rozbalením súborov, veľký súbor nad 4 GB na druhý oddiel NTFS či exFAT a skutočné ISO distribúcie
 # s kontrolným súčtom.
 #
@@ -37,12 +37,13 @@ with open(sys.argv[1], "rb") as f, open("oddiel.img", "wb") as o:
 EOF
 }
 
-echo "== 1. formátovanie (NTFS, FAT32, exFAT, ext4/3/2, HFS+, F2FS, UDF; MBR, GPT; malé aj veľké disky)"
+echo "== 1. formátovanie (NTFS, FAT32, exFAT, ext4/3/2, HFS+, F2FS, UDF, XFS; MBR, GPT; malé aj veľké disky)"
 for v in "300 ntfs mbr menovka=Škola_NTFS" "2000 ntfs gpt menovka=Data" \
          "300 ext4 mbr menovka=Linux_ext4" "40000 ext4 gpt" "3000 ext3 mbr" "1000 ext2 gpt menovka=stary" \
          "300 hfs+ mbr menovka=Škola_Mac" "40000 hfs+ gpt" "3000 hfs+ gpt menovka=Fotky" \
          "300 udf menovka=Škola_UDF" "40000 udf" "2000 udf gpt menovka=Spolocny" \
          "300 f2fs mbr menovka=Linux_F2FS" "40000 f2fs gpt" "120 f2fs gpt" \
+         "300 xfs mbr menovka=Linux_XFS" "40000 xfs gpt" \
          "300 fat32 mbr menovka=Škola" "300 exfat gpt menovka=Fotky_2026" "300 exfat mbr klaster=4K" \
          "8000 auto mbr menovka=OSEM" "33000 auto gpt menovka=VELKA" "64000 fat32 mbr"; do
   set -- $v; mb=$1; shift
@@ -56,6 +57,9 @@ for v in "300 ntfs mbr menovka=Škola_NTFS" "2000 ntfs gpt menovka=Data" \
     python3 -I "$NASTROJE/over_udf.py" oddiel.img 512 || chyba "UDF ($v)"
     7z l -tudf oddiel.img | grep -q "^Type = Udf" || chyba "7-Zip neotvoril UDF ($v)"
     udfinfo oddiel.img | grep -E "^(label|blocksize|udfrev|integrity)=" | tr '\n' ' '; echo
+  elif [[ "$(dd if=oddiel.img bs=1 count=4 status=none)" == "XFSB" ]]; then
+    xfs_repair -n -f oddiel.img > /tmp/xfs.log 2>&1 || { cat /tmp/xfs.log; chyba "xfs_repair ($v)"; }
+    xfs_db -r -f -c "sb 0" -c "print agcount logblocks versionnum features_incompat" oddiel.img | tr '\n' ' '; echo
   elif [[ "$(dd if=oddiel.img bs=1 skip=1024 count=4 status=none | od -An -tx1 | tr -d ' ')" == "1020f5f2" ]]; then
     fsck.f2fs --dry-run oddiel.img > /tmp/f2fs.log 2>&1 || { cat /tmp/f2fs.log; chyba "fsck.f2fs ($v)"; }
     if grep "^\[FSCK\]" /tmp/f2fs.log | grep -v "Ok\.\.\|fixing SIT types\|Max image"; then cat /tmp/f2fs.log; chyba "fsck.f2fs ($v)"; fi
@@ -79,7 +83,7 @@ for v in "300 ntfs mbr menovka=Škola_NTFS" "2000 ntfs gpt menovka=Data" \
   blkid oddiel.img
   rm -f f.img oddiel.img
 done
-for sys4k in fat32 hfs+ udf; do
+for sys4k in fat32 hfs+ udf xfs; do
 "$S" formatuj-obraz f4k.img 300 "$sys4k" gpt sektor=4096
 if [[ "$sys4k" == "udf" ]]; then
   python3 -I "$NASTROJE/over_udf.py" f4k.img 4096 || chyba "UDF pri 4K sektoroch"
@@ -98,7 +102,9 @@ f, l = struct.unpack("<QQ", e[32:48])
 open("oddiel.img", "wb").write(d[f * 4096:(l + 1) * 4096])
 assert d[-4096:-4088] == b"EFI PART", "záloha GPT"
 EOF
-if [[ "$sys4k" == "hfs+" ]]; then
+if [[ "$sys4k" == "xfs" ]]; then
+  xfs_repair -n -f oddiel.img > /tmp/xfs.log 2>&1 || { cat /tmp/xfs.log; chyba "XFS pri 4K sektoroch"; }
+elif [[ "$sys4k" == "hfs+" ]]; then
   fsck.hfsplus -fn oddiel.img | grep -q "appears to be OK" || chyba "HFS+ pri 4K sektoroch"
 else
   fsck.vfat -n oddiel.img | tail -1

@@ -49,6 +49,8 @@ mod udf;
 #[cfg(windows)]
 mod windows;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod xfs;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod zip;
 
 use ciel::Ciel as _;
