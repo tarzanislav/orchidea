@@ -233,8 +233,13 @@ jobs:
             --set-str IDENT_STRING " SKLENIK x96-max-plus" \
             --enable ENV_IS_NOWHERE --disable ENV_IS_IN_MMC --disable ENV_IS_IN_FAT \
             --set-val BOOTDELAY 1
+          # USB kľúče, USB ako prvé, nápis na obrazovke (sklenik/boot/amlogic/x96-uboot.config)
+          grep -v '^#' ../sklenik/boot/amlogic/x96-uboot.config >> .config
           make -s CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-          grep -E '^CONFIG_(DEFAULT_DEVICE_TREE|ENV_IS_NOWHERE|TEXT_BASE|BOOTDELAY)=' .config
+          grep -E '^CONFIG_(DEFAULT_DEVICE_TREE|ENV_IS_NOWHERE|TEXT_BASE|BOOTDELAY|USB_STORAGE|BOOTCOMMAND|VIDEO_MESON)=' .config
+          for k in USB_STORAGE CMD_USB FS_FAT USB_XHCI_DWC3 USB_DWC3_MESON_G12A; do
+            grep -qx "CONFIG_$k=y" .config || { echo "U-Boot pre X96 nemá CONFIG_$k"; exit 1; }
+          done
           if grep -E '^CONFIG_ENV_IS_IN_[A-Z0-9_]+=y' .config; then echo "U-Boot by zapisoval nastavenie"; exit 1; fi
           make -s -j"$(nproc)" CROSS_COMPILE=aarch64-linux-gnu-
           mkdir -p ../uboot-vystup/x96
@@ -259,6 +264,7 @@ jobs:
           echo "### X96 Max Plus – u-boot.ext $(stat -c %s $x) B, sha256 $(sha256sum $x | cut -c1-16)…" | tee -a "$GITHUB_STEP_SUMMARY"
           grep -aq "SKLENIK x96-max-plus" "$x"
           grep -aq "amlogic/meson-sm1-x96-air-gbit.dtb" "$x"
+          grep -aq "SKLENIK: hladam system na USB" "$x"
       - uses: actions/upload-artifact@v4
         with:
           name: uboot-c4
