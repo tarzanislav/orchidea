@@ -1,5 +1,7 @@
 //! Okno SADIČA pre Windows 11 – jednoduché ako Raspberry Pi Imager: 1. obraz, 2. karta, 3. nastavenie,
-//! tlačidlo **Zapísať** a ukazovateľ priebehu.
+//! tlačidlo **Zapísať** a ukazovateľ priebehu. Tlačidlo **Rozšírené…** prepne okno do pokročilého
+//! režimu: napálenie ISO (Linux, Windows …) s rozborom a kontrolným súčtom, čisté formátovanie
+//! (FAT32/exFAT, MBR/GPT) a kontrola falošnej kapacity. Súbor sa dá do okna aj pretiahnuť myšou.
 //!
 //! Vlastné väzby na user32, gdi32, comctl32 a comdlg32 (prvky okna Windows – platforma); hlavička je
 //! nakreslená vlastným písmom STONKA. Zápis beží vo vlastnom vlákne a do okna posiela priebeh.
@@ -7,8 +9,10 @@
 #![allow(unsafe_code)]
 
 use crate::disk::{self, InfoDisku};
+use crate::formatuj::{Formatovanie, System};
+use crate::oddiely::Schema;
 use crate::platforma;
-use crate::{Faza, Uloha};
+use crate::{Faza, Uloha, iso, sha256};
 use orchidea_pismo::{Pismo, Platno};
 use sklenik_karta::{Nastavenie, navrhni_meno};
 use std::cell::RefCell;
@@ -217,6 +221,13 @@ unsafe extern "system" {
     fn InitCommonControlsEx(i: *const InitCommonControls) -> i32;
 }
 
+#[link(name = "shell32")]
+unsafe extern "system" {
+    fn DragAcceptFiles(h: Hwnd, prijmi: i32);
+    fn DragQueryFileW(hdrop: isize, i: u32, buf: *mut u16, n: u32) -> u32;
+    fn DragFinish(hdrop: isize);
+}
+
 #[link(name = "comdlg32")]
 unsafe extern "system" {
     fn GetOpenFileNameW(o: *mut OpenFileNameW) -> i32;
@@ -257,6 +268,13 @@ const WM_TIMER: u32 = 0x113;
 const WM_CTLCOLORSTATIC: u32 = 0x138;
 const WM_DEVICECHANGE: u32 = 0x219;
 const WM_DPICHANGED: u32 = 0x2E0;
+const WM_DROPFILES: u32 = 0x233;
+const BM_GETCHECK: u32 = 0xF0;
+const BM_SETCHECK: u32 = 0xF1;
+const BS_AUTOCHECKBOX: u32 = 0x3;
+const CBN_SELCHANGE: usize = 1;
+const SW_HIDE: i32 = 0;
+const SW_SHOW: i32 = 5;
 const WM_APP: u32 = 0x8000;
 const WM_PRIEBEH: u32 = WM_APP + 1;
 const WM_HOTOVO: u32 = WM_APP + 2;
@@ -293,12 +311,75 @@ const ID_ZAPIS: i32 = 109;
 const ID_PRIEBEH: i32 = 110;
 const ID_STAV: i32 = 111;
 const ID_PATA: i32 = 115;
+const ID_ROZSIRENE: i32 = 116;
+// rozšírený režim
+const ID_ULOHA: i32 = 120;
+const ID_ISO: i32 = 121;
+const ID_ISO_VYBER: i32 = 122;
+const ID_ROZBOR: i32 = 123;
+const ID_SYSTEM: i32 = 124;
+const ID_SCHEMA: i32 = 125;
+const ID_MENOVKA: i32 = 126;
+const ID_UPLNE: i32 = 127;
+const ID_SUCET: i32 = 128;
 
 const SIRKA: i32 = 600;
 const VYSKA: i32 = 600;
+/// Rozšírený režim je o kúsok vyšší (sekcia Možnosti).
+const VYSKA_ROZSIRENA: i32 = 650;
 const HLAVICKA: i32 = 92;
 
-/// Rozloženie: (id, x, y, šírka, výška) v logických bodoch (pri 96 DPI).
+/// Úlohy rozšíreného režimu.
+const ULOHY: [&str; 3] = [
+    "Napáliť ISO alebo obraz disku (Linux, Windows, iné systémy)",
+    "Formátovať kartu alebo USB disk (čisté formátovanie)",
+    "Skontrolovať kartu (falošná kapacita, chyby, rýchlosť)",
+];
+const U_NAPAL: usize = 0;
+const U_FORMAT: usize = 1;
+const U_KONTROLA: usize = 2;
+
+/// Všetky prvky okna (na skrývanie prvkov, ktoré v režime nie sú).
+const VSETKY: &[i32] = &[
+    201,
+    202,
+    203,
+    211,
+    212,
+    213,
+    214,
+    ID_OBRAZ,
+    ID_VYBER,
+    ID_KARTA,
+    ID_OBNOV,
+    ID_MENO,
+    ID_WIFI,
+    ID_HESLO,
+    ID_JAZYK,
+    ID_ZAPIS,
+    ID_PRIEBEH,
+    ID_STAV,
+    ID_PATA,
+    ID_ROZSIRENE,
+    301,
+    302,
+    303,
+    304,
+    311,
+    312,
+    313,
+    ID_ULOHA,
+    ID_ISO,
+    ID_ISO_VYBER,
+    ID_ROZBOR,
+    ID_SYSTEM,
+    ID_SCHEMA,
+    ID_MENOVKA,
+    ID_UPLNE,
+    ID_SUCET,
+];
+
+/// Rozloženie jednoduchého režimu: (id, x, y, šírka, výška) v logických bodoch (pri 96 DPI).
 const ROZLOZENIE: &[(i32, i32, i32, i32, i32)] = &[
     (201, 24, 110, 552, 24),
     (ID_OBRAZ, 24, 140, 430, 24),
@@ -318,8 +399,54 @@ const ROZLOZENIE: &[(i32, i32, i32, i32, i32)] = &[
     (ID_ZAPIS, 24, 438, 552, 46),
     (ID_PRIEBEH, 24, 496, 552, 12),
     (ID_STAV, 24, 516, 552, 44),
-    (ID_PATA, 24, 568, 552, 22),
+    (ID_PATA, 24, 568, 430, 22),
+    (ID_ROZSIRENE, 464, 564, 112, 28),
 ];
+
+/// Rozloženie podľa režimu a úlohy.
+fn rozlozenie(rozsirene: bool, uloha: usize) -> Vec<(i32, i32, i32, i32, i32)> {
+    if !rozsirene {
+        return ROZLOZENIE.to_vec();
+    }
+    let mut r = vec![(301, 24, 104, 552, 24), (ID_ULOHA, 24, 132, 552, 200), (302, 24, 176, 552, 24)];
+    if uloha == U_NAPAL {
+        r.extend([
+            (ID_ISO, 24, 206, 430, 24),
+            (ID_ISO_VYBER, 464, 202, 112, 30),
+            (ID_ROZBOR, 24, 238, 552, 50),
+        ]);
+    } else {
+        r.push((ID_ROZBOR, 24, 206, 552, 80));
+    }
+    r.extend([(303, 24, 294, 552, 24), (ID_KARTA, 24, 322, 430, 240), (ID_OBNOV, 464, 320, 112, 30)]);
+    r.push((304, 24, 366, 552, 24));
+    match uloha {
+        U_NAPAL => r.extend([
+            (311, 24, 400, 120, 24),
+            (ID_SCHEMA, 150, 396, 150, 200),
+            (313, 24, 434, 120, 24),
+            (ID_SUCET, 150, 430, 426, 28),
+        ]),
+        U_FORMAT => r.extend([
+            (311, 24, 400, 120, 24),
+            (ID_SYSTEM, 150, 396, 150, 200),
+            (312, 320, 400, 80, 24),
+            (ID_SCHEMA, 400, 396, 176, 200),
+            (313, 24, 434, 120, 24),
+            (ID_MENOVKA, 150, 430, 150, 28),
+            (ID_UPLNE, 320, 432, 256, 24),
+        ]),
+        _ => r.push((ID_UPLNE, 24, 400, 552, 24)),
+    }
+    r.extend([
+        (ID_ZAPIS, 24, 488, 552, 46),
+        (ID_PRIEBEH, 24, 546, 552, 12),
+        (ID_STAV, 24, 566, 552, 44),
+        (ID_PATA, 24, 618, 430, 22),
+        (ID_ROZSIRENE, 464, 614, 112, 28),
+    ]);
+    r
+}
 
 const JAZYKY: [(&str, &str); 3] = [("Slovenčina", "sk"), ("Čeština", "cs"), ("English", "en")];
 
@@ -328,10 +455,20 @@ fn w(s: &str) -> Vec<u16> {
 }
 
 /// Skúška v CI: obraz, číslo disku a meno sa vyplnia samy a zápis sa spustí bez otázok.
+/// Rozšírená skúška: (úloha, parameter) – napr. (formátovanie, „exfat:SKUSKA“) alebo (napálenie, ISO).
 struct Skuska {
     obraz: String,
     disk: u32,
     meno: String,
+    rozsirena: Option<(usize, String)>,
+}
+
+/// Práca, ktorá beží vo vlákne.
+enum Praca {
+    Zapis(Priprava),
+    Napal { iso: String, disk: InfoDisku, schema: Schema, sucet: Option<String> },
+    Formatuj { disk: InfoDisku, f: Formatovanie },
+    Kontrola { disk: InfoDisku, uplne: bool },
 }
 
 struct Stav {
@@ -347,6 +484,12 @@ struct Stav {
     zavriet: bool,
     dovol_virtualny: bool,
     skuska: Option<Skuska>,
+    rozsirene: bool,
+    uloha: usize,
+    iso: Option<PathBuf>,
+    rozbor: Option<iso::Rozbor>,
+    /// Druh poslednej spustenej práce (na správu po dokončení): 0 zápis, 1 napálenie, 2 formát, 3 kontrola.
+    druh_prace: u8,
 }
 
 thread_local! {
@@ -432,11 +575,26 @@ fn nakresli_hlavicku(s: &mut Stav, sirka: i32) {
     let k = s.dpi as f32 / 96.0;
     let mut p = Platno::nove(sirka.max(1) as usize, v.max(1) as usize, 0x0F1C15);
     p.text(&s.pismo, "SADIČ", 24.0 * k, 52.0 * k, 30.0 * k, 3.8 * k, 0x6FD08C);
-    p.text(&s.pismo, "Karta SKLENÍK pre každé Raspberry Pi", 24.0 * k, 79.0 * k, 12.0 * k, 1.5 * k, 0xE8F0EA);
+    let podtitul = if s.rozsirene {
+        "Rozšírené: ISO, formátovanie a kontrola kariet"
+    } else {
+        "Karta SKLENÍK pre každé Raspberry Pi"
+    };
+    p.text(&s.pismo, podtitul, 24.0 * k, 79.0 * k, 12.0 * k, 1.5 * k, 0xE8F0EA);
     let heslo = "Chladné RPi";
     let hw = s.pismo.sirka(heslo, 11.0 * k, 1.3 * k);
     p.text(&s.pismo, heslo, sirka as f32 - 24.0 * k - hw, 52.0 * k, 11.0 * k, 1.3 * k, 0x9DB3A5);
     s.hlavicka = Some(p);
+}
+
+/// Nakreslí hlavičku znova (po prepnutí režimu sa mení podtitul).
+fn nakresli_hlavicku_znova(s: &mut Stav) {
+    let mut r = Rect::default();
+    // SAFETY: platné okno a štruktúra.
+    unsafe { GetClientRect(s.hwnd, &mut r) };
+    nakresli_hlavicku(s, r.r - r.l);
+    // SAFETY: platné okno.
+    unsafe { InvalidateRect(s.hwnd, std::ptr::null(), 1) };
 }
 
 fn vytvor_fonty(s: &mut Stav) {
@@ -454,12 +612,19 @@ fn vytvor_fonty(s: &mut Stav) {
 
 fn rozloz(s: &mut Stav) {
     vytvor_fonty(s);
-    for &(id, x, y, sirka, vyska) in ROZLOZENIE {
+    let r = rozlozenie(s.rozsirene, s.uloha);
+    for &id in VSETKY {
+        if !r.iter().any(|z| z.0 == id) {
+            // SAFETY: náš prvok.
+            unsafe { ShowWindow(prvok(s.hwnd, id), SW_HIDE) };
+        }
+    }
+    for &(id, x, y, sirka, vyska) in &r {
         let h = prvok(s.hwnd, id);
         let font = match id {
-            201..=203 => s.fonty[1],
+            201..=203 | 301..=304 => s.fonty[1],
             ID_ZAPIS => s.fonty[2],
-            ID_PATA => s.fonty[3],
+            ID_PATA | ID_ROZBOR => s.fonty[3],
             _ => s.fonty[0],
         };
         let d = s.dpi;
@@ -467,6 +632,7 @@ fn rozloz(s: &mut Stav) {
         unsafe {
             MoveWindow(h, skaluj(x, d), skaluj(y, d), skaluj(sirka, d), skaluj(vyska, d), 1);
             SendMessageW(h, WM_SETFONT, font as usize, 1);
+            ShowWindow(h, SW_SHOW);
         }
     }
     let mut r = Rect::default();
@@ -499,6 +665,12 @@ fn nacitaj_disky(s: &mut Stav) {
         if s.disky.is_empty() {
             FARBA_STAVU.store(0x0050_6070, Ordering::Relaxed);
             nastav_text(stav, "Vložte SD kartu alebo USB disk – zoznam sa obnoví sám.");
+        } else if s.rozsirene && s.uloha == U_NAPAL && s.iso.is_none() {
+            FARBA_STAVU.store(0x0050_6070, Ordering::Relaxed);
+            nastav_text(stav, "Vyberte ISO alebo obraz disku (alebo ho sem pretiahnite myšou).");
+        } else if s.rozsirene {
+            FARBA_STAVU.store(0x0030_3030, Ordering::Relaxed);
+            nastav_text(stav, "Pripravené. Skontrolujte disk a možnosti.");
         } else if s.obraz.is_none() {
             FARBA_STAVU.store(0x0050_6070, Ordering::Relaxed);
             nastav_text(stav, "Vyberte obraz SKLENÍK (súbor .img alebo stiahnutý .zip).");
@@ -527,11 +699,10 @@ fn nastav_obraz(s: &mut Stav, p: Option<PathBuf>) {
     nastav_text(prvok(s.hwnd, ID_OBRAZ), &t);
 }
 
-fn vyber_subor(hwnd: Hwnd) -> Option<PathBuf> {
+fn vyber_subor(hwnd: Hwnd, filter: &str, nadpis: &str) -> Option<PathBuf> {
     let mut buf = vec![0u16; 1024];
-    let filter: Vec<u16> =
-        "Obraz SKLENÍK (*.img, *.zip)\0*.img;*.zip\0Všetky súbory\0*.*\0\0".encode_utf16().collect();
-    let nadpis = w("Vyberte obraz SKLENÍK");
+    let filter: Vec<u16> = filter.encode_utf16().collect();
+    let nadpis = w(nadpis);
     let mut o = OpenFileNameW {
         velkost: std::mem::size_of::<OpenFileNameW>() as u32,
         vlastnik: hwnd,
@@ -566,11 +737,167 @@ fn vyber_subor(hwnd: Hwnd) -> Option<PathBuf> {
 }
 
 fn zamkni(s: &Stav, pracuje: bool) {
-    for id in [ID_VYBER, ID_KARTA, ID_OBNOV, ID_MENO, ID_WIFI, ID_HESLO, ID_JAZYK] {
+    for id in [
+        ID_VYBER,
+        ID_KARTA,
+        ID_OBNOV,
+        ID_MENO,
+        ID_WIFI,
+        ID_HESLO,
+        ID_JAZYK,
+        ID_ROZSIRENE,
+        ID_ULOHA,
+        ID_ISO_VYBER,
+        ID_SYSTEM,
+        ID_SCHEMA,
+        ID_MENOVKA,
+        ID_UPLNE,
+        ID_SUCET,
+    ] {
         // SAFETY: naše prvky.
         unsafe { EnableWindow(prvok(s.hwnd, id), (!pracuje) as i32) };
     }
-    nastav_text(prvok(s.hwnd, ID_ZAPIS), if pracuje { "Zrušiť" } else { "Zapísať" });
+    nastav_text(prvok(s.hwnd, ID_ZAPIS), if pracuje { "Zrušiť" } else { text_tlacidla(s) });
+}
+
+fn text_tlacidla(s: &Stav) -> &'static str {
+    match (s.rozsirene, s.uloha) {
+        (false, _) => "Zapísať",
+        (true, U_NAPAL) => "Napáliť",
+        (true, U_FORMAT) => "Formátovať",
+        _ => "Skontrolovať",
+    }
+}
+
+fn vyber_combo(s: &Stav, id: i32) -> usize {
+    // SAFETY: náš prvok.
+    unsafe { SendMessageW(prvok(s.hwnd, id), CB_GETCURSEL, 0, 0) }.max(0) as usize
+}
+
+fn zaskrtnute(s: &Stav, id: i32) -> bool {
+    // SAFETY: náš prvok.
+    unsafe { SendMessageW(prvok(s.hwnd, id), BM_GETCHECK, 0, 0) == 1 }
+}
+
+/// Texty prvkov podľa úlohy rozšíreného režimu.
+fn obnov_texty(s: &mut Stav) {
+    let h = s.hwnd;
+    let (nadpis2, rozbor) = match s.uloha {
+        U_NAPAL => ("2   Obraz (ISO, .img, .zip)", popis_rozboru(s)),
+        U_FORMAT => (
+            "2   Čo sa stane",
+            "Vymaže všetko vrátane starých tabuliek a stôp po ISO a vytvorí jeden oddiel zarovnaný podľa \
+             pamäte flash (ako SD Formatter). Automaticky: do 32 GB FAT32, väčšie exFAT."
+                .to_string(),
+        ),
+        _ => (
+            "2   Čo sa stane",
+            "Zapíše jedinečné bloky po celej kapacite a prečíta ich späť – odhalí falošnú kapacitu a chybné \
+             miesta a zmeria zápis a čítanie. Potom disk naformátuje (falošný len na skutočnú kapacitu)."
+                .to_string(),
+        ),
+    };
+    nastav_text(prvok(h, 302), nadpis2);
+    nastav_text(prvok(h, ID_ROZBOR), &rozbor);
+    let (l1, l2, l3) = match s.uloha {
+        U_NAPAL => ("Tabuľka", "", "SHA-256"),
+        U_FORMAT => ("Systém", "Tabuľka", "Menovka"),
+        _ => ("", "", ""),
+    };
+    nastav_text(prvok(h, 311), l1);
+    nastav_text(prvok(h, 312), l2);
+    nastav_text(prvok(h, 313), l3);
+    nastav_text(
+        prvok(h, ID_UPLNE),
+        if s.uloha == U_KONTROLA {
+            "Úplná kontrola celého povrchu (dlho – celý disk sa zapíše a prečíta)"
+        } else {
+            "Úplné vymazanie (pomalé)"
+        },
+    );
+    nastav_text(prvok(h, ID_ZAPIS), text_tlacidla(s));
+    let nazov = if s.rozsirene {
+        "SADIČ – rozšírené: ISO, formátovanie, kontrola"
+    } else {
+        "SADIČ – karta SKLENÍK pre Raspberry Pi"
+    };
+    nastav_text(h, nazov);
+}
+
+fn popis_rozboru(s: &Stav) -> String {
+    let Some(r) = &s.rozbor else {
+        if s.iso.is_some() {
+            return "Obraz v súbore ZIP – pred zápisom sa rozbalí a rozoberie.".into();
+        }
+        return "Linux (Ubuntu, Debian, Fedora …) aj Windows. Hybridné ISO sa zapíše bit po bite, ostatné sa \
+                rozbalia na FAT32 a štartujú cez UEFI. Súbor môžete pretiahnuť myšou."
+            .into();
+    };
+    let mut st = Vec::new();
+    if r.bios() || r.mbr_kod && r.hybridne() {
+        st.push("BIOS");
+    }
+    if r.efi() {
+        st.push("UEFI");
+    }
+    let mut t = format!(
+        "{} · {} · {}",
+        r.druh().popis(),
+        r.system.clone().unwrap_or_else(|| if r.menovka.is_empty() {
+            "–".into()
+        } else {
+            r.menovka.clone()
+        }),
+        disk::velkost(r.velkost)
+    );
+    if !st.is_empty() {
+        t += &format!(" · štart {}", st.join(" + "));
+    }
+    t += &format!("\n→ {}", r.odporucanie());
+    if !r.nad_4gb().is_empty() {
+        t += " – súbory nad 4 GB pôjdu na druhý oddiel exFAT";
+    }
+    if matches!(r.druh(), iso::Druh::WindowsIso | iso::Druh::IsoNaRozbalenie) && !r.efi() {
+        t += "\n⚠ ISO nemá štart cez UEFI – z USB sa nespustí.";
+    }
+    t
+}
+
+/// Nastaví ISO (alebo obraz) rozšíreného režimu a hneď ho rozoberie.
+fn nastav_iso(s: &mut Stav, p: Option<PathBuf>) {
+    let zip = p.as_ref().is_some_and(|c| c.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")));
+    s.rozbor = p.as_ref().filter(|_| !zip).and_then(|c| {
+        let (cesta, docasny) = crate::zip::priprav_obraz(c).ok()?;
+        let r = std::fs::File::open(&cesta).ok().and_then(|mut f| iso::rozober(&mut f).ok());
+        if docasny {
+            let _ = std::fs::remove_file(&cesta);
+        }
+        r
+    });
+    s.iso = p;
+    let t = s
+        .iso
+        .as_ref()
+        .map_or("(žiadny obraz – stlačte Vybrať…)".to_string(), |p| p.display().to_string());
+    nastav_text(prvok(s.hwnd, ID_ISO), &t);
+    obnov_texty(s);
+}
+
+/// Prepne jednoduchý ↔ rozšírený režim (zmení aj výšku okna).
+fn prepni_rezim(s: &mut Stav, rozsirene: bool) {
+    s.rozsirene = rozsirene;
+    nastav_text(prvok(s.hwnd, ID_ROZSIRENE), if rozsirene { "◂ Jednoduché" } else { "Rozšírené…" });
+    let styl = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    let v = if rozsirene { VYSKA_ROZSIRENA } else { VYSKA };
+    let mut r = Rect { l: 0, t: 0, r: skaluj(SIRKA, s.dpi), b: skaluj(v, s.dpi) };
+    // SAFETY: platné okno a štruktúra.
+    unsafe {
+        AdjustWindowRectExForDpi(&mut r, styl, 0, WS_EX_CONTROLPARENT, s.dpi);
+        SetWindowPos(s.hwnd, 0, 0, 0, r.r - r.l, r.b - r.t, 0x2 | 0x4);
+    }
+    obnov_texty(s);
+    rozloz(s);
+    nacitaj_disky(s);
 }
 
 /// Údaje na zápis prečítané z okna (alebo chyba pre používateľa).
@@ -623,10 +950,28 @@ fn cas(sekundy: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-fn spusti_zapis(hwnd: Hwnd, p: Priprava, dovol_virtualny: bool, zrus: Arc<AtomicBool>) {
+fn text_fazy(f: Faza) -> &'static str {
+    match f {
+        Faza::Rozbalenie => "Pripravujem obraz…",
+        Faza::Zapis | Faza::Citanie => "Zapisujem…",
+        Faza::Overenie => "Overujem…",
+        Faza::Sucet => "Kontrolný súčet SHA-256…",
+        Faza::Mazanie => "Mažem disk…",
+        Faza::Formatovanie => "Formátujem…",
+        Faza::SkuskaZapis => "Skúšobný zápis…",
+        Faza::SkuskaCitanie => "Kontrola čítaním…",
+    }
+}
+
+fn spusti_pracu(hwnd: Hwnd, praca: Praca, dovol_virtualny: bool, zrus: Arc<AtomicBool>) {
     zrus.store(false, Ordering::Relaxed);
     std::thread::spawn(move || {
-        let ocakavany = p.disk.clone();
+        let ocakavany = match &praca {
+            Praca::Zapis(p) => p.disk.clone(),
+            Praca::Napal { disk, .. } | Praca::Formatuj { disk, .. } | Praca::Kontrola { disk, .. } => {
+                disk.clone()
+            }
+        };
         let mut potvrd = |d: &InfoDisku| d.model == ocakavany.model && d.velkost == ocakavany.velkost;
         let mut posledny = (Faza::Rozbalenie, -1i64, Instant::now());
         let mut start = Instant::now();
@@ -639,6 +984,7 @@ fn spusti_zapis(hwnd: Hwnd, p: Priprava, dovol_virtualny: bool, zrus: Arc<Atomic
                 Faza::Rozbalenie => 0,
                 Faza::Zapis | Faza::Citanie => (podiel * 600.0) as i64,
                 Faza::Overenie => 600 + (podiel * 400.0) as i64,
+                _ => (podiel * 1000.0) as i64,
             };
             if f == posledny.0 && promile == posledny.1 && posledny.2.elapsed().as_millis() < 250 {
                 return;
@@ -650,7 +996,7 @@ fn spusti_zapis(hwnd: Hwnd, p: Priprava, dovol_virtualny: bool, zrus: Arc<Atomic
                 Faza::Rozbalenie => "Pripravujem obraz (rozbaľujem ZIP)…".to_string(),
                 _ => format!(
                     "{} {:.0} %  ·  {:.0} MB/s  ·  zostáva {}",
-                    if f == Faza::Overenie { "Overujem kartu…" } else { "Zapisujem…" },
+                    text_fazy(f),
                     podiel * 100.0,
                     rychlost,
                     cas(zostava)
@@ -661,22 +1007,117 @@ fn spusti_zapis(hwnd: Hwnd, p: Priprava, dovol_virtualny: bool, zrus: Arc<Atomic
             }
             posledny = (f, promile, Instant::now());
             // SAFETY: odoslanie správy oknu z iného vlákna je vo Win32 dovolené.
-            unsafe { PostMessageW(hwnd, WM_PRIEBEH, promile as usize, 0) };
+            unsafe { PostMessageW(hwnd, WM_PRIEBEH, promile.clamp(0, 1000) as usize, 0) };
         };
-        let u = Uloha {
-            obraz: &p.obraz,
-            disk: p.disk.cislo,
-            nastavenie: &p.nastavenie,
-            dovol_virtualny,
-            zapisovat: true,
-        };
-        let r = platforma::vykonaj(&u, &mut potvrd, &mut priebeh, &zrus).map_err(|e| e.1);
+        let r = match praca {
+            Praca::Zapis(p) => {
+                let u = Uloha {
+                    obraz: &p.obraz,
+                    disk: p.disk.cislo,
+                    nastavenie: &p.nastavenie,
+                    dovol_virtualny,
+                    zapisovat: true,
+                };
+                platforma::vykonaj(&u, &mut potvrd, &mut priebeh, &zrus)
+            }
+            Praca::Napal { iso, disk, schema, sucet } => platforma::napal_jadro(
+                &iso,
+                disk.cislo,
+                schema,
+                sucet.as_deref(),
+                dovol_virtualny,
+                &mut potvrd,
+                &mut priebeh,
+                &zrus,
+            ),
+            Praca::Formatuj { disk, f } => {
+                platforma::formatuj_jadro(disk.cislo, &f, dovol_virtualny, &mut potvrd, &mut priebeh, &zrus)
+            }
+            Praca::Kontrola { disk, uplne } => platforma::skontroluj_jadro(
+                disk.cislo,
+                uplne,
+                dovol_virtualny,
+                &mut potvrd,
+                &mut priebeh,
+                &zrus,
+            ),
+        }
+        .map_err(|e| e.1);
         if let Ok(mut g) = VYSLEDOK.lock() {
             *g = Some(r);
         }
         // SAFETY: ako vyššie.
         unsafe { PostMessageW(hwnd, WM_HOTOVO, 0, 0) };
     });
+}
+
+/// Pripraví prácu rozšíreného režimu z okna (alebo chybu pre používateľa) a text potvrdenia.
+fn priprav_rozsirenu(s: &Stav) -> Result<(Praca, String), String> {
+    let disk = vybrany_disk(s).ok_or("Vložte SD kartu alebo USB disk a vyberte ho v zozname.")?;
+    let schema = if vyber_combo(s, ID_SCHEMA) == 1 { Schema::Gpt } else { Schema::Mbr };
+    let nazov_disku = popis_disku(&disk);
+    match s.uloha {
+        U_NAPAL => {
+            let iso = s.iso.clone().ok_or("Najprv vyberte ISO alebo obraz disku (tlačidlo Vybrať…).")?;
+            let text_suctu = text(prvok(s.hwnd, ID_SUCET));
+            let sucet = if text_suctu.trim().is_empty() {
+                None
+            } else {
+                Some(sha256::najdi_sucet(&text_suctu).ok_or(
+                    "Kontrolný súčet SHA-256 má 64 znakov 0–9 a a–f (skopírujte ho zo stránky distribúcie).",
+                )?)
+            };
+            let co = s.rozbor.as_ref().map_or("obraz v ZIP".to_string(), |r| {
+                format!("{} – {}", r.druh().popis(), r.system.clone().unwrap_or_else(|| r.menovka.clone()))
+            });
+            let ako = s.rozbor.as_ref().map_or("rozbalí sa a zapíše", |r| r.odporucanie());
+            let meno = iso.file_name().map_or(String::new(), |m| m.to_string_lossy().into_owned());
+            let zhrnutie = format!(
+                "Na disk „{nazov_disku}“ sa napáli:\n{meno}\n{co}\n→ {ako}{}\n\nVšetko, čo je teraz na disku, sa zmaže.\n\nPokračovať?",
+                if sucet.is_some() { "\n(najprv sa overí kontrolný súčet SHA-256)" } else { "" }
+            );
+            Ok((Praca::Napal { iso: iso.display().to_string(), disk, schema, sucet }, zhrnutie))
+        }
+        U_FORMAT => {
+            let system = match vyber_combo(s, ID_SYSTEM) {
+                1 => System::Fat32,
+                2 => System::ExFat,
+                _ => System::Automaticky,
+            };
+            let f = Formatovanie {
+                system,
+                schema,
+                menovka: text(prvok(s.hwnd, ID_MENOVKA)).trim().to_string(),
+                klaster: None,
+                uplne: zaskrtnute(s, ID_UPLNE),
+            };
+            let zhrnutie = format!(
+                "Disk „{nazov_disku}“ sa naformátuje:\n{}, tabuľka {}{}{}\n\nVšetko, čo je teraz na disku, sa zmaže.\n\nPokračovať?",
+                system.pre(disk.velkost).nazov(),
+                schema.nazov(),
+                if f.menovka.is_empty() { String::new() } else { format!(", menovka „{}“", f.menovka) },
+                if f.uplne {
+                    "\nÚplné vymazanie: celý disk sa prepíše nulami (potrvá dlhšie)."
+                } else {
+                    ""
+                }
+            );
+            Ok((Praca::Formatuj { disk, f }, zhrnutie))
+        }
+        _ => {
+            let uplne = zaskrtnute(s, ID_UPLNE);
+            let zhrnutie = format!(
+                "Kontrola zapíše skúšobné údaje na disk „{nazov_disku}“ – všetko, čo je na ňom, sa zmaže.\n\
+                 Potom sa disk naformátuje (falošný len na skutočnú kapacitu).{}\n\nPokračovať?",
+                if uplne {
+                    "\n\nÚplná kontrola zapíše a prečíta celý povrch – pri veľkých kartách aj hodinu."
+                } else {
+                    ""
+                }
+            );
+            Ok((Praca::Kontrola { disk, uplne }, zhrnutie))
+        }
+    }
 }
 
 fn klik_zapis(hwnd: Hwnd) {
@@ -693,9 +1134,27 @@ fn klik_zapis(hwnd: Hwnd) {
         }
         return;
     }
-    let Some(priprava) = s_stavom(|s| priprav(s)) else { return };
+    let Some(priprava) = s_stavom(|s| {
+        if s.rozsirene {
+            priprav_rozsirenu(s).map(|(p, z)| {
+                let druh = match p {
+                    Praca::Napal { .. } => 1,
+                    Praca::Formatuj { .. } => 2,
+                    _ => 3,
+                };
+                (p, z, druh)
+            })
+        } else {
+            priprav(s).map(|p| {
+                let z = p.zhrnutie.clone();
+                (Praca::Zapis(p), z, 0)
+            })
+        }
+    }) else {
+        return;
+    };
     let skuska = s_stavom(|s| s.skuska.is_some()).unwrap_or(false);
-    let p = match priprava {
+    let (p, zhrnutie, druh) = match priprava {
         Ok(p) => p,
         Err(e) => {
             if skuska {
@@ -708,11 +1167,12 @@ fn klik_zapis(hwnd: Hwnd) {
             return;
         }
     };
-    if !skuska && sprava(hwnd, &p.zhrnutie, MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != 1 {
+    if !skuska && sprava(hwnd, &zhrnutie, MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != 1 {
         return;
     }
     let Some((dovol, zrus)) = s_stavom(|s| {
         s.pracuje = true;
+        s.druh_prace = druh;
         zamkni(s, true);
         // SAFETY: náš ukazovateľ priebehu.
         unsafe {
@@ -726,14 +1186,19 @@ fn klik_zapis(hwnd: Hwnd) {
         return;
     };
     if skuska {
-        println!("okno: zapisujem {} na disk {} ({})", p.obraz, p.disk.cislo, popis_disku(&p.disk));
+        match &p {
+            Praca::Zapis(p) => {
+                println!("okno: zapisujem {} na disk {} ({})", p.obraz, p.disk.cislo, popis_disku(&p.disk))
+            }
+            _ => println!("okno: rozšírené – {}", zhrnutie.replace('\n', " ")),
+        }
     }
-    spusti_zapis(hwnd, p, dovol, zrus);
+    spusti_pracu(hwnd, p, dovol, zrus);
 }
 
 fn hotovo(hwnd: Hwnd) {
     let r = VYSLEDOK.lock().ok().and_then(|mut g| g.take());
-    let Some((skuska, zavriet)) = s_stavom(|s| {
+    let Some((skuska, zavriet, druh)) = s_stavom(|s| {
         s.pracuje = false;
         zamkni(s, false);
         let ok = matches!(r, Some(Ok(_)));
@@ -744,23 +1209,25 @@ fn hotovo(hwnd: Hwnd) {
                 SendMessageW(prvok(s.hwnd, ID_PRIEBEH), PBM_SETPOS, 1000, 0);
             }
         }
-        let t = match &r {
-            Some(Ok(_)) => {
+        let t = match (&r, s.druh_prace) {
+            (Some(Ok(_)), 0) => {
                 "✓ Hotovo – karta je zapísaná a overená. Môžete ju vybrať a vložiť do Raspberry Pi."
                     .to_string()
             }
-            Some(Err(e)) => format!("✗ {e}"),
-            None => "✗ Neznámy výsledok.".into(),
+            (Some(Ok(t)), _) => format!("✓ {}", t.lines().next().unwrap_or("Hotovo.")),
+            (Some(Err(e)), _) => format!("✗ {}", e.lines().next().unwrap_or("chyba")),
+            (None, _) => "✗ Neznámy výsledok.".into(),
         };
         FARBA_STAVU.store(if ok { 0x0028_8A2E } else { 0x0020_20C8 }, Ordering::Relaxed);
         nastav_text(prvok(s.hwnd, ID_STAV), &t);
-        (s.skuska.is_some(), s.zavriet)
+        (s.skuska.is_some(), s.zavriet, s.druh_prace)
     }) else {
         return;
     };
     if skuska {
         match &r {
-            Some(Ok(h)) => println!("okno: ✅ zapísané a overené – odtlačok {h}"),
+            Some(Ok(h)) if druh == 0 => println!("okno: ✅ zapísané a overené – odtlačok {h}"),
+            Some(Ok(t)) => println!("okno: ✅ {}", t.replace('\n', " | ")),
             Some(Err(e)) => println!("okno: ❌ {e}"),
             None => println!("okno: ❌ bez výsledku"),
         }
@@ -774,6 +1241,7 @@ fn hotovo(hwnd: Hwnd) {
         return;
     }
     match r {
+        Some(Ok(t)) if druh != 0 => sprava(hwnd, &format!("Hotovo.\n\n{t}"), MB_ICONINFORMATION),
         Some(Ok(_)) => sprava(
             hwnd,
             &format!(
@@ -861,18 +1329,90 @@ extern "system" fn okno_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize 
             let kod = (wp >> 16) & 0xFFFF;
             match (id, kod) {
                 (ID_VYBER, 0) => {
-                    if let Some(p) = vyber_subor(hwnd) {
+                    if let Some(p) = vyber_subor(
+                        hwnd,
+                        "Obraz SKLENÍK (*.img, *.zip)\0*.img;*.zip\0Všetky súbory\0*.*\0\0",
+                        "Vyberte obraz SKLENÍK",
+                    ) {
                         s_stavom(|s| {
                             nastav_obraz(s, Some(p));
                             nacitaj_disky(s);
                         });
                     }
                 }
+                (ID_ISO_VYBER, 0) => {
+                    if let Some(p) = vyber_subor(
+                        hwnd,
+                        "ISO a obrazy diskov (*.iso, *.img, *.zip)\0*.iso;*.img;*.zip;*.raw;*.bin\0Všetky súbory\0*.*\0\0",
+                        "Vyberte ISO alebo obraz disku",
+                    ) {
+                        s_stavom(|s| {
+                            nastav_iso(s, Some(p));
+                            nacitaj_disky(s);
+                        });
+                    }
+                }
+                (ID_ROZSIRENE, 0) => {
+                    s_stavom(|s| {
+                        let r = !s.rozsirene;
+                        prepni_rezim(s, r);
+                        nakresli_hlavicku_znova(s);
+                    });
+                }
+                (ID_ULOHA, CBN_SELCHANGE) => {
+                    s_stavom(|s| {
+                        s.uloha = vyber_combo(s, ID_ULOHA).min(2);
+                        obnov_texty(s);
+                        rozloz(s);
+                        nacitaj_disky(s);
+                    });
+                }
                 (ID_OBNOV, 0) => {
                     s_stavom(nacitaj_disky);
                 }
                 (ID_ZAPIS, 0) => klik_zapis(hwnd),
                 _ => {}
+            }
+            0
+        }
+        WM_DROPFILES => {
+            let hdrop = wp as isize;
+            let mut buf = vec![0u16; 1024];
+            // SAFETY: hdrop pochádza zo správy WM_DROPFILES; buffer má udanú dĺžku; DragFinish ho uvoľní.
+            let n = unsafe {
+                let n = DragQueryFileW(hdrop, 0, buf.as_mut_ptr(), buf.len() as u32) as usize;
+                DragFinish(hdrop);
+                n
+            };
+            if n > 0 {
+                let p = PathBuf::from(String::from_utf16_lossy(&buf[..n.min(buf.len())]));
+                let iso = p
+                    .extension()
+                    .is_some_and(|e| !e.eq_ignore_ascii_case("img") && !e.eq_ignore_ascii_case("zip"));
+                let meno = p.file_name().map_or(String::new(), |m| m.to_string_lossy().to_lowercase());
+                s_stavom(|s| {
+                    if s.pracuje {
+                        return;
+                    }
+                    // obraz SKLENÍK do jednoduchého režimu, všetko ostatné (ISO …) do napálenia
+                    if !iso && meno.starts_with("sklenik") && !s.rozsirene {
+                        nastav_obraz(s, Some(p));
+                    } else {
+                        if !s.rozsirene || s.uloha != U_NAPAL {
+                            s.uloha = U_NAPAL;
+                            // SAFETY: náš prvok.
+                            unsafe { SendMessageW(prvok(s.hwnd, ID_ULOHA), CB_SETCURSEL, U_NAPAL, 0) };
+                            if !s.rozsirene {
+                                prepni_rezim(s, true);
+                                nakresli_hlavicku_znova(s);
+                            } else {
+                                rozloz(s);
+                            }
+                        }
+                        nastav_iso(s, Some(p));
+                    }
+                    nacitaj_disky(s);
+                });
             }
             0
         }
@@ -911,8 +1451,36 @@ extern "system" fn okno_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize 
             // skúška v CI: vyplní obraz, kartu a meno a stlačí Zapísať
             let ok = s_stavom(|s| {
                 let Some(k) = &s.skuska else { return false };
-                let (obraz, disk, meno) = (k.obraz.clone(), k.disk, k.meno.clone());
-                nastav_obraz(s, Some(PathBuf::from(obraz)));
+                let (obraz, disk, meno, rozsirena) =
+                    (k.obraz.clone(), k.disk, k.meno.clone(), k.rozsirena.clone());
+                if let Some((uloha, param)) = rozsirena {
+                    prepni_rezim(s, true);
+                    s.uloha = uloha;
+                    // SAFETY: naše prvky.
+                    unsafe { SendMessageW(prvok(s.hwnd, ID_ULOHA), CB_SETCURSEL, uloha, 0) };
+                    obnov_texty(s);
+                    rozloz(s);
+                    match uloha {
+                        U_NAPAL => nastav_iso(s, Some(PathBuf::from(&param))),
+                        U_FORMAT => {
+                            let (sys, menovka) = param.split_once(':').unwrap_or((&param, ""));
+                            let i = match sys {
+                                "fat32" => 1,
+                                "exfat" => 2,
+                                _ => 0,
+                            };
+                            // SAFETY: naše prvky.
+                            unsafe { SendMessageW(prvok(s.hwnd, ID_SYSTEM), CB_SETCURSEL, i, 0) };
+                            nastav_text(prvok(s.hwnd, ID_MENOVKA), menovka);
+                        }
+                        _ => {}
+                    }
+                    if let Some(r) = &s.rozbor {
+                        println!("okno: rozbor – {}", r.suhrn().replace('\n', " | "));
+                    }
+                } else {
+                    nastav_obraz(s, Some(PathBuf::from(obraz)));
+                }
                 nacitaj_disky(s);
                 println!(
                     "okno: v zozname kariet {} položka(y): {:?}",
@@ -922,7 +1490,9 @@ extern "system" fn okno_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize 
                 let Some(i) = s.disky.iter().position(|d| d.cislo == disk) else { return false };
                 // SAFETY: naše prvky.
                 unsafe { SendMessageW(prvok(s.hwnd, ID_KARTA), CB_SETCURSEL, i, 0) };
-                nastav_text(prvok(s.hwnd, ID_MENO), &meno);
+                if !s.rozsirene {
+                    nastav_text(prvok(s.hwnd, ID_MENO), &meno);
+                }
                 true
             })
             .unwrap_or(false);
@@ -1000,14 +1570,33 @@ fn prvok_novy(rodic: Hwnd, trieda: &str, text: &str, styl: u32, ex: u32, id: i32
 
 /// Otvorí okno SADIČA a vráti sa až po jeho zatvorení (návratový kód programu).
 pub fn spusti(dovol_virtualny: bool) -> i32 {
-    let skuska = std::env::var("SADIC_SKUSKA_OKNA").ok().and_then(|v| {
-        let c: Vec<&str> = v.split('|').collect();
-        (c.len() == 3).then(|| Skuska {
-            obraz: c[0].into(),
-            disk: c[1].parse().unwrap_or(u32::MAX),
-            meno: c[2].into(),
+    let skuska = std::env::var("SADIC_SKUSKA_OKNA")
+        .ok()
+        .and_then(|v| {
+            let c: Vec<&str> = v.split('|').collect();
+            (c.len() == 3).then(|| Skuska {
+                obraz: c[0].into(),
+                disk: c[1].parse().unwrap_or(u32::MAX),
+                meno: c[2].into(),
+                rozsirena: None,
+            })
         })
-    });
+        .or_else(|| {
+            // rozšírená skúška: „napal|disk|cesta.iso“, „formatuj|disk|exfat:MENOVKA“, „kontrola|disk|“
+            let v = std::env::var("SADIC_SKUSKA_ROZSIRENE").ok()?;
+            let c: Vec<&str> = v.splitn(3, '|').collect();
+            let uloha = match *c.first()? {
+                "napal" => U_NAPAL,
+                "formatuj" => U_FORMAT,
+                _ => U_KONTROLA,
+            };
+            Some(Skuska {
+                obraz: String::new(),
+                disk: c.get(1)?.parse().unwrap_or(u32::MAX),
+                meno: String::new(),
+                rozsirena: Some((uloha, c.get(2).unwrap_or(&"").to_string())),
+            })
+        });
     // SAFETY: obyčajné volania Win32 pri štarte; štruktúry žijú počas volaní.
     unsafe {
         // spustené dvojklikom: konzolové okno, ktoré Windows otvorilo len pre nás, zatvoríme
@@ -1114,6 +1703,54 @@ pub fn spusti(dovol_virtualny: bool) -> i32 {
             0,
             ID_PATA,
         );
+        prvok_novy(hwnd, "BUTTON", "Rozšírené…", WS_TABSTOP, 0, ID_ROZSIRENE);
+        // rozšírený režim (skrytý, kým sa neprepne)
+        for (id, t) in [
+            (301, "1   Úloha"),
+            (302, "2   Obraz"),
+            (303, "3   Disk"),
+            (304, "4   Možnosti"),
+            (311, ""),
+            (312, ""),
+            (313, ""),
+        ] {
+            prvok_novy(hwnd, "STATIC", t, SS_NOPREFIX, 0, id);
+        }
+        let uloha = prvok_novy(hwnd, "COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, ID_ULOHA);
+        for t in ULOHY {
+            let t = w(t);
+            SendMessageW(uloha, CB_ADDSTRING, 0, t.as_ptr() as isize);
+        }
+        SendMessageW(uloha, CB_SETCURSEL, 0, 0);
+        prvok_novy(hwnd, "STATIC", "", SS_NOPREFIX | SS_PATHELLIPSIS, 0, ID_ISO);
+        prvok_novy(hwnd, "BUTTON", "Vybrať…", WS_TABSTOP, 0, ID_ISO_VYBER);
+        prvok_novy(hwnd, "STATIC", "", SS_NOPREFIX, 0, ID_ROZBOR);
+        let system =
+            prvok_novy(hwnd, "COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, ID_SYSTEM);
+        for t in ["Automaticky", "FAT32", "exFAT"] {
+            let t = w(t);
+            SendMessageW(system, CB_ADDSTRING, 0, t.as_ptr() as isize);
+        }
+        SendMessageW(system, CB_SETCURSEL, 0, 0);
+        let schema =
+            prvok_novy(hwnd, "COMBOBOX", "", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, 0, ID_SCHEMA);
+        for t in ["MBR (BIOS aj UEFI)", "GPT (UEFI)"] {
+            let t = w(t);
+            SendMessageW(schema, CB_ADDSTRING, 0, t.as_ptr() as isize);
+        }
+        SendMessageW(schema, CB_SETCURSEL, 0, 0);
+        let m = prvok_novy(hwnd, "EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, ID_MENOVKA);
+        let n = w("napr. FOTKY (nepovinné)");
+        SendMessageW(m, EM_SETCUEBANNER, 0, n.as_ptr() as isize);
+        SendMessageW(m, EM_LIMITTEXT, 11, 0);
+        let u =
+            prvok_novy(hwnd, "BUTTON", "Úplné vymazanie (pomalé)", WS_TABSTOP | BS_AUTOCHECKBOX, 0, ID_UPLNE);
+        SendMessageW(u, BM_SETCHECK, 0, 0);
+        let k = prvok_novy(hwnd, "EDIT", "", WS_TABSTOP | ES_AUTOHSCROLL, WS_EX_CLIENTEDGE, ID_SUCET);
+        let n = w("kontrolný súčet zo stránky distribúcie (nepovinné)");
+        SendMessageW(k, EM_SETCUEBANNER, 0, n.as_ptr() as isize);
+        SendMessageW(k, EM_LIMITTEXT, 200, 0);
+        DragAcceptFiles(hwnd, 1);
 
         STAV.with(|s| {
             *s.borrow_mut() = Some(Stav {
@@ -1129,9 +1766,16 @@ pub fn spusti(dovol_virtualny: bool) -> i32 {
                 zavriet: false,
                 dovol_virtualny,
                 skuska,
+                rozsirene: false,
+                uloha: U_NAPAL,
+                iso: None,
+                rozbor: None,
+                druh_prace: 0,
             })
         });
         s_stavom(|s| {
+            obnov_texty(s);
+            nastav_iso(s, None);
             rozloz(s);
             nastav_obraz(s, najdi_obraz());
             nacitaj_disky(s);

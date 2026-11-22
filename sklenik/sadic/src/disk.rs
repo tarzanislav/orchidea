@@ -78,7 +78,23 @@ pub fn posud(d: &InfoDisku, dovol_virtualny: bool) -> Result<(), String> {
 /// Ľudsky čitateľná veľkosť.
 pub fn velkost(b: u64) -> String {
     let gb = b as f64 / 1e9;
-    if gb >= 1.0 { format!("{gb:.1} GB") } else { format!("{:.0} MB", b as f64 / 1e6) }
+    if gb >= 1.0 {
+        format!("{gb:.1} GB")
+    } else if b >= 1_000_000 {
+        format!("{:.0} MB", b as f64 / 1e6)
+    } else {
+        format!("{:.0} kB", (b as f64 / 1e3).max(1.0))
+    }
+}
+
+/// Slovenský tvar podľa počtu: 1 súbor, 2–4 súbory, 5 súborov.
+pub fn pocet(n: usize, jeden: &str, dva: &str, pat: &str) -> String {
+    let t = match n {
+        1 => jeden,
+        2..=4 => dva,
+        _ => pat,
+    };
+    format!("{n} {t}")
 }
 
 #[cfg(test)]

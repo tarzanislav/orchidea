@@ -4,18 +4,44 @@
 //! nastavenie zariadenia (meno, Wi-Fi, jazyk) a vie kartu zálohovať a obnoviť. Ponúkne len vymeniteľné
 //! disky a nikdy disk s operačným systémom počítača. Spustený dvojklikom otvorí jednoduché okno
 //! (obraz → karta → nastavenie → Zapísať); obraz vezme aj priamo zo stiahnutého súboru ZIP.
+//!
+//! Rozšírený režim (tlačidlo „Rozšírené…“ alebo príkazy nižšie): napálenie ISO a obrazov iných
+//! systémov (Linux, Windows …) s rozborom a kontrolným súčtom, čisté formátovanie (FAT32, exFAT; MBR
+//! alebo GPT, zarovnanie podľa pamäte flash) a kontrola falošnej kapacity a rýchlosti – všetko vlastným
+//! kódom, bez cudzích programov.
 
 #![deny(unsafe_code)]
 
 #[cfg_attr(not(windows), allow(dead_code))]
+mod ciel;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod disk;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod exfat;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod fat32;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod formatuj;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod iso;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod kontrola;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod oddiely;
 #[cfg(windows)]
 mod okno;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod rozbal;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod sha256;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod subory;
 #[cfg(windows)]
 mod windows;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod zip;
 
+use ciel::Ciel as _;
 use sklenik_karta as obraz;
 use sklenik_karta::Nastavenie;
 use std::fs::File;
@@ -33,7 +59,17 @@ const POMOC: &str = "SADIČ – zapisovač obrazov SKLENÍKA
   sadic priprav <obraz.img> [nastavenie]         zapíše nastavenie priamo do súboru obrazu
   sadic skusobny-obraz <súbor.img> [MB]          malý obraz na skúšky
 
+  ROZŠÍRENÉ
+  sadic skumaj <obraz.iso|.img> [subory] [sha256|sucet=…]  rozbor: druh, systém, štart BIOS/UEFI
+  sadic napal <obraz.iso|.img|.zip> <disk> [mbr|gpt] [sucet=…]  napáli ISO (Linux, Windows …) a overí ho
+  sadic formatuj <disk> [voľby]                  čisté formátovanie karty alebo USB disku
+  sadic formatuj-obraz <súbor.img> <MB> [voľby]  naformátovaný obraz disku (aj na skúšky)
+  sadic napal-obraz <obraz.iso> <súbor.img> <MB> [mbr|gpt]  ISO „napálené“ do súboru obrazu disku
+  sadic skontroluj <disk> [uplne]                falošná kapacita, chybné miesta, rýchlosť; potom naformátuje
+
   nastavenie: meno=… wifi=… wifi_heslo=… jazyk=… meranie=ano/nie   (heslo sa neukladá, len kľúč WPA)
+  voľby formátovania: auto|fat32|exfat  mbr|gpt  menovka=…  klaster=32K  uplne (vynuluje celý disk)
+  sucet=…   kontrolný súčet SHA-256 zo stránky distribúcie – pred napálením sa overí
   --potvrdzujem <disk>   potvrdenie bez otázky (napr. v skriptoch)";
 
 /// Chyba s návratovým kódom: 1 = chyba, 2 = zápis odmietnutý poistkou.
@@ -117,11 +153,143 @@ fn spusti() -> Vysledok<()> {
             platforma::zapis(cesta, cislo_disku(d)?, &nastavenie(&a.volne[3..])?, &a, false)
         }
         ["zaloha", d, cesta] => platforma::zaloha(cislo_disku(d)?, cesta, &a),
+        ["skumaj", cesta, zvysok @ ..] => skumaj(cesta, zvysok),
+        ["formatuj-obraz", cesta, mb, zvysok @ ..] => formatuj_obraz(cesta, mb, zvysok),
+        ["napal-obraz", iso, cesta, mb, zvysok @ ..] => napal_obraz(iso, cesta, mb, zvysok),
+        ["formatuj", d, zvysok @ ..] => {
+            let f = formatuj::Formatovanie::z_argumentov(zvysok.iter().copied()).map_err(|e| Chyba(1, e))?;
+            platforma::formatuj(cislo_disku(d)?, &f, &a)
+        }
+        ["napal", cesta, d, zvysok @ ..] => {
+            let schema = if zvysok.contains(&"gpt") { oddiely::Schema::Gpt } else { oddiely::Schema::Mbr };
+            platforma::napal(cesta, cislo_disku(d)?, &sucet(zvysok)?, schema, &a)
+        }
+        ["skontroluj", d, zvysok @ ..] => {
+            platforma::skontroluj(cislo_disku(d)?, zvysok.contains(&"uplne"), &a)
+        }
         _ => {
             println!("{POMOC}");
             Ok(())
         }
     }
+}
+
+/// Voľba `sucet=…` (SHA-256 zo stránky distribúcie).
+fn sucet(zvysok: &[&str]) -> Vysledok<Option<String>> {
+    match zvysok.iter().find_map(|a| a.strip_prefix("sucet=")) {
+        Some(t) => Ok(Some(sha256::najdi_sucet(t).ok_or(Chyba(1, format!("„{t}“ nie je súčet SHA-256")))?)),
+        None => Ok(None),
+    }
+}
+
+/// SHA-256 súboru s priebehom.
+fn sha256_suboru(cesta: &str, priebeh: &mut dyn FnMut(u64, u64)) -> Vysledok<String> {
+    let mut f = File::open(cesta)?;
+    let dlzka = f.metadata()?.len();
+    let mut h = sha256::Sha256::novy();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut hotovo = 0;
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.pridaj(&buf[..n]);
+        hotovo += n as u64;
+        priebeh(hotovo, dlzka);
+    }
+    Ok(sha256::hex(&h.dokonci()))
+}
+
+/// Overí súbor proti súčtu zo stránky distribúcie.
+fn over_sucet(cesta: &str, ocakavany: &str) -> Vysledok<()> {
+    let mut p = Priebeh::novy("kontrolný súčet", 1);
+    let s = sha256_suboru(cesta, &mut |h, n| {
+        p.celkom = n;
+        p.krok(h)
+    })?;
+    if s != ocakavany {
+        return Err(Chyba(
+            1,
+            format!(
+                "SÚČET NESEDÍ: súbor je poškodený alebo iný (SHA-256 {s}, očakávaný {ocakavany}) – stiahnite ho znova"
+            ),
+        ));
+    }
+    println!("✅ kontrolný súčet SHA-256 sedí");
+    Ok(())
+}
+
+/// Rozbor obrazu (funguje na každom systéme).
+fn skumaj(cesta: &str, zvysok: &[&str]) -> Vysledok<()> {
+    let (cesta_obrazu, docasny) = zip::priprav_obraz(std::path::Path::new(cesta))?;
+    let r = iso::rozober(&mut File::open(&cesta_obrazu)?)?;
+    println!("{}", r.suhrn());
+    if zvysok.contains(&"subory") {
+        print!("{}", r.zoznam());
+    }
+    if let Some(o) = sucet(zvysok)? {
+        over_sucet(cesta, &o)?;
+    } else if zvysok.contains(&"sha256") {
+        println!("SHA-256 {}", sha256_suboru(cesta, &mut |_, _| {})?);
+    }
+    if docasny {
+        let _ = std::fs::remove_file(cesta_obrazu);
+    }
+    Ok(())
+}
+
+/// Vytvorí naformátovaný obraz disku (funguje na každom systéme).
+fn formatuj_obraz(cesta: &str, mb: &str, zvysok: &[&str]) -> Vysledok<()> {
+    let mb: u64 = mb.parse().map_err(|_| Chyba(1, "veľkosť v MB".into()))?;
+    let mut volby = zvysok.to_vec();
+    let sektor = if let Some(i) = volby.iter().position(|a| *a == "sektor=4096") {
+        volby.remove(i);
+        4096
+    } else {
+        512
+    };
+    let f = formatuj::Formatovanie::z_argumentov(volby.into_iter()).map_err(|e| Chyba(1, e))?;
+    let mut c = ciel::Subor::novy(cesta, mb << 20, sektor)?;
+    let z = formatuj::formatuj(&mut c, &f, &mut |_, _, _| {}, &std::sync::atomic::AtomicBool::new(false))
+        .map_err(|e| Chyba(1, e))?;
+    println!("✅ {cesta}: {}", z.text());
+    Ok(())
+}
+
+/// Napáli ISO do súboru obrazu disku (funguje na každom systéme; aj na skúšky režimu súborov).
+fn napal_obraz(iso_cesta: &str, cesta: &str, mb: &str, zvysok: &[&str]) -> Vysledok<()> {
+    let mb: u64 = mb.parse().map_err(|_| Chyba(1, "veľkosť v MB".into()))?;
+    let schema = if zvysok.contains(&"gpt") { oddiely::Schema::Gpt } else { oddiely::Schema::Mbr };
+    let mut f = File::open(iso_cesta)?;
+    let r = iso::rozober(&mut f)?;
+    println!("{}", r.suhrn());
+    let mut c = ciel::Subor::novy(cesta, mb << 20, 512)?;
+    let zrus = std::sync::atomic::AtomicBool::new(false);
+    match r.druh() {
+        iso::Druh::HybridneIso | iso::Druh::ObrazDisku => {
+            if r.velkost > mb << 20 {
+                return Err(Chyba(2, "obraz je väčší ako cieľ".into()));
+            }
+            let mut buf = vec![0u8; ciel::KUS];
+            f.seek(SeekFrom::Start(0))?;
+            let mut p = 0;
+            while p < r.velkost {
+                let n = (ciel::KUS as u64).min(r.velkost - p) as usize;
+                f.read_exact(&mut buf[..n])?;
+                c.zapis(p, &buf[..n])?;
+                p += n as u64;
+            }
+            println!("✅ {cesta}: zapísané bit po bite");
+        }
+        iso::Druh::Nezname => return Err(Chyba(1, "nie je to obraz disku ani ISO".into())),
+        _ => {
+            let n = rozbal::napal_subory(&mut c, &mut f, &r, schema, &mut |_, _, _| {}, &zrus)
+                .map_err(|e| Chyba(1, e))?;
+            println!("✅ {cesta}: {}", n.text());
+        }
+    }
+    Ok(())
 }
 
 /// Zapíše nastavenie priamo do súboru obrazu (funguje na každom systéme).
@@ -145,6 +313,11 @@ pub enum Faza {
     Zapis,
     Overenie,
     Citanie,
+    Sucet,
+    Mazanie,
+    Formatovanie,
+    SkuskaZapis,
+    SkuskaCitanie,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -155,6 +328,11 @@ impl Faza {
             Faza::Zapis => "zápis",
             Faza::Overenie => "overenie",
             Faza::Citanie => "čítanie obrazu",
+            Faza::Sucet => "kontrolný súčet",
+            Faza::Mazanie => "vymazanie",
+            Faza::Formatovanie => "formátovanie",
+            Faza::SkuskaZapis => "skúšobný zápis",
+            Faza::SkuskaCitanie => "kontrola čítaním",
         }
     }
 }
@@ -440,6 +618,234 @@ mod platforma {
         println!("✅ záloha {cesta} ({}) – odtlačok BLAKE3 {}", disk::velkost(d.velkost), h.dokonci());
         Ok(())
     }
+
+    /// Priebeh v príkazovom riadku pre ľubovoľné fázy.
+    fn priebeh_cli() -> impl FnMut(Faza, u64, u64) {
+        let mut p: Option<(Faza, Priebeh)> = None;
+        move |f: Faza, hotovo: u64, celkom: u64| {
+            if f == Faza::Rozbalenie {
+                return;
+            }
+            if p.as_ref().is_none_or(|(g, _)| *g != f) {
+                p = Some((f, Priebeh::novy(f.popis(), celkom)));
+            }
+            if let Some((_, q)) = p.as_mut() {
+                q.celkom = celkom;
+                q.krok(hotovo);
+            }
+        }
+    }
+
+    /// Otvorí povolený disk na zápis, ak `potvrd` súhlasí (pre okno aj príkazy).
+    fn otvor_s_potvrdenim(
+        cislo: u32,
+        dovol_virtualny: bool,
+        potvrd: &mut dyn FnMut(&InfoDisku) -> bool,
+    ) -> Vysledok<Disk> {
+        let d = povolene(cislo, dovol_virtualny)?;
+        if !potvrd(&d) {
+            return Err(Chyba(2, "nepotvrdené – nič sa nezapísalo".into()));
+        }
+        let z = Disk::otvor(cislo, true)
+            .map_err(|e| Chyba(1, format!("disk {cislo}: {e} (spustite ako správca)")))?;
+        if z.info != d {
+            return Err(Chyba(2, "disk sa medzitým zmenil (vymenená karta?) – nič sa nezapísalo".into()));
+        }
+        Ok(z)
+    }
+
+    /// Jadro formátovania pre okno aj príkazy.
+    pub fn formatuj_jadro(
+        cislo: u32,
+        f: &crate::formatuj::Formatovanie,
+        dovol_virtualny: bool,
+        potvrd: &mut dyn FnMut(&InfoDisku) -> bool,
+        priebeh: &mut dyn FnMut(Faza, u64, u64),
+        zrus: &AtomicBool,
+    ) -> Vysledok<String> {
+        let mut z = otvor_s_potvrdenim(cislo, dovol_virtualny, potvrd)?;
+        let vysledok = crate::formatuj::formatuj(&mut z, f, priebeh, zrus);
+        z.ohlas_nove_oddiely();
+        Ok(vysledok.map_err(|e| Chyba(1, e))?.text())
+    }
+
+    /// Jadro kontroly: kontrola, potom naformátovanie (falošné médium na skutočnú kapacitu).
+    /// Ak médium nie je v poriadku, vráti chybu s kódom 3 a celým výsledkom.
+    pub fn skontroluj_jadro(
+        cislo: u32,
+        uplne: bool,
+        dovol_virtualny: bool,
+        potvrd: &mut dyn FnMut(&InfoDisku) -> bool,
+        priebeh: &mut dyn FnMut(Faza, u64, u64),
+        zrus: &AtomicBool,
+    ) -> Vysledok<String> {
+        let mut z = otvor_s_potvrdenim(cislo, dovol_virtualny, potvrd)?;
+        let v = crate::kontrola::skontroluj(&mut z, uplne, priebeh, zrus)?;
+        let f = crate::formatuj::Formatovanie::default();
+        let s = if v.falosna() {
+            let mut o = crate::kontrola::Obmedzeny { c: &mut z, velkost: v.skutocna };
+            crate::formatuj::formatuj(&mut o, &f, priebeh, zrus)
+        } else {
+            crate::formatuj::formatuj(&mut z, &f, priebeh, zrus)
+        };
+        z.ohlas_nove_oddiely();
+        let text = format!(
+            "{}\n{}",
+            v.text(),
+            match s {
+                Ok(s) => format!("Naformátované: {}", s.text()),
+                Err(e) => format!("Formátovanie po kontrole zlyhalo: {e}"),
+            }
+        );
+        if v.falosna() || !v.v_poriadku() {
+            return Err(Chyba(3, text));
+        }
+        Ok(text)
+    }
+
+    fn potvrdenie_cli<'a>(
+        a: &'a Argumenty,
+        chyba: &'a mut Option<Chyba>,
+    ) -> impl FnMut(&InfoDisku) -> bool + 'a {
+        move |d: &InfoDisku| match potvrd(d, a) {
+            Ok(()) => true,
+            Err(e) => {
+                *chyba = Some(e);
+                false
+            }
+        }
+    }
+
+    /// Príkaz `formatuj`.
+    pub fn formatuj(cislo: u32, f: &crate::formatuj::Formatovanie, a: &Argumenty) -> Vysledok<()> {
+        let mut chyba = None;
+        let vysledok = formatuj_jadro(
+            cislo,
+            f,
+            a.dovol_virtualny,
+            &mut potvrdenie_cli(a, &mut chyba),
+            &mut priebeh_cli(),
+            &AtomicBool::new(false),
+        );
+        if let Some(e) = chyba {
+            return Err(e);
+        }
+        println!("✅ naformátované: {}", vysledok?);
+        Ok(())
+    }
+
+    /// Spoločné jadro napálenia pre príkazy aj okno: kontrolný súčet, rozbor, potom zápis bit po bite
+    /// (hybridné ISO, obrazy diskov) alebo rozbalenie súborov (ISO Windows a iné) – vždy s overením.
+    #[allow(clippy::too_many_arguments)]
+    pub fn napal_jadro(
+        cesta: &str,
+        cislo: u32,
+        schema: crate::oddiely::Schema,
+        sucet: Option<&str>,
+        dovol_virtualny: bool,
+        potvrd: &mut dyn FnMut(&InfoDisku) -> bool,
+        priebeh: &mut dyn FnMut(Faza, u64, u64),
+        zrus: &AtomicBool,
+    ) -> Vysledok<String> {
+        if let Some(o) = sucet {
+            let s = sha256_suboru(cesta, &mut |h, n| priebeh(Faza::Sucet, h, n))?;
+            if s != o {
+                return Err(Chyba(
+                    1,
+                    format!(
+                        "SÚČET NESEDÍ: súbor je poškodený alebo iný (SHA-256 {s}) – stiahnite ho znova; nič sa nezapísalo"
+                    ),
+                ));
+            }
+        }
+        priebeh(Faza::Rozbalenie, 0, 1);
+        let (obraz, docasny) =
+            zip::priprav_obraz(std::path::Path::new(cesta)).map_err(|e| Chyba(1, format!("{cesta}: {e}")))?;
+        let _upratanie = Upratanie(docasny.then(|| obraz.clone()));
+        let r = crate::iso::rozober(&mut File::open(&obraz)?)?;
+        match r.druh() {
+            crate::iso::Druh::ObrazDisku | crate::iso::Druh::HybridneIso => {
+                let cesta_obrazu = obraz.display().to_string();
+                let u = Uloha {
+                    obraz: &cesta_obrazu,
+                    disk: cislo,
+                    nastavenie: &Nastavenie::default(),
+                    dovol_virtualny,
+                    zapisovat: true,
+                };
+                let h = vykonaj(&u, potvrd, priebeh, zrus)?;
+                Ok(format!("napálené bit po bite a overené – odtlačok BLAKE3 {h}"))
+            }
+            crate::iso::Druh::Nezname => Err(Chyba(1, format!("{cesta}: nie je to obraz disku ani ISO"))),
+            _ => {
+                let mut z = otvor_s_potvrdenim(cislo, dovol_virtualny, potvrd)?;
+                let n =
+                    crate::rozbal::napal_subory(&mut z, &mut File::open(&obraz)?, &r, schema, priebeh, zrus);
+                z.ohlas_nove_oddiely();
+                Ok(n.map_err(|e| Chyba(1, e))?.text())
+            }
+        }
+    }
+
+    /// Príkaz `napal`.
+    pub fn napal(
+        cesta: &str,
+        cislo: u32,
+        sucet: &Option<String>,
+        schema: crate::oddiely::Schema,
+        a: &Argumenty,
+    ) -> Vysledok<()> {
+        let (obraz, docasny) =
+            zip::priprav_obraz(std::path::Path::new(cesta)).map_err(|e| Chyba(1, format!("{cesta}: {e}")))?;
+        let r = crate::iso::rozober(&mut File::open(&obraz)?)?;
+        if docasny {
+            let _ = std::fs::remove_file(&obraz);
+        }
+        println!("{}", r.suhrn());
+        let mut chyba_potvrdenia = None;
+        let vysledok = napal_jadro(
+            cesta,
+            cislo,
+            schema,
+            sucet.as_deref(),
+            a.dovol_virtualny,
+            &mut potvrdenie_cli(a, &mut chyba_potvrdenia),
+            &mut priebeh_cli(),
+            &AtomicBool::new(false),
+        );
+        if let Some(e) = chyba_potvrdenia {
+            return Err(e);
+        }
+        println!("✅ {}", vysledok?);
+        Ok(())
+    }
+
+    /// Príkaz `skontroluj`.
+    pub fn skontroluj(cislo: u32, uplne: bool, a: &Argumenty) -> Vysledok<()> {
+        let mut chyba = None;
+        let vysledok = skontroluj_jadro(
+            cislo,
+            uplne,
+            a.dovol_virtualny,
+            &mut potvrdenie_cli(a, &mut chyba),
+            &mut priebeh_cli(),
+            &AtomicBool::new(false),
+        );
+        if let Some(e) = chyba {
+            return Err(e);
+        }
+        match vysledok {
+            Ok(t) => {
+                println!("{t}");
+                Ok(())
+            }
+            Err(Chyba(3, t)) => {
+                println!("{t}");
+                Err(Chyba(3, "médium nie je v poriadku – pozri výsledok vyššie".into()))
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -449,7 +855,8 @@ mod platforma {
     fn zatial() -> Chyba {
         Chyba(
             1,
-            "zápis na disky je zatiaľ len pre Windows 11 (Linux a macOS pribudnú); `priprav` funguje všade"
+            "zápis na disky je zatiaľ len pre Windows 11 (Linux a macOS pribudnú); `priprav`, `skumaj` a \
+             `formatuj-obraz` fungujú všade"
                 .into(),
         )
     }
@@ -463,6 +870,24 @@ mod platforma {
     }
 
     pub fn zaloha(_: u32, _: &str, _: &Argumenty) -> Vysledok<()> {
+        Err(zatial())
+    }
+
+    pub fn formatuj(_: u32, _: &crate::formatuj::Formatovanie, _: &Argumenty) -> Vysledok<()> {
+        Err(zatial())
+    }
+
+    pub fn napal(
+        _: &str,
+        _: u32,
+        _: &Option<String>,
+        _: crate::oddiely::Schema,
+        _: &Argumenty,
+    ) -> Vysledok<()> {
+        Err(zatial())
+    }
+
+    pub fn skontroluj(_: u32, _: bool, _: &Argumenty) -> Vysledok<()> {
         Err(zatial())
     }
 }

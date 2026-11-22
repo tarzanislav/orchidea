@@ -163,13 +163,42 @@ jobs:
           name: orchidea-rpi-32bit-armv6
           path: orchidea-rpi-32bit-armv6
 
+  sadic-iso:
+    name: SADIČ – formátovanie a ISO (Linux, nezávislé fsck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Nástroje na nezávislú kontrolu
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q dosfstools exfatprogs mtools gdisk xorriso isolinux syslinux-common genisoimage
+      - name: Zostavenie
+        run: cargo build --locked --release -p sklenik-sadic
+      - name: Formátovanie, rozbor ISO, napálenie, súbor nad 4 GB, skutočné ISO
+        run: |
+          sudo mkdir -p /mnt/sadic && sudo chown "$USER" /mnt/sadic
+          bash nastroje/skuska_sadica.sh target/release/sadic /mnt/sadic
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sadic-iso-skusky
+          path: |
+            /mnt/sadic/hybrid.iso
+            /mnt/sadic/win.iso
+
   sadic:
     name: SADIČ – zápis na virtuálny disk (Windows)
     runs-on: windows-latest
+    needs: sadic-iso
     env:
       SADIC_SKUSKA: "1"
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: sadic-iso-skusky
+          path: ${{ runner.temp }}/iso
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
       - name: Zostavenie
@@ -228,6 +257,75 @@ jobs:
           $obsah = Get-Content "$($p.DriveLetter):\SKLENIK.TXT" -Raw
           Write-Output $obsah
           if ($obsah -notmatch 'meno=dielna-c-1') { throw "okno: meno zariadenia na karte nesedí" }
+          # ---- rozšírený režim: napálenie ISO, formátovanie, kontrola karty ----
+          $iso = "$t\iso"
+          & $s skumaj "$iso\hybrid.iso"; if ($LASTEXITCODE) { throw "rozbor hybridného ISO" }
+          & $s napal "$iso\hybrid.iso" $n --potvrdzujem $n --dovol-virtualny
+          if ($LASTEXITCODE) { throw "napálenie hybridného ISO zlyhalo" }
+          & $s napal "$iso\win.iso" $n --potvrdzujem $n --dovol-virtualny
+          if ($LASTEXITCODE) { throw "napálenie ISO Windows (rozbalenie súborov) zlyhalo" }
+          function Pismeno($n) {
+            Update-Disk -Number $n
+            Start-Sleep -Seconds 3
+            $p = Get-Partition -DiskNumber $n | Where-Object { $_.Type -ne 'Reserved' } | Select-Object -First 1
+            if (-not $p.DriveLetter -or $p.DriveLetter -eq [char]0) {
+              $p | Add-PartitionAccessPath -AssignDriveLetter
+              $p = Get-Partition -DiskNumber $n -PartitionNumber $p.PartitionNumber
+            }
+            return $p.DriveLetter
+          }
+          $l = Pismeno $n
+          $usb = "${l}:\"
+          $m = Mount-DiskImage -ImagePath "$iso\win.iso" -PassThru
+          $cd = "$(($m | Get-Volume).DriveLetter):\"
+          $chyby = 0; $pocet = 0
+          Get-ChildItem -LiteralPath $cd -Recurse -File | Where-Object { $_.Name -ne 'boot.catalog' } | ForEach-Object {
+            $rel = $_.FullName.Substring($cd.Length)
+            $kopia = Join-Path $usb $rel
+            $pocet++
+            if (-not (Test-Path -LiteralPath $kopia)) { Write-Output "chýba: $rel"; $chyby++ }
+            elseif ((Get-FileHash -LiteralPath $_.FullName).Hash -ne (Get-FileHash -LiteralPath $kopia).Hash) {
+              Write-Output "iný obsah: $rel"; $chyby++
+            }
+          }
+          Dismount-DiskImage -ImagePath "$iso\win.iso" | Out-Null
+          if ($chyby -or $pocet -lt 60) { throw "ISO Windows na USB nesedí ($chyby chýb z $pocet súborov)" }
+          $v = Get-Volume -DriveLetter $l
+          if ($v.FileSystem -ne 'FAT32') { throw "ISO Windows: čakal som FAT32, je $($v.FileSystem)" }
+          Write-Output "✅ ISO Windows rozbalené na FAT32 – Windows číta všetkých $pocet súborov rovnako ako z ISO"
+          foreach ($f in @(@('exfat', 'gpt', 'SKUSKA', 'exFAT'), @('fat32', 'mbr', 'KARTA', 'FAT32'))) {
+            & $s formatuj $n $f[0] $f[1] "menovka=$($f[2])" --potvrdzujem $n --dovol-virtualny
+            if ($LASTEXITCODE) { throw "formátovanie $($f[0]) zlyhalo" }
+            $l = Pismeno $n
+            $v = Get-Volume -DriveLetter $l
+            Write-Output "Windows vidí: $($v.FileSystem) '$($v.FileSystemLabel)' $($v.Size) B"
+            if ($v.FileSystem -ne $f[3] -or $v.FileSystemLabel -ne $f[2]) { throw "formátovanie: Windows vidí $($v.FileSystem) '$($v.FileSystemLabel)'" }
+            Set-Content -LiteralPath "${l}:\skuska.txt" -Value 'Ahoj zo SADICA'
+            if ((Get-Content -LiteralPath "${l}:\skuska.txt") -ne 'Ahoj zo SADICA') { throw "zápis súboru na naformátovaný disk" }
+            $kontrola = chkdsk "${l}:" 2>&1 | Out-String
+            $kod = $LASTEXITCODE
+            Write-Output $kontrola
+            if ($kontrola -notmatch 'found no problems') { throw "chkdsk našiel chyby v $($f[3]) (kód $kod)" }
+          }
+          $vystup = & $s skontroluj $n --potvrdzujem $n --dovol-virtualny 2>&1 | Out-String
+          $kod = $LASTEXITCODE
+          Write-Output $vystup
+          if ($kod -or $vystup -notmatch 'je skutočná') { throw "kontrola karty zlyhala (kód $kod)" }
+          # okno v rozšírenom režime: formátovanie a napálenie ISO
+          $env:SADIC_SKUSKA_ROZSIRENE = "formatuj|$n|exfat:OKNO"
+          $vystup = & $s --dovol-virtualny 2>&1 | Out-String
+          $kod = $LASTEXITCODE
+          Write-Output $vystup
+          if ($kod -or $vystup -notmatch 'okno: ✅ exFAT') { throw "okno: formátovanie zlyhalo (kód $kod)" }
+          $l = Pismeno $n
+          if ((Get-Volume -DriveLetter $l).FileSystemLabel -ne 'OKNO') { throw "okno: menovka nesedí" }
+          $env:SADIC_SKUSKA_ROZSIRENE = "napal|$n|$iso\win.iso"
+          $vystup = & $s --dovol-virtualny 2>&1 | Out-String
+          $kod = $LASTEXITCODE
+          Remove-Item Env:SADIC_SKUSKA_ROZSIRENE
+          Write-Output $vystup
+          if ($kod -or $vystup -notmatch 'okno: ✅ Rozbalené') { throw "okno: napálenie ISO zlyhalo (kód $kod)" }
+          Write-Output "✅ SADIČ rozšírený: ISO (bit po bite aj rozbalením), FAT32/exFAT, MBR/GPT, kontrola karty, okno"
           "select vdisk file=`"$vhd`"`r`ndetach vdisk" | Out-File -Encoding ascii "$t\dp2.txt"
           diskpart /s "$t\dp2.txt" | Out-Null
           Write-Output "✅ SADIČ: zápis s overením, poistky, nastavenie, záloha, obnova a okno (obraz zo ZIP)"

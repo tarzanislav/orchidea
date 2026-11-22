@@ -345,3 +345,21 @@ impl Disk {
         let _ = ioctl(&self.h, IOCTL_DISK_UPDATE_PROPERTIES, &[], &mut []);
     }
 }
+
+impl crate::ciel::Ciel for Disk {
+    fn sektor(&self) -> u32 {
+        self.sektor
+    }
+    fn velkost(&self) -> u64 {
+        self.info.velkost
+    }
+    fn zapis(&mut self, posun: u64, data: &[u8]) -> io::Result<()> {
+        Disk::zapis(self, posun, data)
+    }
+    fn citaj(&mut self, posun: u64, ciel: &mut [u8]) -> io::Result<()> {
+        Disk::citaj(self, posun, ciel)
+    }
+    fn dokonci(&mut self) -> io::Result<()> {
+        Disk::dokonci(self)
+    }
+}

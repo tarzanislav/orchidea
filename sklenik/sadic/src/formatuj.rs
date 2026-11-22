@@ -1,0 +1,271 @@
+//! Čisté formátovanie karty alebo USB disku vlastným kódom: vymaže staré tabuľky a podpisy (aj zálohu
+//! GPT na konci disku a stopy po ISO), zapíše novú tabuľku oddielov a súborový systém zarovnaný podľa
+//! pamäte flash. Automatická voľba zodpovedá norme SD karát: do 32 GB FAT32, nad 32 GB exFAT.
+
+use crate::Faza;
+use crate::ciel::{self, Ciel};
+use crate::exfat::ExFat;
+use crate::fat32::Fat32;
+use crate::oddiely::{self, Oddiel, Schema, Typ};
+use std::sync::atomic::AtomicBool;
+
+const MIB: u64 = 1 << 20;
+
+/// Súborový systém.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum System {
+    /// Podľa veľkosti (ako SD karty: do 32 GB FAT32, väčšie exFAT).
+    Automaticky,
+    Fat32,
+    ExFat,
+}
+
+impl System {
+    pub fn z_textu(t: &str) -> Option<System> {
+        match t.to_ascii_lowercase().as_str() {
+            "auto" | "automaticky" => Some(System::Automaticky),
+            "fat32" | "fat" => Some(System::Fat32),
+            "exfat" => Some(System::ExFat),
+            _ => None,
+        }
+    }
+
+    pub fn nazov(self) -> &'static str {
+        match self {
+            System::Automaticky => "automaticky",
+            System::Fat32 => "FAT32",
+            System::ExFat => "exFAT",
+        }
+    }
+
+    /// Skutočná voľba pre disk danej veľkosti.
+    pub fn pre(self, velkost: u64) -> System {
+        match self {
+            System::Automaticky if velkost <= 32_000_000_000 => System::Fat32,
+            System::Automaticky => System::ExFat,
+            s => s,
+        }
+    }
+}
+
+/// Čo a ako naformátovať.
+#[derive(Debug, Clone)]
+pub struct Formatovanie {
+    pub system: System,
+    pub schema: Schema,
+    pub menovka: String,
+    /// Bajty na klaster (None = podľa veľkosti).
+    pub klaster: Option<u32>,
+    /// Vynulovať celý disk (pomalé; staré dáta sa nedajú obnoviť).
+    pub uplne: bool,
+}
+
+impl Default for Formatovanie {
+    fn default() -> Self {
+        Formatovanie {
+            system: System::Automaticky,
+            schema: Schema::Mbr,
+            menovka: String::new(),
+            klaster: None,
+            uplne: false,
+        }
+    }
+}
+
+impl Formatovanie {
+    /// Z argumentov príkazového riadka (`exfat gpt menovka=FOTKY klaster=128K uplne`).
+    pub fn z_argumentov<'a>(arg: impl Iterator<Item = &'a str>) -> Result<Formatovanie, String> {
+        let mut f = Formatovanie::default();
+        for a in arg {
+            let (k, v) = a.split_once('=').unwrap_or((a, ""));
+            match k.to_ascii_lowercase().as_str() {
+                "mbr" => f.schema = Schema::Mbr,
+                "gpt" => f.schema = Schema::Gpt,
+                "uplne" | "úplne" => f.uplne = true,
+                "menovka" | "meno" => f.menovka = v.to_string(),
+                "klaster" => f.klaster = Some(velkost_klastra(v).ok_or(format!("neplatný klaster „{v}“"))?),
+                s => f.system = System::z_textu(s).ok_or(format!("neznáma voľba „{a}“"))?,
+            }
+        }
+        Ok(f)
+    }
+}
+
+/// „32K“, „128k“, „4096“ → bajty.
+pub fn velkost_klastra(t: &str) -> Option<u32> {
+    let t = t.trim().to_ascii_lowercase();
+    let (cislo, nasobok) = match t.strip_suffix(['k', 'm']) {
+        Some(c) if t.ends_with('k') => (c, 1024),
+        Some(c) => (c, 1 << 20),
+        None => (t.as_str(), 1),
+    };
+    let n: u32 = cislo.trim_end_matches('b').parse().ok()?;
+    n.checked_mul(nasobok).filter(|k| k.is_power_of_two())
+}
+
+/// Výsledok formátovania.
+#[derive(Debug, Clone)]
+pub struct Zhrnutie {
+    pub system: System,
+    pub schema: Schema,
+    pub oddiel: Oddiel,
+    pub klaster: u64,
+    pub zarovnanie: u64,
+    pub menovka: String,
+    /// Bajty na sektor disku.
+    pub sektor: u32,
+}
+
+impl Zhrnutie {
+    pub fn text(&self) -> String {
+        format!(
+            "{} na celom disku ({}), tabuľka {}, klaster {} KB, zarovnanie {} MiB{}",
+            self.system.nazov(),
+            crate::disk::velkost(self.oddiel.sektory * self.sektor as u64),
+            self.schema.nazov(),
+            self.klaster / 1024,
+            self.zarovnanie / MIB,
+            if self.menovka.is_empty() { String::new() } else { format!(", menovka „{}“", self.menovka) }
+        )
+    }
+}
+
+/// Naformátuje celý cieľ. `priebeh` dostáva (fáza, hotovo, celkom).
+pub fn formatuj(
+    c: &mut dyn Ciel,
+    f: &Formatovanie,
+    priebeh: &mut dyn FnMut(Faza, u64, u64),
+    zrus: &AtomicBool,
+) -> Result<Zhrnutie, String> {
+    let velkost = c.velkost();
+    let sektor = c.sektor();
+    let s = sektor as u64;
+    let system = f.system.pre(velkost);
+    let typ = if system == System::Fat32 { Typ::Fat32 } else { Typ::ExFat };
+    let mut oddiel = oddiely::jeden_oddiel(velkost, sektor, f.schema, typ, &f.menovka)?;
+    let zarovnanie = oddiely::zarovnanie(velkost);
+    // rozvrh súborového systému sa overí ešte pred prvým zápisom
+    enum Zvazok {
+        F(Fat32),
+        E(ExFat),
+    }
+    let zvazok = match system {
+        System::Fat32 => Zvazok::F(Fat32::navrhni(
+            oddiel.sektory,
+            sektor,
+            oddiel.zaciatok,
+            zarovnanie,
+            f.klaster,
+            &f.menovka,
+        )?),
+        _ => Zvazok::E(ExFat::navrhni(
+            oddiel.sektory,
+            sektor,
+            oddiel.zaciatok,
+            zarovnanie,
+            f.klaster,
+            &f.menovka,
+        )?),
+    };
+    if oddiel.meno.is_empty() {
+        oddiel.meno = "SADIČ".into();
+    }
+    let chyba = |e: std::io::Error| format!("zápis na disk: {e}");
+    // 1. vymazanie: celý disk, alebo začiatok (staré MBR/GPT/ISO) a posledný MiB (záloha GPT)
+    if f.uplne {
+        ciel::vynuluj(c, 0, velkost, &mut |h, n| priebeh(Faza::Mazanie, h, n), zrus).map_err(chyba)?;
+    } else {
+        let zaciatok = oddiel.zaciatok * s;
+        ciel::vynuluj(c, 0, zaciatok, &mut |_, _| {}, zrus).map_err(chyba)?;
+        let koniec = (velkost.saturating_sub(MIB) / s * s).max(zaciatok);
+        ciel::vynuluj(c, koniec, velkost - koniec, &mut |_, _| {}, zrus).map_err(chyba)?;
+    }
+    // 2. súborový systém
+    let posun = oddiel.zaciatok * s;
+    let klaster = match &zvazok {
+        Zvazok::F(z) => {
+            z.naformatuj(c, posun, &mut |h, n| priebeh(Faza::Formatovanie, h, n), zrus).map_err(chyba)?;
+            z.klaster_b()
+        }
+        Zvazok::E(z) => {
+            z.naformatuj(c, posun, &mut |h, n| priebeh(Faza::Formatovanie, h, n), zrus).map_err(chyba)?;
+            z.klaster_b()
+        }
+    };
+    // 3. tabuľka oddielov až nakoniec: kým nie je, systém nevidí polovičný zväzok
+    match f.schema {
+        Schema::Mbr => {
+            let podpis = u32::from_le_bytes(oddiely::jedinecne()[..4].try_into().unwrap_or([1; 4]));
+            c.zapis(0, &oddiely::mbr(sektor, std::slice::from_ref(&oddiel), podpis)).map_err(chyba)?;
+        }
+        Schema::Gpt => {
+            let (zac, zaloha_od, zaloha) =
+                oddiely::gpt(velkost / s, sektor, std::slice::from_ref(&oddiel), oddiely::novy_guid());
+            ciel::zapis_vsetko(c, zaloha_od, &zaloha).map_err(chyba)?;
+            ciel::zapis_vsetko(c, 0, &zac).map_err(chyba)?;
+        }
+    }
+    c.dokonci().map_err(chyba)?;
+    // 4. kontrola: tabuľka a zavádzací sektor zväzku sa prečítajú späť
+    let mut b = vec![0u8; s as usize];
+    c.citaj(0, &mut b).map_err(chyba)?;
+    let z = oddiely::rozloz_mbr(&b).ok_or("kontrola: na disku nie je tabuľka oddielov")?;
+    let ocakavany = if f.schema == Schema::Gpt { 0xEE } else { typ.mbr() };
+    if z.first().map(|z| z.typ) != Some(ocakavany) {
+        return Err("kontrola: tabuľka oddielov sa nezapísala správne".into());
+    }
+    c.citaj(posun, &mut b).map_err(chyba)?;
+    let podpis: &[u8] = if system == System::Fat32 { b"FAT32   " } else { b"EXFAT   " };
+    let pole = if system == System::Fat32 { &b[82..90] } else { &b[3..11] };
+    if pole != podpis {
+        return Err("kontrola: súborový systém sa nezapísal správne".into());
+    }
+    Ok(Zhrnutie { system, schema: f.schema, oddiel, klaster, zarovnanie, menovka: f.menovka.clone(), sektor })
+}
+
+#[cfg(test)]
+mod skusky {
+    use super::*;
+    use crate::ciel::Pamat;
+
+    #[test]
+    fn volby_z_argumentov() {
+        let f = Formatovanie::z_argumentov(
+            ["exfat", "gpt", "menovka=FOTKY", "klaster=128K", "uplne"].into_iter(),
+        )
+        .unwrap();
+        assert_eq!(f.system, System::ExFat);
+        assert_eq!(f.schema, Schema::Gpt);
+        assert_eq!(f.menovka, "FOTKY");
+        assert_eq!(f.klaster, Some(128 * 1024));
+        assert!(f.uplne);
+        assert!(Formatovanie::z_argumentov(["ntfx"].into_iter()).is_err());
+        assert_eq!(velkost_klastra("4096"), Some(4096));
+        assert_eq!(velkost_klastra("3k"), None);
+        assert_eq!(System::Automaticky.pre(16_000_000_000), System::Fat32);
+        assert_eq!(System::Automaticky.pre(64_000_000_000), System::ExFat);
+    }
+
+    #[test]
+    fn formatovanie_zmaze_stare_stopy() {
+        for (system, schema) in [(System::Fat32, Schema::Mbr), (System::ExFat, Schema::Gpt)] {
+            let mut p = Pamat::nova(200 * MIB, 512);
+            p.data.fill(0xAB); // staré dáta, napr. predtým napálené ISO
+            let f = Formatovanie { system, schema, menovka: "Skúška".into(), ..Formatovanie::default() };
+            let z = formatuj(&mut p, &f, &mut |_, _, _| {}, &AtomicBool::new(false)).unwrap();
+            assert_eq!(z.oddiel.zaciatok * 512, MIB);
+            assert!(
+                p.data[512 * 40..MIB as usize].iter().all(|&b| b == 0),
+                "medzera pred oddielom vynulovaná"
+            );
+            assert!(p.data[32_768..32_774].iter().all(|&b| b == 0), "podpis ISO zmizol");
+            if schema == Schema::Gpt {
+                let n = p.data.len();
+                assert_eq!(&p.data[n - 512..n - 504], b"EFI PART", "záloha GPT na konci");
+                assert!(oddiely::rozloz_gpt(&p.data[..MIB as usize], 512).is_ok());
+            } else {
+                assert!(p.data[p.data.len() - 4096..].iter().all(|&b| b == 0), "koniec disku vynulovaný");
+            }
+        }
+    }
+}
