@@ -24,6 +24,8 @@ pub enum System {
     Ext4,
     Ext3,
     Ext2,
+    /// HFS+ (Mac OS Extended) bez žurnálu.
+    HfsPlus,
 }
 
 /// Ponuka systémov v poradí vlastníka: najprv NTFS, FAT32, exFAT a linuxové, potom ostatné.
@@ -35,6 +37,7 @@ pub const PONUKA: &[System] = &[
     System::Ext4,
     System::Ext3,
     System::Ext2,
+    System::HfsPlus,
 ];
 
 impl System {
@@ -42,6 +45,7 @@ impl System {
     pub fn v_ponuke(self) -> &'static str {
         match self {
             System::Automaticky => "Automaticky",
+            System::HfsPlus => "HFS+ (Mac OS Extended)",
             s => s.nazov(),
         }
     }
@@ -55,6 +59,7 @@ impl System {
             "ext4" => Some(System::Ext4),
             "ext3" => Some(System::Ext3),
             "ext2" => Some(System::Ext2),
+            "hfs+" | "hfsplus" | "hfs" | "mac" => Some(System::HfsPlus),
             _ => None,
         }
     }
@@ -68,6 +73,7 @@ impl System {
             System::Ext4 => "ext4",
             System::Ext3 => "ext3",
             System::Ext2 => "ext2",
+            System::HfsPlus => "HFS+",
         }
     }
 
@@ -76,6 +82,7 @@ impl System {
         match self {
             System::Fat32 => Typ::Fat32,
             System::Ext4 | System::Ext3 | System::Ext2 => Typ::Linux,
+            System::HfsPlus => Typ::Hfs,
             _ => Typ::ExFat, // exFAT aj NTFS: 0x07 / základné dáta
         }
     }
@@ -123,6 +130,12 @@ pub fn navrhni(
             };
             let _ = zaciatok;
             Box::new(crate::ext::Ext::navrhni(sektory, sektor, druh, menovka)?)
+        }
+        System::HfsPlus => {
+            if klaster.is_some_and(|k| k != 4096) {
+                return Err("HFS+ zatiaľ len s blokom 4 KB (ako predvolí macOS)".into());
+            }
+            Box::new(crate::hfsplus::Hfs::navrhni(sektory, sektor, menovka)?)
         }
     })
 }

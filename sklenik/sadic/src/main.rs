@@ -25,6 +25,8 @@ mod fat32;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod formatuj;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod hfsplus;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod iso;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod kontrola;

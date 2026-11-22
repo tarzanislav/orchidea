@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Skúška rozšíreného SADIČA na Linuxe nezávislými nástrojmi (fsck.vfat, fsck.exfat, sgdisk, mtools,
-# xorriso, genisoimage): formátovanie, rozbor ISO, napálenie bit po bite aj rozbalením súborov,
-# veľký súbor nad 4 GB na druhý oddiel exFAT a skutočné ISO distribúcie s kontrolným súčtom.
+# Skúška rozšíreného SADIČA na Linuxe nezávislými nástrojmi (fsck.vfat, fsck.exfat, e2fsck, ntfs-3g,
+# fsck.hfsplus, sgdisk, mtools, xorriso, genisoimage): formátovanie, rozbor ISO, napálenie bit po bite
+# aj rozbalením súborov, veľký súbor nad 4 GB na druhý oddiel NTFS či exFAT a skutočné ISO distribúcie
+# s kontrolným súčtom.
 #
 #   bash nastroje/skuska_sadica.sh target/release/sadic /mnt/sadic
 set -euo pipefail
@@ -36,9 +37,10 @@ with open(sys.argv[1], "rb") as f, open("oddiel.img", "wb") as o:
 EOF
 }
 
-echo "== 1. formátovanie (NTFS, FAT32, exFAT, ext4/3/2; MBR, GPT; malé aj veľké disky)"
+echo "== 1. formátovanie (NTFS, FAT32, exFAT, ext4/3/2, HFS+; MBR, GPT; malé aj veľké disky)"
 for v in "300 ntfs mbr menovka=Škola_NTFS" "2000 ntfs gpt menovka=Data" \
          "300 ext4 mbr menovka=Linux_ext4" "40000 ext4 gpt" "3000 ext3 mbr" "1000 ext2 gpt menovka=stary" \
+         "300 hfs+ mbr menovka=Škola_Mac" "40000 hfs+ gpt" "3000 hfs+ gpt menovka=Fotky" \
          "300 fat32 mbr menovka=Škola" "300 exfat gpt menovka=Fotky_2026" "300 exfat mbr klaster=4K" \
          "8000 auto mbr menovka=OSEM" "33000 auto gpt menovka=VELKA" "64000 fat32 mbr"; do
   set -- $v; mb=$1; shift
@@ -47,7 +49,10 @@ for v in "300 ntfs mbr menovka=Škola_NTFS" "2000 ntfs gpt menovka=Data" \
   if [[ " $* " == *" gpt "* ]]; then sgdisk -v f.img | grep -q "No problems found" || chyba "GPT ($v)"; fi
   oddiel f.img 1
   podpis=$(dd if=oddiel.img bs=1 skip=3 count=5 status=none)
-  if [[ "$(dd if=oddiel.img bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr -d ' ')" == "53ef" ]]; then
+  if [[ "$(dd if=oddiel.img bs=1 skip=1024 count=2 status=none)" == "H+" ]]; then
+    fsck.hfsplus -fn oddiel.img | tee /tmp/hfs.log | grep "volume name"
+    grep -q "appears to be OK" /tmp/hfs.log || { cat /tmp/hfs.log; chyba "fsck.hfsplus ($v)"; }
+  elif [[ "$(dd if=oddiel.img bs=1 skip=1080 count=2 status=none | od -An -tx1 | tr -d ' ')" == "53ef" ]]; then
     e2fsck -fn oddiel.img || chyba "e2fsck ($v)"
     dumpe2fs -h oddiel.img 2>/dev/null | grep -E "volume name|features"
   elif [[ "$podpis" == "EXFAT" ]]; then
@@ -62,7 +67,8 @@ for v in "300 ntfs mbr menovka=Škola_NTFS" "2000 ntfs gpt menovka=Data" \
   blkid oddiel.img
   rm -f f.img oddiel.img
 done
-"$S" formatuj-obraz f4k.img 300 fat32 gpt sektor=4096
+for sys4k in fat32 hfs+; do
+"$S" formatuj-obraz f4k.img 300 "$sys4k" gpt sektor=4096
 python3 - <<'EOF'
 import struct, zlib
 d = open("f4k.img", "rb").read()
@@ -75,8 +81,13 @@ f, l = struct.unpack("<QQ", e[32:48])
 open("oddiel.img", "wb").write(d[f * 4096:(l + 1) * 4096])
 assert d[-4096:-4088] == b"EFI PART", "záloha GPT"
 EOF
-fsck.vfat -n oddiel.img | tail -1
+if [[ "$sys4k" == "hfs+" ]]; then
+  fsck.hfsplus -fn oddiel.img | grep -q "appears to be OK" || chyba "HFS+ pri 4K sektoroch"
+else
+  fsck.vfat -n oddiel.img | tail -1
+fi
 rm -f f4k.img oddiel.img
+done
 echo "✅ formátovanie"
 
 echo "== 2. hybridné ISO (BIOS + UEFI) – rozbor a napálenie bit po bite"

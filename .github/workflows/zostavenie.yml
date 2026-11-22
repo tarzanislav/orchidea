@@ -173,7 +173,7 @@ jobs:
       - name: Nástroje na nezávislú kontrolu
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q dosfstools exfatprogs mtools gdisk xorriso isolinux syslinux-common genisoimage ntfs-3g
+          sudo apt-get install -y -q dosfstools exfatprogs mtools gdisk xorriso isolinux syslinux-common genisoimage ntfs-3g hfsprogs
       - name: Zostavenie
         run: cargo build --locked --release -p sklenik-sadic
       - name: Formátovanie, rozbor ISO, napálenie, súbor nad 4 GB, skutočné ISO
@@ -345,8 +345,9 @@ jobs:
             Write-Output $kontrola
             if ($kontrola -notmatch 'found no problems') { throw "chkdsk našiel chyby v $($f[3]) (kód $kod)" }
           }
-          # ext4: Windows ho nečíta, ale musí vidieť linuxový oddiel (kontrolu e2fsck robí linuxová úloha)
-          foreach ($f in @(@('ext4', 'gpt', '{0fc63daf-8483-4772-8e79-3d69d8477de4}'), @('ext3', 'mbr', '131'))) {
+          # ext4 a HFS+: Windows ich nečíta, ale musí vidieť oddiel správneho druhu (e2fsck a fsck.hfsplus
+          # spúšťa linuxová úloha)
+          foreach ($f in @(@('ext4', 'gpt', '{0fc63daf-8483-4772-8e79-3d69d8477de4}'), @('ext3', 'mbr', '131'), @('hfs+', 'gpt', '{48465300-0000-11aa-aa11-00306543ecac}'), @('hfs+', 'mbr', '175'))) {
             & $s formatuj $n $f[0] $f[1] "menovka=LINUX" --potvrdzujem $n --dovol-virtualny
             if ($LASTEXITCODE) { throw "formátovanie $($f[0]) zlyhalo" }
             Update-Disk -Number $n

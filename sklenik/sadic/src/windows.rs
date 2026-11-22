@@ -263,6 +263,8 @@ pub struct Disk {
     pub sektor: u32,
     _zamky: Vec<Rukovat>,
     buf: Zarovnany,
+    cislo: u32,
+    na_zapis: bool,
 }
 
 impl Disk {
@@ -291,7 +293,18 @@ impl Disk {
         let systemove = systemove_disky();
         let mut zamky = Vec::new();
         if na_zapis {
-            for z in zvazky_na_disku(cislo) {
+            // hneď po predchádzajúcom zápise Windows oddiely ešte len pripája – počká sa, kým je zoznam
+            // zväzkov rovnaký dvakrát po sebe (najviac asi 3 s)
+            let mut zvazky = zvazky_na_disku(cislo);
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let znova = zvazky_na_disku(cislo);
+                if znova == zvazky {
+                    break;
+                }
+                zvazky = znova;
+            }
+            for z in zvazky {
                 let h = otvor(&z, GENERIC_READ | GENERIC_WRITE, 0)?;
                 let mut zamknute = false;
                 for _ in 0..20 {
@@ -313,7 +326,7 @@ impl Disk {
         let pristup = if na_zapis { GENERIC_READ | GENERIC_WRITE } else { GENERIC_READ };
         let h = otvor(&format!(r"\\.\PhysicalDrive{cislo}"), pristup, BEZ_VYROVNAVANIA)?;
         let (info, sektor) = citaj_info(cislo, &h, &systemove)?;
-        Ok(Disk { h, info, sektor, _zamky: zamky, buf: Zarovnany::novy() })
+        Ok(Disk { h, info, sektor, _zamky: zamky, buf: Zarovnany::novy(), cislo, na_zapis })
     }
 
     fn posun(&self, posun: u64) -> io::Result<()> {
@@ -333,7 +346,25 @@ impl Disk {
         let kus = self.buf.kus(n);
         kus[..data.len()].copy_from_slice(data);
         kus[data.len()..].fill(0);
-        znova(|| self.zapis_buf(posun, n))
+        match znova(|| self.zapis_buf(posun, n)) {
+            Err(e) if matches!(e.raw_os_error(), Some(21) | Some(1117)) => {
+                self.otvor_znova()?;
+                znova(|| self.zapis_buf(posun, n)).map_err(|e| {
+                    io::Error::new(e.kind(), format!("{e} (na {} MiB od začiatku disku)", posun >> 20))
+                })
+            }
+            r => r,
+        }
+    }
+
+    /// Zavrie disk aj zámky zväzkov a otvorí ho znova (Windows medzitým mohol pripojiť nové oddiely).
+    fn otvor_znova(&mut self) -> io::Result<()> {
+        self._zamky.clear();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let d = Disk::otvor_raz(self.cislo, self.na_zapis)?;
+        self.h = d.h;
+        self._zamky = d._zamky;
+        Ok(())
     }
 
     fn zapis_buf(&mut self, posun: u64, n: usize) -> io::Result<()> {

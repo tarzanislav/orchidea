@@ -37,6 +37,8 @@ pub enum Typ {
     /// Systémový oddiel EFI.
     Esp,
     Linux,
+    /// HFS+ (Mac OS Extended).
+    Hfs,
 }
 
 /// GPT: základné dáta (Microsoft Basic Data).
@@ -45,6 +47,8 @@ pub const GUID_ZAKLADNE_DATA: &str = "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7";
 pub const GUID_ESP: &str = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B";
 /// GPT: súborový systém Linuxu.
 pub const GUID_LINUX: &str = "0FC63DAF-8483-4772-8E79-3D69D8477DE4";
+/// GPT: HFS+ (Apple).
+pub const GUID_HFS: &str = "48465300-0000-11AA-AA11-00306543ECAC";
 
 impl Typ {
     pub fn mbr(self) -> u8 {
@@ -53,6 +57,7 @@ impl Typ {
             Typ::ExFat => 0x07,
             Typ::Esp => 0xEF,
             Typ::Linux => 0x83,
+            Typ::Hfs => 0xAF,
         }
     }
 
@@ -61,6 +66,7 @@ impl Typ {
             Typ::Fat32 | Typ::ExFat => GUID_ZAKLADNE_DATA,
             Typ::Esp => GUID_ESP,
             Typ::Linux => GUID_LINUX,
+            Typ::Hfs => GUID_HFS,
         })
     }
 }
