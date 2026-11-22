@@ -111,6 +111,8 @@ pub fn jedinecne() -> [u8; 32] {
     let mut h = Hasovac::novy();
     h.pridaj(b"SADIC jedinecne");
     h.pridaj(&t.as_nanos().to_le_bytes());
+    // na WebAssembly (WASI) číslo procesu nie je
+    #[cfg(not(target_family = "wasm"))]
     h.pridaj(&std::process::id().to_le_bytes());
     h.pridaj(&POCITADLO.fetch_add(1, Ordering::Relaxed).to_le_bytes());
     let adresa = &h as *const Hasovac as usize;

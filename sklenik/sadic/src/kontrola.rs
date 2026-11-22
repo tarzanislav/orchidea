@@ -54,7 +54,7 @@ impl Vysledok {
     }
 
     pub fn text(&self) -> String {
-        let gb = |b: u64| format!("{:.1} GB", b as f64 / 1e9);
+        let gb = crate::disk::velkost;
         let mut t = if self.falosna() {
             format!(
                 "⚠ FALOŠNÁ KAPACITA: hlási {}, ale spoľahlivo uloží len {}.",
