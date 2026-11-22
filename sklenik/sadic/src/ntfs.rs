@@ -556,6 +556,51 @@ fn je_meno_dos(meno: &[u16]) -> bool {
     zaklad.iter().all(|&c| povoleny(c))
 }
 
+/// Krátke meno DOS pre dlhé meno, jedinečné v priečinku (`obsadene` sú mená veľkými písmenami):
+/// ako Windows – bez medzier a bodiek, nepovolené znaky ako „_“, prvých 6 znakov + „~N“ a prípona
+/// z posledných troch znakov za poslednou bodkou.
+fn kratke_meno(meno: &[u16], obsadene: &mut std::collections::BTreeSet<Vec<u16>>) -> Vec<u16> {
+    let ocisti = |casti: &[u16]| -> Vec<u16> {
+        casti
+            .iter()
+            .filter(|&&c| c != b' ' as u16 && c != b'.' as u16)
+            .map(|&c| {
+                if c < 0x80 && ((c as u8).is_ascii_alphanumeric() || b"!#$%&'()-@^_`{}~".contains(&(c as u8)))
+                {
+                    (c as u8).to_ascii_uppercase() as u16
+                } else {
+                    b'_' as u16
+                }
+            })
+            .collect()
+    };
+    let bodka = meno.iter().rposition(|&c| c == b'.' as u16).filter(|&i| i > 0);
+    let (mut zaklad, mut pripona) = match bodka {
+        Some(i) => (ocisti(&meno[..i]), ocisti(&meno[i + 1..])),
+        None => (ocisti(meno), Vec::new()),
+    };
+    if zaklad.is_empty() {
+        std::mem::swap(&mut zaklad, &mut pripona);
+    }
+    if zaklad.is_empty() {
+        zaklad.push(b'_' as u16);
+    }
+    pripona.truncate(3);
+    for n in 1u32.. {
+        let vlnka: Vec<u16> = format!("~{n}").encode_utf16().collect();
+        let mut k: Vec<u16> = zaklad.iter().take(8 - vlnka.len()).copied().collect();
+        k.extend(&vlnka);
+        if !pripona.is_empty() {
+            k.push(b'.' as u16);
+            k.extend(&pripona);
+        }
+        if obsadene.insert(k.clone()) {
+            return k;
+        }
+    }
+    unreachable!("jedinečné krátke meno sa vždy nájde")
+}
+
 /// Ochrana viacsektorového záznamu: posledné 2 bajty každých 512 B sa presunú do poľa USA.
 fn ochran(b: &mut [u8], usa_od: usize) {
     let pocet = b.len() / KROK_USA;
@@ -1016,7 +1061,19 @@ impl Ntfs {
         let bitmapa = pr.vezmi(klastre(bitmapa_b));
         // 3. indexy priečinkov používateľa (koreň zvlášť – obsahuje metasúbory)
         let mena_uzlov: Vec<Vec<u16>> = strom.uzly.iter().map(|u| utf16(&u.meno)).collect();
-        let fn_uzla = |u: usize, rodic: usize| -> Vec<u8> {
+        // dlhé mená dostanú aj krátke meno DOS (Windows ho očakáva – inak chkdsk hlási chyby mien)
+        let mut kratke: Vec<Option<Vec<u16>>> = vec![None; strom.uzly.len()];
+        for &p in &priecinky {
+            let velke = |m: &[u16]| m.iter().map(|&c| up[c as usize]).collect::<Vec<u16>>();
+            let mut obsadene: std::collections::BTreeSet<Vec<u16>> =
+                strom.uzly[p].deti.iter().map(|&d| velke(&mena_uzlov[d])).collect();
+            for &d in &strom.uzly[p].deti {
+                if !je_meno_dos(&mena_uzlov[d]) {
+                    kratke[d] = Some(kratke_meno(&mena_uzlov[d], &mut obsadene));
+                }
+            }
+        }
+        let fn_uzla = |u: usize, rodic: usize| -> (Vec<u8>, Option<Vec<u8>>) {
             let uz = &strom.uzly[u];
             let (pridelene, velkost, atr) = if uz.priecinok {
                 (0, 0, INDEX_I30)
@@ -1024,9 +1081,12 @@ impl Ntfs {
                 (klastre(uz.velkost) * KLASTER, uz.velkost, ARCHIV)
             };
             // meno, ktoré je zároveň platné meno DOS 8.3, má jediný $FILE_NAME s priestorom Win32 + DOS
-            // (ako ho zapíše Windows); dlhé mená len Win32
-            let priestor = if je_meno_dos(&mena_uzlov[u]) { 3 } else { 1 };
-            meno_suboru(ref_uzla(rodic), pridelene, velkost, atr, &mena_uzlov[u], priestor, cas)
+            // (ako ho zapíše Windows); dlhé meno má priestor Win32 a vedľa neho krátke meno DOS
+            let priestor = if kratke[u].is_some() { 1 } else { 3 };
+            let dlhe = meno_suboru(ref_uzla(rodic), pridelene, velkost, atr, &mena_uzlov[u], priestor, cas);
+            let kratke =
+                kratke[u].as_ref().map(|k| meno_suboru(ref_uzla(rodic), pridelene, velkost, atr, k, 2, cas));
+            (dlhe, kratke)
         };
         // metasúbory v koreni: (záznam, poradie, meno, pridelené, veľkosť, atribúty)
         let meta: Vec<(u64, u16, &str, u64, u64, u32)> = vec![
@@ -1069,12 +1129,17 @@ impl Ntfs {
         };
         let mut indexy: Vec<Option<Index>> = (0..strom.uzly.len()).map(|_| None).collect();
         for &p in &priecinky {
-            let mut polozky: Vec<(Vec<u16>, Vec<u8>)> = strom.uzly[p]
-                .deti
-                .iter()
-                .map(|&d| (mena_uzlov[d].clone(), polozka_mena(ref_uzla(d), &fn_uzla(d, p))))
-                .collect();
+            let mut polozky: Vec<(Vec<u16>, Vec<u8>)> = Vec::new();
+            for &d in &strom.uzly[p].deti {
+                let (dlhe, kratke_fn) = fn_uzla(d, p);
+                polozky.push((mena_uzlov[d].clone(), polozka_mena(ref_uzla(d), &dlhe)));
+                if let (Some(k), Some(f)) = (&kratke[d], kratke_fn) {
+                    polozky.push((k.clone(), polozka_mena(ref_uzla(d), &f)));
+                }
+            }
             let dlzka_fn = if p == 0 { 66 + 2 } else { 66 + 2 * mena_uzlov[p].len() };
+            // krátke meno priečinka zaberá v jeho zázname ďalší atribút $FILE_NAME
+            let navyse = kratke[p].as_ref().map_or(0, |k| zarovnaj8(24 + 66 + 2 * k.len()));
             if p == 0 {
                 for (z, por, w, f) in &fn_meta {
                     polozky.push((w.clone(), polozka_mena(odkaz(*z, *por), f)));
@@ -1082,7 +1147,11 @@ impl Ntfs {
             }
             polozky.sort_by(|a, b| porovnaj(&a.0, &b.0, &up));
             let e: Vec<Vec<u8>> = polozky.into_iter().map(|x| x.1).collect();
-            indexy[p] = Some(zostav_index(e, miesto(dlzka_fn, false), miesto(dlzka_fn, true)));
+            indexy[p] = Some(zostav_index(
+                e,
+                miesto(dlzka_fn, false).saturating_sub(navyse),
+                miesto(dlzka_fn, true).saturating_sub(navyse),
+            ));
         }
         let mut behy_indexu: Vec<Behy> = vec![Vec::new(); strom.uzly.len()];
         for &p in &priecinky {
@@ -1105,6 +1174,16 @@ impl Ntfs {
         // 5. záznamy MFT
         let si = |a: u32, s: u32| rezidentny(AT_SI, &[], &standardne_info(a, s, cas), false);
         let fn_atr = |f: &[u8]| rezidentny(AT_FN, &[], f, true);
+        // $FILE_NAME (dlhé a prípadne krátke meno) v poradí hodnôt ako vo Windows; každé meno je odkaz
+        let pridaj_mena = |z: &mut Zaznam, (dlhe, kratke): (Vec<u8>, Option<Vec<u8>>)| {
+            let mut mena = vec![dlhe];
+            mena.extend(kratke);
+            mena.sort();
+            z.odkazy = mena.len() as u16;
+            for m in &mena {
+                z.pridaj(fn_atr(m));
+            }
+        };
         let i30 = utf16("$I30");
         let mut zaznamy: Vec<Option<Vec<u8>>> = (0..zaznamov).map(|_| None).collect();
         let uloz = |zaznamy: &mut Vec<Option<Vec<u8>>>, z: Zaznam| -> io::Result<()> {
@@ -1163,15 +1242,14 @@ impl Ntfs {
             let (mut z, f) = if p == 0 {
                 let mut z = Zaznam::novy(5, 5, 3);
                 z.pridaj(si(SKRYTY | SYSTEMOVY | ARCHIV, SEC_POUZIVATEL));
-                (z, fn_meta_z(5))
+                (z, (fn_meta_z(5), None))
             } else {
                 let rodic = strom.uzly.iter().position(|u| u.deti.contains(&p)).unwrap_or(0);
                 let mut z = Zaznam::novy(cislo[p], 1, 3);
                 z.pridaj(si(0, SEC_POUZIVATEL));
                 (z, fn_uzla(p, rodic))
             };
-            z.odkazy = 1;
-            z.pridaj(fn_atr(&f));
+            pridaj_mena(&mut z, f);
             z.pridaj(rezidentny(
                 AT_INDEX_ROOT,
                 &i30,
@@ -1365,9 +1443,8 @@ impl Ntfs {
         for &f in &subory {
             let rodic = strom.uzly.iter().position(|u| u.deti.contains(&f)).unwrap_or(0);
             let mut z = Zaznam::novy(cislo[f], 1, 1);
-            z.odkazy = 1;
             z.pridaj(si(ARCHIV, SEC_POUZIVATEL));
-            z.pridaj(fn_atr(&fn_uzla(f, rodic)));
+            pridaj_mena(&mut z, fn_uzla(f, rodic));
             let v = strom.uzly[f].velkost;
             if v == 0 {
                 z.pridaj(rezidentny(AT_DATA, &[], &[], false));
@@ -1535,6 +1612,22 @@ mod skusky {
         }
         for m in ["123456789", "a.abcd", "a b.txt", ".bashrc", "a.b.c", "súbor.txt", "a+b", "abc."] {
             assert!(!je_meno_dos(&utf16(m)), "{m}");
+        }
+    }
+
+    #[test]
+    fn kratke_mena_ako_windows() {
+        let mut o = std::collections::BTreeSet::new();
+        let k = |m: &str, o: &mut std::collections::BTreeSet<Vec<u16>>| {
+            String::from_utf16(&kratke_meno(&utf16(m), o)).unwrap()
+        };
+        assert_eq!(k("ab cd.txt", &mut o), "ABCD~1.TXT");
+        assert_eq!(k("Inštalácia – dlhý názov súboru.txt", &mut o), "IN_TAL~1.TXT");
+        assert_eq!(k("setup.exe.mui", &mut o), "SETUPE~1.MUI");
+        assert_eq!(k("setup.exe.mui2", &mut o), "SETUPE~2.MUI");
+        assert_eq!(k(".bashrc", &mut o), "BASHRC~1");
+        for _ in 3..12 {
+            assert_eq!(k("setup.exe.mui3", &mut o).len(), 12, "SETUPE~9.MUI, potom SETUP~10.MUI");
         }
     }
 
