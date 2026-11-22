@@ -21,6 +21,8 @@ mod exfat;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod ext;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod f2fs;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod fat32;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod formatuj;

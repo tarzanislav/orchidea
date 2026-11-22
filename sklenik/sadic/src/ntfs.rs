@@ -537,6 +537,25 @@ fn meno_suboru(
     v
 }
 
+/// Je meno zároveň platné meno DOS 8.3 (1–8 znakov, voliteľne bodka a 1–3 znaky, len povolené znaky
+/// ASCII bez medzier)?
+fn je_meno_dos(meno: &[u16]) -> bool {
+    let povoleny =
+        |c: u16| c < 0x80 && ((c as u8).is_ascii_alphanumeric() || b"!#$%&'()-@^_`{}~".contains(&(c as u8)));
+    let mut casti = meno.split(|&c| c == b'.' as u16);
+    let zaklad = casti.next().unwrap_or(&[]);
+    let pripona = casti.next();
+    if casti.next().is_some() || zaklad.is_empty() || zaklad.len() > 8 {
+        return false;
+    }
+    if let Some(p) = pripona
+        && (p.is_empty() || p.len() > 3 || !p.iter().all(|&c| povoleny(c)))
+    {
+        return false;
+    }
+    zaklad.iter().all(|&c| povoleny(c))
+}
+
 /// Ochrana viacsektorového záznamu: posledné 2 bajty každých 512 B sa presunú do poľa USA.
 fn ochran(b: &mut [u8], usa_od: usize) {
     let pocet = b.len() / KROK_USA;
@@ -1004,7 +1023,10 @@ impl Ntfs {
             } else {
                 (klastre(uz.velkost) * KLASTER, uz.velkost, ARCHIV)
             };
-            meno_suboru(ref_uzla(rodic), pridelene, velkost, atr, &mena_uzlov[u], 1, cas)
+            // meno, ktoré je zároveň platné meno DOS 8.3, má jediný $FILE_NAME s priestorom Win32 + DOS
+            // (ako ho zapíše Windows); dlhé mená len Win32
+            let priestor = if je_meno_dos(&mena_uzlov[u]) { 3 } else { 1 };
+            meno_suboru(ref_uzla(rodic), pridelene, velkost, atr, &mena_uzlov[u], priestor, cas)
         };
         // metasúbory v koreni: (záznam, poradie, meno, pridelené, veľkosť, atribúty)
         let meta: Vec<(u64, u16, &str, u64, u64, u32)> = vec![
@@ -1504,6 +1526,16 @@ mod skusky {
         let sd = opis(&a, &a, &[(0, 0x0012_0089, s), (0, 0x0012_0089, a.clone())]);
         assert_eq!(sd.len(), 0x68);
         assert_eq!(odtlacok_opisu(&sd), 0xF803_12F0);
+    }
+
+    #[test]
+    fn mena_dos() {
+        for m in ["sources", "ei.cfg", "install.wim", "README.TXT", "a", "12345678.abc", "x_y-z.~1"] {
+            assert!(je_meno_dos(&utf16(m)), "{m}");
+        }
+        for m in ["123456789", "a.abcd", "a b.txt", ".bashrc", "a.b.c", "súbor.txt", "a+b", "abc."] {
+            assert!(!je_meno_dos(&utf16(m)), "{m}");
+        }
     }
 
     #[test]

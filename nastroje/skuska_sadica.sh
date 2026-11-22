@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Skúška rozšíreného SADIČA na Linuxe nezávislými nástrojmi (fsck.vfat, fsck.exfat, e2fsck, ntfs-3g,
-# fsck.hfsplus, 7-Zip a udfinfo pre UDF, sgdisk, mtools, xorriso, genisoimage): formátovanie, rozbor ISO, napálenie bit po bite
+# fsck.hfsplus, fsck.f2fs, 7-Zip a udfinfo pre UDF, sgdisk, mtools, xorriso, genisoimage): formátovanie, rozbor ISO, napálenie bit po bite
 # aj rozbalením súborov, veľký súbor nad 4 GB na druhý oddiel NTFS či exFAT a skutočné ISO distribúcie
 # s kontrolným súčtom.
 #
@@ -37,11 +37,12 @@ with open(sys.argv[1], "rb") as f, open("oddiel.img", "wb") as o:
 EOF
 }
 
-echo "== 1. formátovanie (NTFS, FAT32, exFAT, ext4/3/2, HFS+, UDF; MBR, GPT; malé aj veľké disky)"
+echo "== 1. formátovanie (NTFS, FAT32, exFAT, ext4/3/2, HFS+, F2FS, UDF; MBR, GPT; malé aj veľké disky)"
 for v in "300 ntfs mbr menovka=Škola_NTFS" "2000 ntfs gpt menovka=Data" \
          "300 ext4 mbr menovka=Linux_ext4" "40000 ext4 gpt" "3000 ext3 mbr" "1000 ext2 gpt menovka=stary" \
          "300 hfs+ mbr menovka=Škola_Mac" "40000 hfs+ gpt" "3000 hfs+ gpt menovka=Fotky" \
          "300 udf menovka=Škola_UDF" "40000 udf" "2000 udf gpt menovka=Spolocny" \
+         "300 f2fs mbr menovka=Linux_F2FS" "40000 f2fs gpt" "120 f2fs gpt" \
          "300 fat32 mbr menovka=Škola" "300 exfat gpt menovka=Fotky_2026" "300 exfat mbr klaster=4K" \
          "8000 auto mbr menovka=OSEM" "33000 auto gpt menovka=VELKA" "64000 fat32 mbr"; do
   set -- $v; mb=$1; shift
@@ -55,6 +56,11 @@ for v in "300 ntfs mbr menovka=Škola_NTFS" "2000 ntfs gpt menovka=Data" \
     python3 -I "$NASTROJE/over_udf.py" oddiel.img 512 || chyba "UDF ($v)"
     7z l -tudf oddiel.img | grep -q "^Type = Udf" || chyba "7-Zip neotvoril UDF ($v)"
     udfinfo oddiel.img | grep -E "^(label|blocksize|udfrev|integrity)=" | tr '\n' ' '; echo
+  elif [[ "$(dd if=oddiel.img bs=1 skip=1024 count=4 status=none | od -An -tx1 | tr -d ' ')" == "1020f5f2" ]]; then
+    fsck.f2fs --dry-run oddiel.img > /tmp/f2fs.log 2>&1 || { cat /tmp/f2fs.log; chyba "fsck.f2fs ($v)"; }
+    if grep "^\[FSCK\]" /tmp/f2fs.log | grep -v "Ok\.\.\|fixing SIT types\|Max image"; then cat /tmp/f2fs.log; chyba "fsck.f2fs ($v)"; fi
+    grep -q "Checked valid nat_bits" /tmp/f2fs.log || chyba "F2FS: bity NAT ($v)"
+    grep -E "^\[FSCK\] Max image" /tmp/f2fs.log
   elif [[ "$(dd if=oddiel.img bs=1 skip=1024 count=2 status=none)" == "H+" ]]; then
     fsck.hfsplus -fn oddiel.img | tee /tmp/hfs.log | grep "volume name"
     grep -q "appears to be OK" /tmp/hfs.log || { cat /tmp/hfs.log; chyba "fsck.hfsplus ($v)"; }
@@ -133,6 +139,14 @@ rm -rf win && mkdir -p win/sources win/efi/boot win/boot/fonts win/support
 head -c 300000 /dev/urandom > win/sources/install.wim
 head -c 100000 /dev/urandom > win/sources/boot.wim
 echo "[EditionID]" > win/sources/ei.cfg
+# rôzne druhy mien na NTFS (8.3 malými aj veľkými, dlhé, s medzerou, s diakritikou, podpriečinok)
+mkdir -p win/sources/sk-sk
+echo a > win/sources/README.TXT
+echo b > win/sources/Setup.Exe
+echo c > "win/sources/Inštalácia – dlhý názov súboru.txt"
+echo d > "win/sources/ab cd.txt"
+echo e > win/sources/sk-sk/setup.exe.mui
+echo f > win/sources/sk-sk/LICENSE.RTF
 echo bm > win/bootmgr
 head -c 5000 /dev/urandom > win/bootmgr.efi
 head -c 2048 /dev/urandom > win/efi/boot/bootx64.efi

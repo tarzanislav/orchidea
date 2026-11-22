@@ -26,6 +26,8 @@ pub enum System {
     Ext2,
     /// HFS+ (Mac OS Extended) bez žurnálu.
     HfsPlus,
+    /// F2FS – linuxový systém pre pamäte flash.
+    F2fs,
     /// UDF 2.01 na celom disku – Windows, macOS aj Linux bez ovládačov.
     Udf,
 }
@@ -40,6 +42,7 @@ pub const PONUKA: &[System] = &[
     System::Ext3,
     System::Ext2,
     System::HfsPlus,
+    System::F2fs,
     System::Udf,
 ];
 
@@ -50,6 +53,7 @@ impl System {
             System::Automaticky => "Automaticky",
             System::HfsPlus => "HFS+ (Mac OS Extended)",
             System::Udf => "UDF (Windows, macOS aj Linux)",
+            System::F2fs => "F2FS (Linux, pamäte flash)",
             s => s.nazov(),
         }
     }
@@ -65,6 +69,7 @@ impl System {
             "ext2" => Some(System::Ext2),
             "hfs+" | "hfsplus" | "hfs" | "mac" => Some(System::HfsPlus),
             "udf" => Some(System::Udf),
+            "f2fs" => Some(System::F2fs),
             _ => None,
         }
     }
@@ -80,6 +85,7 @@ impl System {
             System::Ext2 => "ext2",
             System::HfsPlus => "HFS+",
             System::Udf => "UDF",
+            System::F2fs => "F2FS",
         }
     }
 
@@ -87,7 +93,7 @@ impl System {
     pub fn typ(self) -> Typ {
         match self {
             System::Fat32 => Typ::Fat32,
-            System::Ext4 | System::Ext3 | System::Ext2 => Typ::Linux,
+            System::Ext4 | System::Ext3 | System::Ext2 | System::F2fs => Typ::Linux,
             System::HfsPlus => Typ::Hfs,
             _ => Typ::ExFat, // exFAT aj NTFS: 0x07 / základné dáta
         }
@@ -142,6 +148,12 @@ pub fn navrhni(
                 return Err("HFS+ zatiaľ len s blokom 4 KB (ako predvolí macOS)".into());
             }
             Box::new(crate::hfsplus::Hfs::navrhni(sektory, sektor, menovka)?)
+        }
+        System::F2fs => {
+            if klaster.is_some_and(|k| k != 4096) {
+                return Err("F2FS má vždy blok 4 KB".into());
+            }
+            Box::new(crate::f2fs::F2fs::navrhni(sektory, sektor, zaciatok, menovka)?)
         }
         System::Udf => {
             if klaster.is_some_and(|k| k != sektor) {
