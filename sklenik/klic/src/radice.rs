@@ -1,0 +1,307 @@
+//! Vlastné úsporné ovládanie častí čipu cez /sys:
+//! - **R178** – nepoužité radiče kariet: vstavaná eMMC Androidu a slot Wi-Fi bez ovládača bežia stále (eMMC
+//!   s taktom karty až 200 MHz, radič sa zastaví len pri zmene rýchlosti). Odpojením od ovládača jadro zastaví
+//!   takt karty aj radiča a čip Wi-Fi drží v resete. Navyše **istota, že sa do krabičky nič nezapíše**.
+//!   Karta SD sa nikdy neodpája (môže byť spúšťacia).
+//! - **R167** – hlboký spánok jadier: vlastný ovládač jadra `sklenik_jadra` (cpuidle cez PSCI), ktorý zapína
+//!   KLÍČ až pri bežiacom strážnom časovači a s poistkou na karte.
+
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+fn citaj(p: impl AsRef<Path>) -> Option<String> {
+    fs::read_to_string(p).ok().map(|s| s.trim().to_string())
+}
+
+/// Patrí zariadenie `meno` (napr. `mmcblk1p2`, `/dev/mmcblk1boot0`) k disku `disk` (`mmcblk1`)?
+fn patri(meno: &str, disk: &str) -> bool {
+    let meno = meno.trim_start_matches("/dev/");
+    meno == disk
+        || meno
+            .strip_prefix(disk)
+            .is_some_and(|z| z.starts_with('p') || z.starts_with("boot") || z.starts_with("rpmb"))
+}
+
+/// Radič kariet (platformové zariadenie), ktorý sa dá odpojiť od ovládača a znova pripojiť.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Radic {
+    /// Meno platformového zariadenia (napr. `ffe07000.mmc`).
+    pub zariadenie: String,
+    /// Priečinok ovládača v /sys (v ňom `unbind` a `bind`).
+    pub ovladac: PathBuf,
+    /// Čo na ňom je (napr. „eMMC 032GE4“).
+    pub popis: String,
+}
+
+impl Radic {
+    pub fn riadok(&self) -> String {
+        format!("{} ({})", self.popis, self.zariadenie)
+    }
+}
+
+/// Nepoužité radiče kariet: vstavaná eMMC, ktorej žiadna časť nie je pripojená ani chránená (spúšťací disk,
+/// nosič záznamov), a slot SDIO, ktorého funkcie nemajú ovládač. Karty SD sa nevracajú nikdy.
+pub fn nepouzite_radice(koren: &Path, chranene: &[String]) -> Vec<Radic> {
+    let pripojene: Vec<String> = citaj(koren.join("proc/mounts"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+        .collect();
+    let mut karty: Vec<_> =
+        fs::read_dir(koren.join("sys/bus/mmc/devices")).into_iter().flatten().flatten().collect();
+    karty.sort_by_key(|z| z.file_name());
+    let mut v = Vec::new();
+    for z in karty {
+        let karta = z.file_name().to_string_lossy().to_string();
+        let Ok(cesta) = fs::canonicalize(z.path()) else { continue };
+        let popis = match citaj(cesta.join("type")).as_deref() {
+            Some("MMC") => {
+                let bloky: Vec<String> = fs::read_dir(cesta.join("block"))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|b| b.file_name().to_string_lossy().to_string())
+                    .collect();
+                let pouzita = bloky.is_empty()
+                    || bloky.iter().any(|b| {
+                        chranene.iter().any(|c| patri(c, b)) || pripojene.iter().any(|p| patri(p, b))
+                    });
+                if pouzita {
+                    continue;
+                }
+                format!("eMMC {}", citaj(cesta.join("name")).unwrap_or_default())
+            }
+            Some("SDIO") => {
+                let predpona = format!("{karta}:");
+                let s_ovladacom = fs::read_dir(&cesta).into_iter().flatten().flatten().any(|f| {
+                    f.file_name().to_string_lossy().starts_with(&predpona) && f.path().join("driver").exists()
+                });
+                if s_ovladacom {
+                    continue;
+                }
+                format!(
+                    "Wi-Fi SDIO {}:{} bez ovládača",
+                    citaj(cesta.join("vendor")).unwrap_or_default().trim_start_matches("0x"),
+                    citaj(cesta.join("device")).unwrap_or_default().trim_start_matches("0x")
+                )
+            }
+            _ => continue,
+        };
+        // …/ffe07000.mmc/mmc_host/mmc1/mmc1:0001 – radič je o tri úrovne vyššie
+        let Some(radic) = cesta.parent().and_then(Path::parent).and_then(Path::parent) else { continue };
+        let Ok(ovladac) = fs::canonicalize(radic.join("driver")) else { continue };
+        let Some(zariadenie) = radic.file_name().map(|n| n.to_string_lossy().to_string()) else { continue };
+        v.push(Radic { zariadenie, ovladac, popis });
+    }
+    v
+}
+
+/// Odpojí radič od ovládača – jadro zastaví takty a kartu vypne (eMMC ostane napájaná, len stojí).
+pub fn odpoj(r: &Radic) -> io::Result<()> {
+    fs::write(r.ovladac.join("unbind"), &r.zariadenie)
+}
+
+/// Znova pripojí radič (jadro kartu nanovo rozpozná).
+pub fn pripoj(r: &Radic) -> io::Result<()> {
+    fs::write(r.ovladac.join("bind"), &r.zariadenie)
+}
+
+/// Parametre vlastného ovládača spánku jadier v jadre (R167).
+const SPANOK: &str = "sys/module/sklenik_jadra/parameters";
+
+/// Má jadro vlastný ovládač spánku jadier?
+pub fn spanok_jadier_je(koren: &Path) -> bool {
+    koren.join(SPANOK).join("zapnute").exists()
+}
+
+/// Zapne alebo vypne hlboký spánok jadier; vráti hlásenie ovládača (výsledok overenia firmvéru).
+/// Pri odmietnutí (firmvér bez CPU_SUSPEND, rozšírený formát PSCI) vráti chybu s hlásením ovládača.
+pub fn nastav_spanok_jadier(koren: &Path, zapnuty: bool) -> Result<String, String> {
+    let stav = || citaj(koren.join(SPANOK).join("stav")).unwrap_or_default();
+    match fs::write(koren.join(SPANOK).join("zapnute"), if zapnuty { "1" } else { "0" }) {
+        Ok(()) => Ok(stav()),
+        Err(e) => Err(format!("{} ({e})", stav())),
+    }
+}
+
+/// Štatistika hlbokého stavu za všetky jadrá: vstupy, čas v ňom (µs), odmietnuté firmvérom.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Spanok {
+    pub vstupov: u64,
+    pub cas_us: u64,
+    pub odmietnutych: u64,
+}
+
+impl Spanok {
+    pub fn nacitaj(koren: &Path) -> Option<Spanok> {
+        let mut s = Spanok::default();
+        let mut najdene = false;
+        let cpu = koren.join("sys/devices/system/cpu");
+        for z in fs::read_dir(&cpu).into_iter().flatten().flatten() {
+            let meno = z.file_name().to_string_lossy().to_string();
+            if !meno
+                .strip_prefix("cpu")
+                .is_some_and(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit()))
+            {
+                continue;
+            }
+            let stav = z.path().join("cpuidle/state1");
+            if citaj(stav.join("name")).as_deref() != Some("jadro-vyp") {
+                continue;
+            }
+            let cislo = |f: &str| citaj(stav.join(f)).and_then(|t| t.parse::<u64>().ok()).unwrap_or(0);
+            s.vstupov += cislo("usage");
+            s.cas_us += cislo("time");
+            s.odmietnutych += cislo("rejected");
+            najdene = true;
+        }
+        najdene.then_some(s)
+    }
+
+    /// Rozdiel od skoršieho stavu.
+    pub fn od(&self, skor: &Spanok) -> Spanok {
+        Spanok {
+            vstupov: self.vstupov.saturating_sub(skor.vstupov),
+            cas_us: self.cas_us.saturating_sub(skor.cas_us),
+            odmietnutych: self.odmietnutych.saturating_sub(skor.odmietnutych),
+        }
+    }
+
+    /// Popis: koľko času spolu boli jadrá vypnuté (súčet za všetky jadrá) za `za_s` sekúnd.
+    pub fn popis(&self, za_s: f64) -> String {
+        format!(
+            "jadrá vypnuté spolu {:.0} s za {:.0} min · vstupov {} · odmietnutých firmvérom {}",
+            self.cas_us as f64 / 1e6,
+            za_s / 60.0,
+            self.vstupov,
+            self.odmietnutych
+        )
+    }
+}
+
+#[cfg(all(test, unix))]
+mod skusky {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    struct Strom(PathBuf);
+
+    impl Strom {
+        fn novy(meno: &str) -> Strom {
+            let p = std::env::temp_dir().join(format!("sklenik-radice-{meno}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&p);
+            fs::create_dir_all(&p).unwrap();
+            Strom(p)
+        }
+        fn subor(&self, cesta: &str, obsah: &str) -> &Strom {
+            let p = self.0.join(cesta);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, obsah).unwrap();
+            self
+        }
+        fn odkaz(&self, cesta: &str, ciel: &str) -> &Strom {
+            let p = self.0.join(cesta);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            symlink(self.0.join(ciel), p).unwrap();
+            self
+        }
+    }
+
+    impl Drop for Strom {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Krabička X96: SDIO (bez ovládača), karta SD a eMMC – ako v /sys jadra 6.18.
+    fn x96(s: &Strom, emmc_pripojena: bool, wifi_ovladac: bool) {
+        let plat = "sys/devices/platform/soc";
+        s.subor("sys/bus/platform/drivers/meson-gx-mmc/bind", "")
+            .subor(&format!("{plat}/ffe03000.mmc/mmc_host/mmc0/mmc0:0001/type"), "SDIO\n")
+            .subor(&format!("{plat}/ffe03000.mmc/mmc_host/mmc0/mmc0:0001/vendor"), "0x024c\n")
+            .subor(&format!("{plat}/ffe03000.mmc/mmc_host/mmc0/mmc0:0001/device"), "0xc822\n")
+            .subor(&format!("{plat}/ffe03000.mmc/mmc_host/mmc0/mmc0:0001/mmc0:0001:1/class"), "0x07\n")
+            .subor(&format!("{plat}/ffe05000.mmc/mmc_host/mmc2/mmc2:aaaa/type"), "SD\n")
+            .subor(&format!("{plat}/ffe05000.mmc/mmc_host/mmc2/mmc2:aaaa/block/mmcblk2/size"), "1\n")
+            .subor(&format!("{plat}/ffe07000.mmc/mmc_host/mmc1/mmc1:0001/type"), "MMC\n")
+            .subor(&format!("{plat}/ffe07000.mmc/mmc_host/mmc1/mmc1:0001/name"), "032GE4\n")
+            .subor(&format!("{plat}/ffe07000.mmc/mmc_host/mmc1/mmc1:0001/block/mmcblk1/size"), "1\n")
+            .subor(&format!("{plat}/ffe07000.mmc/mmc_host/mmc1/mmc1:0001/block/mmcblk1boot0/size"), "1\n")
+            .subor(
+                "proc/mounts",
+                if emmc_pripojena {
+                    "/dev/sda1 /run/karta vfat rw 0 0\n/dev/mmcblk1p20 /mnt ext4 ro 0 0\n"
+                } else {
+                    "/dev/sda1 /run/karta vfat rw 0 0\n"
+                },
+            );
+        for (radic, karta) in [
+            ("ffe03000.mmc", "mmc0/mmc0:0001"),
+            ("ffe05000.mmc", "mmc2/mmc2:aaaa"),
+            ("ffe07000.mmc", "mmc1/mmc1:0001"),
+        ] {
+            s.odkaz(&format!("{plat}/{radic}/driver"), "sys/bus/platform/drivers/meson-gx-mmc");
+            let meno = karta.split('/').nth(1).unwrap();
+            s.odkaz(&format!("sys/bus/mmc/devices/{meno}"), &format!("{plat}/{radic}/mmc_host/{karta}"));
+        }
+        if wifi_ovladac {
+            s.odkaz(
+                &format!("{plat}/ffe03000.mmc/mmc_host/mmc0/mmc0:0001/mmc0:0001:1/driver"),
+                "sys/bus/platform/drivers/meson-gx-mmc",
+            );
+        }
+    }
+
+    #[test]
+    fn odpoji_emmc_a_wifi_bez_ovladaca_nikdy_kartu_sd() {
+        let s = Strom::novy("x96");
+        x96(&s, false, false);
+        let r = nepouzite_radice(&s.0, &["sda1".into()]);
+        let mena: Vec<&str> = r.iter().map(|x| x.zariadenie.as_str()).collect();
+        assert_eq!(mena, ["ffe03000.mmc", "ffe07000.mmc"], "{r:?}");
+        assert_eq!(r[0].popis, "Wi-Fi SDIO 024c:c822 bez ovládača");
+        assert_eq!(r[1].riadok(), "eMMC 032GE4 (ffe07000.mmc)");
+        odpoj(&r[1]).unwrap();
+        assert_eq!(fs::read_to_string(r[1].ovladac.join("unbind")).unwrap(), "ffe07000.mmc");
+        pripoj(&r[1]).unwrap();
+        assert_eq!(fs::read_to_string(r[1].ovladac.join("bind")).unwrap(), "ffe07000.mmc");
+    }
+
+    #[test]
+    fn pouzita_emmc_a_wifi_s_ovladacom_ostanu() {
+        let s = Strom::novy("pouzite");
+        x96(&s, true, true);
+        assert!(nepouzite_radice(&s.0, &[]).is_empty());
+        let s = Strom::novy("chranena");
+        x96(&s, false, false);
+        // eMMC je spúšťacia alebo nosič záznamov
+        let r = nepouzite_radice(&s.0, &["/dev/mmcblk1p1".into()]);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].zariadenie, "ffe03000.mmc");
+        assert!(patri("mmcblk1boot0", "mmcblk1") && !patri("mmcblk10p1", "mmcblk1"));
+    }
+
+    #[test]
+    fn spanok_jadier_zo_sys() {
+        let s = Strom::novy("spanok");
+        for c in 0..4 {
+            s.subor(&format!("sys/devices/system/cpu/cpu{c}/cpuidle/state1/name"), "jadro-vyp\n")
+                .subor(&format!("sys/devices/system/cpu/cpu{c}/cpuidle/state1/usage"), "100\n")
+                .subor(&format!("sys/devices/system/cpu/cpu{c}/cpuidle/state1/time"), "5000000\n")
+                .subor(&format!("sys/devices/system/cpu/cpu{c}/cpuidle/state1/rejected"), "0\n");
+        }
+        s.subor("sys/devices/system/cpu/cpufreq/policy0/x", "");
+        let z = Spanok::nacitaj(&s.0).expect("spánok");
+        assert_eq!(z, Spanok { vstupov: 400, cas_us: 20_000_000, odmietnutych: 0 });
+        assert_eq!(
+            z.od(&Spanok::default()).popis(600.0),
+            "jadrá vypnuté spolu 20 s za 10 min · vstupov 400 · odmietnutých firmvérom 0"
+        );
+        assert!(!spanok_jadier_je(&s.0));
+        s.subor("sys/module/sklenik_jadra/parameters/zapnute", "0\n")
+            .subor("sys/module/sklenik_jadra/parameters/stav", "zapnutý – PSCI 1.0\n");
+        assert!(spanok_jadier_je(&s.0));
+        assert_eq!(nastav_spanok_jadier(&s.0, true), Ok("zapnutý – PSCI 1.0".into()));
+    }
+}

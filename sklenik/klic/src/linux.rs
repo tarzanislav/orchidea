@@ -8,6 +8,7 @@ use crate::okolie::{self, Okolie};
 use crate::pamat;
 use crate::periferie::{Supis, Ulozisko};
 use crate::poda::Poda;
+use crate::radice;
 use crate::samomeranie::{self, NL, ZNACKA_NOSICA, ZNACKA_PORADIA, nadpis};
 use crate::strazca::{Hardver, Profil, Regulator, Uroven, je_tv_krabicka, stupen_ventilatora, urovne};
 use crate::sys;
@@ -558,7 +559,7 @@ fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex
                 zaznam::poistka(
                     n,
                     POISTKA_VIDEA,
-                    Some(
+                    zaznam::Poistka::Vytvor(
                         "Skúška dekodéra videa práve beží. Ak tento súbor zostal na karte, skúška nedobehla\r\n\
                          (krabička zamrzla alebo sa reštartovala) a KLÍČ ju pri ďalšom štarte vynechá.\r\n\
                          Znova ju zapneš zmazaním tohto súboru.\r\n",
@@ -622,7 +623,7 @@ fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex
                 }
             }
             if let Some(n) = nosic.as_ref() {
-                match zaznam::poistka(n, POISTKA_VIDEA, None) {
+                match zaznam::poistka(n, POISTKA_VIDEA, zaznam::Poistka::Zmaz) {
                     Ok(_) => pridaj("skúška dobehla – poistka z karty zmazaná".into()),
                     Err(e) => pridaj(format!("poistku sa nepodarilo zmazať ({e})")),
                 }
@@ -634,6 +635,121 @@ fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex
             pridaj("dekodér videa: len s 64-bitovým jadrom".into());
         }
     });
+}
+
+/// Popis odpojených radičov kariet (R178).
+fn popis_radicov(r: &[radice::Radic], odpojene: bool) -> String {
+    match (r.is_empty(), odpojene) {
+        (true, _) => "nič na odpojenie".into(),
+        (false, true) => {
+            format!("odpojené – {}", r.iter().map(radice::Radic::riadok).collect::<Vec<_>>().join(", "))
+        }
+        (false, false) => "pripojené".into(),
+    }
+}
+
+/// Poistka hlbokého spánku jadier na karte (R167) a ako dlho po zapnutí ostane.
+const POISTKA_JADIER: &str = "JADRA-SPANOK.TXT";
+const POISTKA_JADIER_S: u64 = 300;
+
+/// R167: hlboký spánok jadier – vlastný ovládač jadra `sklenik_jadra` (cpuidle cez PSCI CPU_SUSPEND).
+/// Zapína sa len so strážnym časovačom a s poistkou na karte: ak by firmvér pri vypnutí jadra zamrzol,
+/// strážny časovač krabičku do 15 s reštartuje, KLÍČ nájde poistku a hlboký spánok už nezapne.
+/// Poistka sa zmaže po 5 min bez problému (chyba firmvéru sa prejaví hneď – jadrá spia tisíckrát za sekundu).
+enum SpanokJadier {
+    Vypnuty,
+    Zapnuty { od: Instant, poistka: Option<zaznam::Nosic>, stav: String, zaciatok: radice::Spanok },
+    Zakazany(String),
+}
+
+impl SpanokJadier {
+    /// Jeden krok; vráti `true`, ak sa stav zmenil (zmena tepla).
+    fn krok(&mut self, chce: bool, spustaci: Option<&str>) -> bool {
+        let koren = Path::new("/");
+        match self {
+            SpanokJadier::Vypnuty if chce => {
+                *self = SpanokJadier::zapni(koren, spustaci);
+                matches!(self, SpanokJadier::Zapnuty { .. })
+            }
+            SpanokJadier::Zapnuty { od, poistka, .. } if chce => {
+                if poistka.is_some()
+                    && od.elapsed() >= Duration::from_secs(POISTKA_JADIER_S)
+                    && let Some(n) = poistka.take()
+                {
+                    match zaznam::poistka(&n, POISTKA_JADIER, zaznam::Poistka::Zmaz) {
+                        Ok(_) => hlas("hlboký spánok jadier: 5 min bez problému – poistka z karty zmazaná"),
+                        Err(e) => hlas(&format!("hlboký spánok jadier: poistku sa nepodarilo zmazať ({e})")),
+                    }
+                }
+                false
+            }
+            SpanokJadier::Zapnuty { poistka, .. } => {
+                let _ = radice::nastav_spanok_jadier(koren, false);
+                if let Some(n) = poistka.take() {
+                    let _ = zaznam::poistka(&n, POISTKA_JADIER, zaznam::Poistka::Zmaz);
+                }
+                hlas("hlboký spánok jadier: vypnutý (tepelný pokus)");
+                *self = SpanokJadier::Vypnuty;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn zapni(koren: &Path, spustaci: Option<&str>) -> SpanokJadier {
+        if !radice::spanok_jadier_je(koren) {
+            return SpanokJadier::Zakazany("jadro nemá ovládač sklenik_jadra".into());
+        }
+        let Some(n) = zaznam::najdi_nosice(spustaci).into_iter().next() else {
+            return SpanokJadier::Zakazany("nezapnutý – chýba karta s FAT na poistku".into());
+        };
+        let text = "Hlboký spánok jadier (R167) bol zapnutý a ešte neprešlo 5 minút bez problému.\r\n\
+                    Ak tento súbor zostal na karte, krabička medzitým zamrzla alebo sa reštartovala\r\n\
+                    a KLÍČ hlboký spánok jadier už nezapne. Znova ho zapneš zmazaním tohto súboru.\r\n";
+        match zaznam::poistka(&n, POISTKA_JADIER, zaznam::Poistka::Vytvor(text)) {
+            Ok(true) => {
+                let d = format!(
+                    "nezapnutý – predošlý hlboký spánok nedobehol (zamrznutie alebo reštart); zapne ho zmazanie \
+                     MERANIA/{POISTKA_JADIER}"
+                );
+                hlas(&format!("hlboký spánok jadier: {d}"));
+                SpanokJadier::Zakazany(d)
+            }
+            Ok(false) => match radice::nastav_spanok_jadier(koren, true) {
+                Ok(stav) => {
+                    hlas(&format!(
+                        "hlboký spánok jadier: {stav} – poistka na karte {} min",
+                        POISTKA_JADIER_S / 60
+                    ));
+                    SpanokJadier::Zapnuty {
+                        od: Instant::now(),
+                        poistka: Some(n),
+                        stav,
+                        zaciatok: radice::Spanok::nacitaj(koren).unwrap_or_default(),
+                    }
+                }
+                Err(e) => {
+                    let _ = zaznam::poistka(&n, POISTKA_JADIER, zaznam::Poistka::Zmaz);
+                    hlas(&format!("hlboký spánok jadier: {e}"));
+                    SpanokJadier::Zakazany(e)
+                }
+            },
+            Err(e) => SpanokJadier::Zakazany(format!("nezapnutý – poistka sa nezapísala ({e})")),
+        }
+    }
+
+    fn popis(&self) -> String {
+        match self {
+            SpanokJadier::Vypnuty => "vypnutý".into(),
+            SpanokJadier::Zakazany(d) => d.clone(),
+            SpanokJadier::Zapnuty { od, poistka, stav, zaciatok } => {
+                let stat = radice::Spanok::nacitaj(Path::new("/"))
+                    .map(|s| s.od(zaciatok).popis(od.elapsed().as_secs_f64()))
+                    .unwrap_or_default();
+                format!("{stav} · {stat}{}", if poistka.is_some() { " · poistka na karte" } else { "" })
+            }
+        }
+    }
 }
 
 /// `/dev/kmsg` od tejto chvíle (staršie hlásenia sa preskočia) – na hlásenia dekodéra počas skúšky.
@@ -1129,6 +1245,10 @@ pub fn spusti() {
     let mut kable: std::collections::HashMap<String, chlad::Kabel> = std::collections::HashMap::new();
     let mut kabel_hladani = 0u32;
     let mut periferie_teraz: Option<bool> = None;
+    // R178: nepoužité radiče kariet odpojené od ovládača; R167: hlboký spánok jadier
+    let mut radice_odpojene: Vec<radice::Radic> = Vec::new();
+    let mut radice_stav: Option<bool> = None;
+    let mut spanok_jadier = SpanokJadier::Vypnuty;
     let mut rusene = [false; chlad::FAZY.len()];
     let mut usb_spanok_od: Option<(u64, u64)> = None;
     let mut usb_nastavene: Vec<String> = Vec::new();
@@ -1619,6 +1739,37 @@ pub fn spusti() {
                 periferie_teraz = Some(p);
                 okolie.prekalibruj();
             }
+            // R178: nepoužité radiče kariet (eMMC Androidu, Wi-Fi bez ovládača) – odpojené pri úsporných
+            // perifériách; až minútu po štarte, keď dobehne meranie úložiska
+            let chce_odpojit = pid1 && !skuska && r.periferie && r.radice && hore >= 60.0;
+            if chce_odpojit && radice_stav != Some(true) {
+                let chranene: Vec<String> = nastavenie.as_ref().map(|(c, _)| c.clone()).into_iter().collect();
+                for rd in radice::nepouzite_radice(Path::new("/"), &chranene) {
+                    match radice::odpoj(&rd) {
+                        Ok(()) => radice_odpojene.push(rd),
+                        Err(e) => hlas(&format!("radič {} sa nepodarilo odpojiť: {e}", rd.riadok())),
+                    }
+                }
+                hlas(&format!("nepoužité radiče kariet (R178): {}", popis_radicov(&radice_odpojene, true)));
+                radice_stav = Some(true);
+                okolie.prekalibruj();
+            } else if radice_stav == Some(true) && !(r.periferie && r.radice) {
+                for rd in radice_odpojene.drain(..) {
+                    if let Err(e) = radice::pripoj(&rd) {
+                        hlas(&format!("radič {} sa nepodarilo znova pripojiť: {e}", rd.riadok()));
+                    }
+                }
+                hlas("nepoužité radiče kariet (R178): znova pripojené");
+                radice_stav = Some(false);
+                okolie.prekalibruj();
+            }
+            // R167: hlboký spánok jadier – vlastný ovládač jadra; len pri bežiacom strážnom časovači, s poistkou
+            // na karte a nie počas tepelného pokusu (fázy sa porovnávajú s predošlými pokusmi)
+            let chce_spanok = pid1 && !skuska && r.jadra_spia && strazny.is_some() && hore >= 120.0;
+            let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
+            if spanok_jadier.krok(chce_spanok, spustaci.as_deref()) {
+                okolie.prekalibruj();
+            }
         }
         let chlad_stav = tv.then(|| {
             let mut casti = Vec::new();
@@ -1931,6 +2082,15 @@ pub fn spusti() {
                             },
                             if regulator.zaparkovane() { "zaparkované (1 jadro)" } else { "pracujú" }
                         );
+                        text += &format!(
+                            "  radiče kariet (R178): {} · spánok jadier (R167): {}{NL}",
+                            match radice_stav {
+                                Some(true) => popis_radicov(&radice_odpojene, true),
+                                Some(false) => "pripojené (pokus)".into(),
+                                None => "zatiaľ pripojené".into(),
+                            },
+                            spanok_jadier.popis()
+                        );
                         if pokus {
                             let r: Vec<String> = (0..chlad::FAZY.len())
                                 .filter(|&i| rusene[i])
@@ -1952,6 +2112,7 @@ pub fn spusti() {
                                         chlad::FAZY.len(),
                                         chlad::FAZY[f].nazov
                                     ),
+                                    None if minuta == 0 => "začína".into(),
                                     None => "hotový".into(),
                                 },
                                 if r.is_empty() { "žiadne".into() } else { r.join(", ") }

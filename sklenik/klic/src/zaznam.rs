@@ -219,11 +219,19 @@ fn zapis_na(
     vysledok.map_err(|e| format!("zápis: {e}"))
 }
 
-/// Poistka na nosiči: súbor `meno` v priečinku `MERANIA`. `nastav` = `Some(obsah)` ho vytvorí, `None` zmaže;
-/// vráti, či tam bol predtým. Vlastný bod pripojenia – zápis záznamu môže bežať súčasne (jadro zdieľa ten istý
-/// súborový systém, odpojenie jedného bodu druhý neruší).
-#[cfg_attr(not(target_pointer_width = "64"), allow(dead_code))]
-pub fn poistka(n: &Nosic, meno: &str, nastav: Option<&str>) -> Result<bool, String> {
+/// Čo urobiť s poistkou.
+#[derive(Debug, Clone, Copy)]
+pub enum Poistka<'a> {
+    /// Vytvoriť (prepísať) s týmto obsahom.
+    Vytvor(&'a str),
+    /// Zmazať.
+    Zmaz,
+}
+
+/// Poistka na nosiči: súbor `meno` v priečinku `MERANIA` – vytvorí ho alebo zmaže; vráti, či tam bol predtým.
+/// Vlastný bod pripojenia – zápis záznamu môže bežať súčasne (jadro zdieľa ten istý súborový systém,
+/// odpojenie jedného bodu druhý neruší).
+pub fn poistka(n: &Nosic, meno: &str, co: Poistka) -> Result<bool, String> {
     const BOD: &str = "/run/karta-poistka";
     let _ = fs::create_dir_all(BOD);
     sys::pripoj_s_volbami(
@@ -238,15 +246,15 @@ pub fn poistka(n: &Nosic, meno: &str, nastav: Option<&str>) -> Result<bool, Stri
         let priecinok = Path::new(BOD).join(PRIECINOK);
         let cesta = priecinok.join(meno);
         let bola = cesta.exists();
-        match nastav {
-            Some(obsah) => {
+        match co {
+            Poistka::Vytvor(obsah) => {
                 fs::create_dir_all(&priecinok)?;
                 let mut f = fs::File::create(&cesta)?;
                 f.write_all(obsah.as_bytes())?;
                 f.sync_all()?;
             }
-            None if bola => fs::remove_file(&cesta)?,
-            None => {}
+            Poistka::Zmaz if bola => fs::remove_file(&cesta)?,
+            Poistka::Zmaz => {}
         }
         Ok(bola)
     })();

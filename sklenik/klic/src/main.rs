@@ -46,6 +46,9 @@ mod chlad;
 // merač pamäte a budení (R162, R163)
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod pamat;
+// R167, R178: hlboký spánok jadier a nepoužité radiče kariet cez /sys
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod radice;
 
 // skúšobné video s presne známym obrazom (R165) – vlastný generátor tokov H.264 a HEVC
 #[cfg_attr(not(all(target_os = "linux", target_pointer_width = "64")), allow(dead_code))]

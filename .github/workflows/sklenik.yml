@@ -171,6 +171,9 @@ jobs:
           # R174: vlastný kodek HEVC v jadre meson-vdec (formát HEVC pre SM1, prívod toku podľa voľných snímok)
           cp ../sklenik/jadro-ovladace/sklenik_hevc.c ../sklenik/jadro-ovladace/sklenik_hevc.h drivers/staging/media/meson/vdec/
           patch -p1 --forward < ../sklenik/jadro-ovladace/sklenik-hevc.patch
+          # R167: vlastný ovládač hlbokého spánku jadier (cpuidle cez PSCI) – pri štarte vypnutý, zapína ho KLÍČ
+          cp ../sklenik/jadro-ovladace/sklenik_jadra.c drivers/cpuidle/
+          echo 'obj-$(CONFIG_ARM_PSCI_FW) += sklenik_jadra.o' >> drivers/cpuidle/Makefile
           # R165/R174: firmvér dekodéra videa (mikrokód jeho procesora AMRISC z linux-firmware) – overený odtlačkom
           # SHA-256; na karte ako samostatné súbory s menami 8.3 (licencia LICENSE.amlogic_vdec nedovoľuje vložiť ho
           # do jadra), KLÍČ ich pri štarte skopíruje do /lib/firmware
@@ -203,6 +206,7 @@ jobs:
           grep -q sklenik_vpu_probe System.map || { echo "ovládač sklenik_vpu chýba v jadre"; exit 1; }
           grep -q " vdec_probe$" System.map || { echo "dekodér videa meson-vdec chýba v jadre"; exit 1; }
           grep -q " sklenik_hevc_ops$" System.map || { echo "vlastný kodek HEVC chýba v jadre"; exit 1; }
+          grep -q " skl_nastav$" System.map || { echo "vlastný ovládač spánku jadier chýba v jadre"; exit 1; }
           # firmvér Amlogic nesmie byť v jadre (licencia)
           ! grep -q "^CONFIG_EXTRA_FIRMWARE=\".*meson" .config
           mkdir -p ../jadro-vystup/amlogic/dtb/amlogic
