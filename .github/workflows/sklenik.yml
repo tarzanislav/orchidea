@@ -145,13 +145,16 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: jadro-vystup
-          key: jadro-s905x3-${{ env.ODROID_JADRO }}-${{ hashFiles('sklenik/jadro.config', 'sklenik/jadro-odroid.config') }}
+          key: jadro-s905x3-${{ env.ODROID_JADRO }}-${{ hashFiles('sklenik/jadro.config', 'sklenik/jadro-odroid.config', 'sklenik/jadro-ovladace/*') }}
       - name: Jadro Linux z kernel.org + nastavenie SKLENÍKA pre Odroid C4
         if: steps.pamat.outputs.cache-hit != 'true'
         run: |
           sh nastroje/balicky.sh bc bison flex libssl-dev make gcc xz-utils
           curl -sSfL "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${ODROID_JADRO}.tar.xz" | tar xJ
           cd "linux-${ODROID_JADRO}"
+          # R166: vlastné ovládače SKLENÍKA priamo v jadre (takt obvodu obrazu VPU podľa potreby)
+          cp ../sklenik/jadro-ovladace/sklenik_vpu.c drivers/soc/amlogic/
+          echo 'obj-y += sklenik_vpu.o' >> drivers/soc/amlogic/Makefile
           make -s defconfig
           # platformy iných výrobcov preč – zostane len Amlogic Meson (procesor Odroidu C4)
           for a in $(grep -oE '^config ARCH_[A-Z0-9_]+' arch/arm64/Kconfig.platforms | cut -d' ' -f2); do
@@ -162,6 +165,7 @@ jobs:
           # popisy hardvéru: Odroid C4 a referenčná doska krabičiek S905X3 (X96 Air – gigabit a 100 Mb/s) pre X96 Max Plus
           dtb="meson-sm1-odroid-c4 meson-sm1-x96-air-gbit meson-sm1-x96-air"
           make -s -j"$(nproc)" Image $(for d in $dtb; do printf 'amlogic/%s.dtb ' "$d"; done)
+          grep -q sklenik_vpu_probe System.map || { echo "ovládač sklenik_vpu chýba v jadre"; exit 1; }
           mkdir -p ../jadro-vystup/amlogic/dtb/amlogic
           cp arch/arm64/boot/Image ../jadro-vystup/amlogic/
           for d in $dtb; do cp "arch/arm64/boot/dts/amlogic/$d.dtb" ../jadro-vystup/amlogic/dtb/amlogic/; done
@@ -527,6 +531,14 @@ jobs:
             fdtput -t s "$f" /soc/usb@ffe09000/usb@ff400000 status disabled
             fdtput -t s "$f" /soc/usb@ffe09000 dr_mode host
             echo "$f: GPU $(fdtget "$f" /soc/gpu@ffe40000 status), USB OTG $(fdtget "$f" /soc/usb@ffe09000/usb@ff400000 status), USB $(fdtget "$f" /soc/usb@ffe09000 dr_mode)"
+            # R166: vlastný ovládač taktu VPU – takty z hlavného ovládača taktov (ID podľa dt-bindings g12a-clkc.h:
+            # VPU 116, VPU_0 112, VPU_1 115, VPU_0_SEL 110, VPU_1_SEL 113, FCLK_DIV3 3)
+            ph=$(fdtget -t u "$f" /soc/bus@ff600000/bus@3c000/system-controller@0/clock-controller phandle)
+            fdtput -c "$f" /sklenik-vpu
+            fdtput -t s "$f" /sklenik-vpu compatible sklenik,vpu-takt
+            fdtput -t u "$f" /sklenik-vpu clocks $ph 116 $ph 112 $ph 115 $ph 110 $ph 113 $ph 3
+            fdtput -t s "$f" /sklenik-vpu clock-names vpu vpu_0 vpu_1 vpu_0_sel vpu_1_sel fclk_div3
+            echo "$f: takt VPU – $(fdtget "$f" /sklenik-vpu compatible), takty $(fdtget "$f" /sklenik-vpu clock-names)"
           done
           # X96 Max Plus – gigabitový čip siete býva iný ako v referenčnej doske (iná adresa, iný výrobca):
           # reset čipu presunutý na zbernicu MDIO (čip sa prebudí PRED hľadaním), bez pevnej adresy (jadro ho

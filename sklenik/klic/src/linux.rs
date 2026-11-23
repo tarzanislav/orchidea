@@ -176,6 +176,8 @@ fn pripoj_systemove() {
         ("devtmpfs", "/dev", "devtmpfs", sys::MS_NOSUID),
         ("tmpfs", "/run", "tmpfs", sys::MS_NOSUID | sys::MS_NODEV),
         ("tmpfs", "/tmp", "tmpfs", sys::MS_NOSUID | sys::MS_NODEV),
+        // merač taktov čipu Amlogic (R166) a ďalšie meradlá jadra sú v debugfs
+        ("debugfs", "/sys/kernel/debug", "debugfs", sys::MS_NOSUID | sys::MS_NODEV | sys::MS_NOEXEC),
     ] {
         let _ = fs::create_dir_all(ciel);
         if let Err(e) = sys::pripoj(zdroj, ciel, typ, priznaky) {
@@ -457,6 +459,57 @@ impl Displej {
         }
         self.predosle = Some(p);
     }
+}
+
+/// Takt obvodu obrazu VPU cez vlastný ovládač jadra `sklenik-vpu` (R166).
+struct TaktVpu {
+    cesta: PathBuf,
+    teraz: Option<u32>,
+}
+
+impl TaktVpu {
+    fn otvor() -> Option<TaktVpu> {
+        let cesta = PathBuf::from("/sys/bus/platform/devices/sklenik-vpu/takt_mhz");
+        let teraz = citaj(&cesta)?.parse().ok();
+        Some(TaktVpu { cesta, teraz })
+    }
+
+    /// Nastaví takt; vráti `true`, ak sa zmenil.
+    fn nastav(&mut self, mhz: u32) -> bool {
+        if self.teraz == Some(mhz) {
+            return false;
+        }
+        match fs::write(&self.cesta, mhz.to_string()) {
+            Ok(()) => {
+                let skutocny = citaj(&self.cesta).and_then(|v| v.parse().ok());
+                hlas(&format!(
+                    "takt VPU: {} → {} MHz (vlastný ovládač, prepnutie bez zákmitu)",
+                    self.teraz.map_or("?".into(), |t| t.to_string()),
+                    skutocny.map_or("?".into(), |t: u32| t.to_string())
+                ));
+                // pamätá sa želaný takt (skutočný sa líši zaokrúhlením deliteľa)
+                self.teraz = Some(mhz);
+                true
+            }
+            Err(e) => {
+                hlas(&format!("takt VPU: {mhz} MHz sa nepodaril: {e}"));
+                self.teraz = Some(mhz);
+                false
+            }
+        }
+    }
+}
+
+/// Merané takty čipu Amlogic (merač taktov v čipe, debugfs): VPU, PLL pamäte DDR, bod HDMI.
+fn takty_merane() -> Option<String> {
+    let d = Path::new("/sys/kernel/debug/meson-clk-msr/clks");
+    let mhz = |n: &str| citaj(d.join(n)).and_then(|v| v.parse::<f64>().ok()).map(|hz| hz / 1e6);
+    let casti: Vec<String> =
+        [("VPU", "vpu"), ("PLL pamäte DDR", "ddr_dpll_pt"), ("bod HDMI", "hdmi_tx_pixel")]
+            .iter()
+            .filter_map(|(popis, n)| mhz(n).map(|v| format!("{popis} {v:.0} MHz")))
+            .collect();
+    (!casti.is_empty()).then(|| casti.join(" · "))
 }
 
 /// Teplota snímača pamäte DDR (zóna „ddr-thermal“), ak ho čip má.
@@ -901,6 +954,11 @@ pub fn spusti() {
     let mut pamat_fazy: Vec<(usize, Instant, [u64; 5])> = Vec::new();
     let mut budenia_pri_zazname: Option<(Instant, Vec<(String, u64)>)> = None;
     let mut ochrana_pamate = false;
+    // R166: takt obvodu obrazu podľa potreby (vlastný ovládač jadra)
+    let mut takt_vpu = if tv { TaktVpu::otvor() } else { None };
+    if let Some(t) = &takt_vpu {
+        hlas(&format!("takt VPU: {} MHz – riadi ho KLÍČ (R166)", t.teraz.unwrap_or(0)));
+    }
     let mut vytazenie = Vytazenie::nove();
     let mut kmsg = Hlasenia::otvor(&model);
     kmsg.citaj();
@@ -1199,6 +1257,15 @@ pub fn spusti() {
                     }
                 }
             }
+            // R166: takt VPU – zvýšiť pred zapnutím/zmenou obrazu, znížiť až po nej
+            let rezim_khz = displej.as_ref().and_then(|d| d.kms_nastavenie.map(|(rz, _)| rz.takt_khz));
+            let ciel_vpu = r.vpu_mhz.unwrap_or_else(|| chlad::takt_vpu(r.stav, rezim_khz));
+            if let Some(t) = takt_vpu.as_mut()
+                && t.teraz.is_none_or(|x| ciel_vpu > x)
+                && t.nastav(ciel_vpu)
+            {
+                okolie.prekalibruj();
+            }
             // obraz sa po prebudení znova otvorí, ak sa medzitým zmenil televízor
             if r.stav == StavObrazu::Zapnuty && obrazovka_zmenena {
                 obrazovka_zmenena = false;
@@ -1221,6 +1288,12 @@ pub fn spusti() {
                     // nečinný príkon sa zmenil – okolie sa drží, vlastný ohrev sa prepočíta
                     okolie.prekalibruj();
                 }
+            }
+            if let Some(t) = takt_vpu.as_mut()
+                && t.teraz.is_some_and(|x| ciel_vpu < x)
+                && t.nastav(ciel_vpu)
+            {
+                okolie.prekalibruj();
             }
             if periferie_teraz != Some(r.periferie) {
                 let p = r.periferie;
@@ -1479,6 +1552,15 @@ pub fn spusti() {
                                 text += &format!("  {} – priemer od posledného záznamu{NL}", t.popis());
                             }
                             pamat_pri_zazname = Some((Instant::now(), sp));
+                        }
+                        if let Some(t) = takty_merane() {
+                            text += &format!(
+                                "  takty (merané v čipe): {t} · takt VPU riadi KLÍČ: {}{NL}",
+                                takt_vpu
+                                    .as_ref()
+                                    .and_then(|v| v.teraz)
+                                    .map_or("nie".into(), |v| format!("{v} MHz"))
+                            );
                         }
                         if let Some(d) = teplota_pamate() {
                             text += &format!(
