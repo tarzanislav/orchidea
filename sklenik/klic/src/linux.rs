@@ -767,7 +767,7 @@ pub fn spusti() {
     let mut hw = Sysfs::najdi();
     let mut regulator = Regulator::novy(urovne(&hw.takty(), hw.jadier()), profil);
     // R123–R128: odhad okolia, zdroj tepla, predpoveď, úspora v horúcom okolí, tepelný rozpočet
-    let mut okolie = Okolie::nove();
+    let mut okolie = if je_tv_krabicka(&model) { Okolie::s_dlhym_startom() } else { Okolie::nove() };
     let mut uspora = false;
     let mut posledny_rozpocet: Option<(Instant, u32, u32)> = None;
     let cas_startu = start.elapsed();
@@ -1133,10 +1133,16 @@ pub fn spusti() {
                 if obraz_teraz != Some(r.obraz) {
                     if d.prestav(r.obraz, ostry_obraz(&nastavenie)) {
                         prekreslit = true;
+                        okolie.prekalibruj();
                     }
                     obraz_teraz = Some(r.obraz);
                 }
+                let pred = d.stav_obrazu();
                 d.nastav_stav_obrazu(r.stav);
+                if d.stav_obrazu() != pred {
+                    // nečinný príkon sa zmenil – okolie sa drží, vlastný ohrev sa prepočíta
+                    okolie.prekalibruj();
+                }
             }
             if periferie_teraz != Some(r.periferie) {
                 let p = r.periferie;
@@ -1167,6 +1173,7 @@ pub fn spusti() {
                     }
                 ));
                 periferie_teraz = Some(p);
+                okolie.prekalibruj();
             }
         }
         let chlad_stav = tv.then(|| {

@@ -23,6 +23,8 @@ pub const NECINNOST: f64 = 0.15;
 pub const TEPLE_OKOLIE: f64 = 30.0;
 /// O koľko musí okolie stúpnuť, aby to bol zdroj tepla nablízku.
 pub const NARAST_ZDROJA: f64 = 5.0;
+/// Najvyššia prvá teplota čipu, ktorú ešte možno brať ako teplotu okolia (studený štart).
+pub const STUDENY_START_NAJVIAC: f64 = 30.0;
 /// Najviac minútových priemerov v pamäti (24 h).
 const NAJVIAC_MINUT: usize = 24 * 60;
 
@@ -99,6 +101,9 @@ pub struct StavOkolia {
 /// Odhad okolia – volá sa pri každom kroku strážcu.
 #[derive(Debug, Clone, Default)]
 pub struct Okolie {
+    /// TV krabička: dlhý štart (pôvodný zavádzač, logo, náš U-Boot, čítanie z USB) zohreje čip – prvé
+    /// meranie nad `STUDENY_START_NAJVIAC` nie je teplota izby.
+    dlhy_start: bool,
     /// Prvé meranie: (hodiny „beží“ v s, teplota).
     prve: Option<(f64, f64)>,
     minuty: Vec<Minuta>,
@@ -121,6 +126,11 @@ pub struct Okolie {
 impl Okolie {
     pub fn nove() -> Okolie {
         Okolie::default()
+    }
+
+    /// Pre TV krabičky (dlhý štart zohreje čip skôr, než KLÍČ prvý raz zmeria).
+    pub fn s_dlhym_startom() -> Okolie {
+        Okolie { dlhy_start: true, ..Okolie::default() }
     }
 
     /// Krok: hodiny „beží“ (s), teplota čipu, vyťaženie (0–1).
@@ -188,7 +198,10 @@ impl Okolie {
         if self.studeny.is_none() && self.minuty.len() >= 3 {
             let priemer = self.minuty[..3].iter().map(|m| m.teplota).sum::<f64>() / 3.0;
             let rastie = self.minuty[2].teplota > self.minuty[0].teplota;
-            let studeny = priemer - t0 >= 1.0 && rastie;
+            // TV krabička: nad 30 °C pri prvom meraní to nie je vzduch v izbe, ale čip zohriaty zavádzačom
+            // (pôvodný zavádzač, logo, náš U-Boot a čítanie z USB trvá ~20 s) – okolie zo štartu by bolo
+            // o 10 °C vyššie (X96: 36 °C pri 24,6 °C v izbe)
+            let studeny = priemer - t0 >= 1.0 && rastie && !(self.dlhy_start && t0 >= STUDENY_START_NAJVIAC);
             self.studeny = Some(studeny);
             if studeny {
                 // čip je pri prvom meraní o kúsok teplejší než doska (pár sekúnd práce zavádzača)
@@ -598,5 +611,19 @@ mod skusky {
         }
         o.krok(600.0, t, Some(0.9));
         assert_ne!(o.stav().prostredie, Prostredie::Utek);
+    }
+
+    #[test]
+    fn cip_zohriaty_zavadzacom_nie_je_teplota_okolia() {
+        // X96: prvé meranie 36 °C (zavádzač a logo zohriali čip), potom ohrev k 61 °C – izba má 24,6 °C
+        let mut o = Okolie::s_dlhym_startom();
+        for k in 0..=1200 {
+            let s = k as f64;
+            o.krok(s, 61.0 - 25.0 * (-s / 480.0).exp(), Some(0.02));
+        }
+        let st = o.stav();
+        assert_eq!(st.studeny_start, Some(false), "{st:?}");
+        assert_eq!(st.okolie, None);
+        assert!(!st.prostredie.horuce(), "{st:?}");
     }
 }
