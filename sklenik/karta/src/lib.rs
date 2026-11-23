@@ -376,6 +376,8 @@ pub struct NastavenieZariadenia {
     pub cec: Option<String>,
     /// R183 – prepínače noviniek na hľadanie chyby: `novinky=nie` vypne všetky naraz, inak každá zvlášť.
     pub novinky: Option<bool>,
+    /// R184 – dlhý test hardvéru (~3 h): skúška videa, tepelný pokus, záťaž jadier a pamäte, chladnutie.
+    pub dlhy_test: Option<bool>,
     /// Novinky vypnuté jednotlivo (kľúče z [`NOVINKY`]).
     pub vypnute: Vec<String>,
 }
@@ -388,6 +390,8 @@ pub fn blok_prepinacov() -> String {
          # tepelný pokus 2 h 15 min a skúška dekodéra videa pri štarte\n\
          pokus=nie\n\
          video=nie\n\
+         # dlhý test hardvéru na noc (~3 h): video, tepelný pokus, záťaž jadier a pamäte, chladnutie\n\
+         dlhy_test=nie\n\
          # ovládanie televízora cez HDMI: ano = zapína aj uspáva TV, zapni = len zapína, nie = vôbec\n\
          cec=ano\n\
          # hľadanie chyby: novinky=nie vypne všetky novinky naraz, inak každá zvlášť\n\
@@ -466,6 +470,10 @@ impl NastavenieZariadenia {
                     "zapni" | "zapnut" | "zapnúť" => n.cec = Some("zapni".into()),
                     "ano" | "áno" | "1" | "yes" | "on" => n.cec = Some("ano".into()),
                     _ => upozornenia.push(format!("riadok {}: cec má byť ano, zapni alebo nie", i + 1)),
+                },
+                "dlhy_test" => match ano_nie(v) {
+                    Some(m) => n.dlhy_test = Some(m),
+                    None => upozornenia.push(format!("riadok {}: dlhy_test má byť ano alebo nie", i + 1)),
                 },
                 "novinky" => match ano_nie(v) {
                     Some(m) => n.novinky = Some(m),
@@ -866,8 +874,8 @@ mod skusky {
         assert_eq!((z.video, u.len()), (Some(true), 0));
         let (z, u) = NastavenieZariadenia::z_textu(&blok_prepinacov());
         assert_eq!(
-            (z.pokus, z.video, z.cec.as_deref(), z.novinky, u.len()),
-            (Some(false), Some(false), Some("ano"), Some(true), 0)
+            (z.pokus, z.video, z.cec.as_deref(), z.novinky, z.dlhy_test, u.len()),
+            (Some(false), Some(false), Some("ano"), Some(true), Some(false), 0)
         );
         assert!(NOVINKY.iter().all(|(k, _)| z.novinka(k)));
         let (z, u) = NastavenieZariadenia::z_textu("novinky=ano\ntakt_obrazu=nie\nsiet=nie\n");

@@ -191,6 +191,20 @@ pub struct Faza {
     pub vpu_mhz: u32,
     /// R178: nepoužité radiče kariet odpojené (eMMC Androidu, slot Wi-Fi bez ovládača).
     pub radice: bool,
+    /// R184: záťaž počas fázy dlhého testu hardvéru.
+    pub zataz: Zataz,
+    /// R184: hlboký spánok jadier (R167) smie byť zapnutý.
+    pub spanok: bool,
+}
+
+/// R184: čo počas fázy dlhého testu pracuje.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Zataz {
+    Ziadna,
+    /// Všetky jadrá počítajú úlohu so známym výsledkom (test_jadier).
+    Jadra,
+    /// Zápis a kontrola veľkých blokov RAM (test_pamate).
+    Pamat,
 }
 
 /// Dĺžka fázy (s) – asi 2 časové konštanty krabičky (X96: τ ≈ 5–9 min); zvyšok dopočíta model.
@@ -208,7 +222,21 @@ pub const VPU_STREDNY: u32 = 500;
 pub const VPU_PARKOVANY: u32 = 51;
 
 const fn f(nazov: &'static str, obraz: Ciel, stav: StavObrazu, periferie: bool, vpu_mhz: u32) -> Faza {
-    Faza { nazov, obraz, stav, periferie, vpu_mhz, radice: false }
+    Faza { nazov, obraz, stav, periferie, vpu_mhz, radice: false, zataz: Zataz::Ziadna, spanok: false }
+}
+
+/// R184: fáza dlhého testu – vypnutý obraz, úsporné periférie, odpojené radiče, zaparkované VPU.
+const fn test_hw(nazov: &'static str, zataz: Zataz, spanok: bool) -> Faza {
+    Faza {
+        nazov,
+        obraz: Ciel::Chladny,
+        stav: StavObrazu::Vypnuty,
+        periferie: true,
+        vpu_mhz: VPU_PARKOVANY,
+        radice: true,
+        zataz,
+        spanok,
+    }
 }
 
 const fn s_radicmi(mut z: Faza, nazov: &'static str) -> Faza {
@@ -217,7 +245,17 @@ const fn s_radicmi(mut z: Faza, nazov: &'static str) -> Faza {
     z
 }
 
-pub const FAZY: [Faza; 9] = [
+/// Index kontrolnej fázy „pôvodne – kontrola“ (základ porovnania); po nej nasledujú fázy dlhého testu.
+pub const ZAKLAD: usize = 8;
+/// Počet fáz bežného tepelného pokusu.
+pub const ZAKLADNE_FAZY: usize = ZAKLAD + 1;
+
+/// Počet fáz: bežný pokus 9 (2 h 15 min), dlhý test hardvéru 12 (3 h, R184).
+pub fn pocet_faz(dlhy: bool) -> usize {
+    if dlhy { FAZY.len() } else { ZAKLADNE_FAZY }
+}
+
+pub const FAZY: [Faza; 12] = [
     f("pôvodne (ako doteraz)", Ciel::Povodny, StavObrazu::Zapnuty, false, VPU_PLNY),
     f("úsporné periférie", Ciel::Povodny, StavObrazu::Zapnuty, true, VPU_PLNY),
     f("chladný obraz", Ciel::Chladny, StavObrazu::Zapnuty, true, VPU_PLNY),
@@ -227,6 +265,10 @@ pub const FAZY: [Faza; 9] = [
     f("vypnutý + VPU zaparkovaný", Ciel::Chladny, StavObrazu::Vypnuty, true, VPU_PARKOVANY),
     s_radicmi(f("", Ciel::Chladny, StavObrazu::Vypnuty, true, VPU_PARKOVANY), "+ odpojené eMMC a Wi-Fi"),
     f("pôvodne – kontrola", Ciel::Povodny, StavObrazu::Zapnuty, false, VPU_PLNY),
+    // R184 – dlhý test hardvéru
+    test_hw("záťaž – všetky jadrá", Zataz::Jadra, false),
+    test_hw("záťaž – pamäť RAM", Zataz::Pamat, false),
+    test_hw("chladnutie + spánok jadier", Zataz::Ziadna, true),
 ];
 
 /// Takt VPU mimo pokusu (R182): **len vypnutý obraz → zaparkovaný**, inak vždy plný takt. Televízor (HDMI
@@ -241,14 +283,14 @@ pub fn takt_vpu(stav: StavObrazu) -> u32 {
 }
 
 /// Fáza v danom čase od začiatku pokusu; `None` po skončení.
-pub fn faza(s: u64) -> Option<usize> {
+pub fn faza(s: u64, pocet: usize) -> Option<usize> {
     let i = (s / FAZA_S) as usize;
-    (i < FAZY.len()).then_some(i)
+    (i < pocet.min(FAZY.len())).then_some(i)
 }
 
 /// Minúty záznamov samomerania pri pokuse: začiatok a koniec každej fázy.
-pub fn milniky_pokusu() -> Vec<u32> {
-    (0..=FAZY.len() as u32).map(|i| i * (FAZA_S / 60) as u32).collect()
+pub fn milniky_pokusu(pocet: usize) -> Vec<u32> {
+    (0..=pocet.min(FAZY.len()) as u32).map(|i| i * (FAZA_S / 60) as u32).collect()
 }
 
 /// Čo má byť teraz.
@@ -266,14 +308,22 @@ pub struct Rozhodnutie {
     pub radice: bool,
     /// R167: hlboký spánok jadier smie byť zapnutý (v pokuse nie – fázy sa porovnávajú s predošlými pokusmi).
     pub jadra_spia: bool,
+    /// R184: záťaž dlhého testu hardvéru.
+    pub zataz: Zataz,
 }
 
 /// Ako dlho po stlačení ostane obraz zapnutý aj vo fáze pokusu, ktorá ho zhasína.
 pub const PREBUDENIE_S: u64 = 60;
 
 /// Rozhodnutie podľa pokusu (čas od jeho začiatku) alebo bežnej politiky.
-pub fn rozhodni(pokus_s: Option<u64>, necinnost_s: u64, obraz: Ciel, z: &Zhasinanie) -> Rozhodnutie {
-    if let Some(i) = pokus_s.and_then(faza) {
+pub fn rozhodni(
+    pokus_s: Option<u64>,
+    pocet: usize,
+    necinnost_s: u64,
+    obraz: Ciel,
+    z: &Zhasinanie,
+) -> Rozhodnutie {
+    if let Some(i) = pokus_s.and_then(|s| faza(s, pocet)) {
         let f = FAZY[i];
         let rusi = f.stav != StavObrazu::Zapnuty && necinnost_s < PREBUDENIE_S;
         return Rozhodnutie {
@@ -286,7 +336,8 @@ pub fn rozhodni(pokus_s: Option<u64>, necinnost_s: u64, obraz: Ciel, z: &Zhasina
             // rušená fáza: zapnutý chladný obraz je zväčšovaný – stredný takt stačí (R175)
             vpu_mhz: Some(if rusi { f.vpu_mhz.max(VPU_STREDNY) } else { f.vpu_mhz }),
             radice: f.radice,
-            jadra_spia: false,
+            jadra_spia: f.spanok,
+            zataz: f.zataz,
         };
     }
     Rozhodnutie {
@@ -298,6 +349,7 @@ pub fn rozhodni(pokus_s: Option<u64>, necinnost_s: u64, obraz: Ciel, z: &Zhasina
         vpu_mhz: None,
         radice: true,
         jadra_spia: true,
+        zataz: Zataz::Ziadna,
     }
 }
 
@@ -411,8 +463,9 @@ fn c(x: f64) -> String {
 /// nižšia ako v rovnakej fáze 6 (+4,4 °C pri izbe stálej 24,5–24,9 °C). Lineárna oprava „posunu okolia“ by
 /// preto skresľovala. Základom je **fáza 6** (rovnaký stav ako fáza 1, ale so zohriatou krabičkou ako
 /// ostatné fázy) a vedľa je **zmena oproti predošlej fáze** – tá je najspoľahlivejšia.
-pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], nl: &str) -> String {
-    let n = FAZY.len();
+pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], pocet: usize, nl: &str) -> String {
+    let n = pocet.min(FAZY.len());
+    let zakl = ZAKLAD.min(n - 1);
     let odhady: Vec<Option<Odhad>> = (0..n)
         .map(|i| {
             let (od, po) = (i as u64 * FAZA_S, (i as u64 + 1) * FAZA_S);
@@ -421,7 +474,7 @@ pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], nl: &str) -> Stri
             odhad_ustalenej(&body)
         })
         .collect();
-    let zaklad = odhady[n - 1].or(odhady[0]).map(|o| o.ustalena);
+    let zaklad = odhady[zakl].or(odhady[0]).map(|o| o.ustalena);
     let znamienko = |r: f64| format!("{}{} °C", if r > 0.0 { "+" } else { "" }, c(r));
     let mut t = format!(
         "  {n} fáz po {} min – rovnaké miesto, žiadna práca; ustálená teplota odhadnutá modelom ohrevu{nl}",
@@ -431,19 +484,19 @@ pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], nl: &str) -> Stri
         "  {:<26} {:>8} {:>8} {:>12} {:>7} {:>10} {:>12}{nl}",
         "fáza", "začiatok", "koniec", "ustálila by", "τ", "krok", "oproti pôv.*"
     );
-    for (i, f) in FAZY.iter().enumerate() {
+    for (i, f) in FAZY.iter().enumerate().take(n) {
         let Some(o) = odhady[i] else {
             t += &format!("  {:<26} {:>8}{nl}", format!("{} {}", i + 1, f.nazov), "nemerané");
             continue;
         };
         let krok = match (i, i.checked_sub(1).and_then(|p| odhady[p])) {
             (0, _) => "–".to_string(),
-            (_, _) if i == n - 1 => "–".to_string(),
+            (_, _) if i == zakl => "–".to_string(),
             (_, Some(p)) => znamienko(o.ustalena - p.ustalena),
             _ => "–".into(),
         };
         let oproti = match zaklad {
-            _ if i == n - 1 => "základ".to_string(),
+            _ if i == zakl => "základ".to_string(),
             _ if i == 0 => "studený štart".to_string(),
             Some(z) => znamienko(o.ustalena - z),
             None => "–".into(),
@@ -461,17 +514,25 @@ pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], nl: &str) -> Stri
             if o.odchylka > 0.5 { format!(" · odchýlka {} °C", c(o.odchylka)) } else { String::new() },
         );
     }
-    if let (Some(a), Some(z)) = (odhady[0], odhady[n - 1]) {
+    if let (Some(a), Some(z)) = (odhady[0], odhady[zakl]) {
         t += &format!(
-            "  * základ = fáza {n} (pôvodný stav so zohriatou krabičkou); fáza 1 vyšla o {} – pomalé zohrievanie skrinky{nl}",
+            "  * základ = fáza {} (pôvodný stav so zohriatou krabičkou); fáza 1 vyšla o {} – pomalé zohrievanie skrinky{nl}",
+            zakl + 1,
             znamienko(a.ustalena - z.ustalena)
         );
     } else {
         t += &format!(
-            "  * bez kontrolnej fázy {n} – základom je fáza 1 (studený štart, krok je spoľahlivejší){nl}"
+            "  * bez kontrolnej fázy {} – základom je fáza 1 (studený štart, krok je spoľahlivejší){nl}",
+            zakl + 1
         );
     }
     t += &format!("  krok = zmena oproti predošlej fáze · ≈ = fáza krátka na spoľahlivý odhad{nl}");
+    if n > ZAKLADNE_FAZY {
+        t += &format!(
+            "  fázy {}–{n}: dlhý test hardvéru (R184) – záťaž jadier a pamäte pri vypnutom obraze, potom chladnutie{nl}",
+            ZAKLADNE_FAZY + 1
+        );
+    }
     t
 }
 
@@ -639,29 +700,42 @@ mod skusky {
     #[test]
     fn pokus_po_fazach_a_rusenie() {
         let z = Zhasinanie::pre_tv(None, None);
-        assert_eq!(faza(0), Some(0));
-        assert_eq!(faza(FAZA_S * 3 + 5), Some(3));
-        assert_eq!(faza(FAZA_S * 8), Some(8));
-        assert_eq!(faza(FAZA_S * 9), None);
+        assert_eq!(faza(0, ZAKLADNE_FAZY), Some(0));
+        assert_eq!(faza(FAZA_S * 3 + 5, ZAKLADNE_FAZY), Some(3));
+        assert_eq!(faza(FAZA_S * 8, ZAKLADNE_FAZY), Some(8));
+        assert_eq!(faza(FAZA_S * 9, ZAKLADNE_FAZY), None);
+        assert_eq!(faza(FAZA_S * 9, pocet_faz(true)), Some(9), "dlhý test pokračuje záťažou");
+        assert_eq!(faza(FAZA_S * 12, pocet_faz(true)), None);
+        assert_eq!((FAZY[9].zataz, FAZY[10].zataz, FAZY[11].spanok), (Zataz::Jadra, Zataz::Pamat, true));
         assert!(FAZY[7].radice && !FAZY[6].radice && !FAZY[8].radice, "R178 len vo fáze 8");
-        assert_eq!(milniky_pokusu(), vec![0, 15, 30, 45, 60, 75, 90, 105, 120, 135]);
-        assert_eq!(rozhodni(Some(FAZA_S * 6 + 1), 10_000, Ciel::Chladny, &z).vpu_mhz, Some(VPU_PARKOVANY));
-        assert_eq!(rozhodni(Some(FAZA_S * 6 + 1), 5, Ciel::Chladny, &z).vpu_mhz, Some(VPU_STREDNY));
-        assert_eq!(rozhodni(Some(FAZA_S * 3 + 1), 10_000, Ciel::Chladny, &z).vpu_mhz, Some(VPU_STREDNY));
+        assert_eq!(milniky_pokusu(ZAKLADNE_FAZY), vec![0, 15, 30, 45, 60, 75, 90, 105, 120, 135]);
+        assert_eq!(milniky_pokusu(pocet_faz(true)).last(), Some(&180));
+        assert_eq!(
+            rozhodni(Some(FAZA_S * 6 + 1), ZAKLADNE_FAZY, 10_000, Ciel::Chladny, &z).vpu_mhz,
+            Some(VPU_PARKOVANY)
+        );
+        assert_eq!(
+            rozhodni(Some(FAZA_S * 6 + 1), ZAKLADNE_FAZY, 5, Ciel::Chladny, &z).vpu_mhz,
+            Some(VPU_STREDNY)
+        );
+        assert_eq!(
+            rozhodni(Some(FAZA_S * 3 + 1), ZAKLADNE_FAZY, 10_000, Ciel::Chladny, &z).vpu_mhz,
+            Some(VPU_STREDNY)
+        );
         assert_eq!(takt_vpu(StavObrazu::Zapnuty), VPU_PLNY, "pri obraze plný – R182");
         assert_eq!(takt_vpu(StavObrazu::Cierny), VPU_PLNY);
         assert_eq!(takt_vpu(StavObrazu::Vypnuty), VPU_PARKOVANY);
-        let r = rozhodni(Some(FAZA_S * 4 + 10), 10_000, Ciel::Chladny, &z);
+        let r = rozhodni(Some(FAZA_S * 4 + 10), ZAKLADNE_FAZY, 10_000, Ciel::Chladny, &z);
         assert_eq!((r.stav, r.faza, r.rusi), (StavObrazu::Cierny, Some(4), false));
         // ovládač stlačený pred 20 s – obraz sa zapne, fáza je rušená
-        let r = rozhodni(Some(FAZA_S * 4 + 10), 20, Ciel::Chladny, &z);
+        let r = rozhodni(Some(FAZA_S * 4 + 10), ZAKLADNE_FAZY, 20, Ciel::Chladny, &z);
         assert_eq!((r.stav, r.rusi), (StavObrazu::Zapnuty, true));
-        let r = rozhodni(Some(10), 0, Ciel::Chladny, &z);
+        let r = rozhodni(Some(10), ZAKLADNE_FAZY, 0, Ciel::Chladny, &z);
         assert_eq!((r.obraz, r.periferie, r.rusi), (Ciel::Povodny, false, false));
         // po pokuse bežná politika
-        let r = rozhodni(Some(FAZA_S * 9), 700, Ciel::Chladny, &z);
+        let r = rozhodni(Some(FAZA_S * 9), ZAKLADNE_FAZY, 700, Ciel::Chladny, &z);
         assert_eq!((r.obraz, r.stav, r.faza), (Ciel::Chladny, StavObrazu::Vypnuty, None));
-        let r = rozhodni(None, 0, Ciel::Chladny, &z);
+        let r = rozhodni(None, ZAKLADNE_FAZY, 0, Ciel::Chladny, &z);
         assert!(r.periferie);
     }
 
@@ -708,8 +782,12 @@ mod skusky {
             }
             t0 = ciel + (t0 - ciel) * (-(FAZA_S as f64) / 360.0).exp();
         }
-        let r =
-            vysledok_pokusu(&krivka, &[false, false, false, false, true, false, false, false, false], "\n");
+        let r = vysledok_pokusu(
+            &krivka,
+            &[false, false, false, false, true, false, false, false, false],
+            ZAKLADNE_FAZY,
+            "\n",
+        );
         let riadok = |z: &str| r.lines().find(|l| l.contains(z)).unwrap_or_default().to_string();
         // fáza 3: 54 − 62 = −8 °C oproti základu, krok 54 − 58 = −4 °C
         let f3 = riadok("3 chladný obraz");

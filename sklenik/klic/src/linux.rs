@@ -20,6 +20,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -673,6 +674,81 @@ fn popis_radicov(r: &[radice::Radic], odpojene: bool) -> String {
     }
 }
 
+/// R184: počty dlhého testu hardvéru (zdieľané s vláknami záťaže).
+#[derive(Default)]
+struct StatZataze {
+    vypoctov: AtomicU64,
+    chyb_jadier: AtomicU64,
+    mb_pamate: AtomicU64,
+    chyb_pamate: AtomicU64,
+}
+
+/// R184: bežiaca záťaž – vlákna s najnižšou prioritou (KLÍČ a strážny časovač majú vždy prednosť).
+struct Zataznik {
+    druh: chlad::Zataz,
+    stop: Arc<AtomicBool>,
+    vlakna: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Zataznik {
+    fn spusti(druh: chlad::Zataz, stat: &Arc<StatZataze>) -> Zataznik {
+        let stop = Arc::new(AtomicBool::new(false));
+        let pocet = match druh {
+            chlad::Zataz::Jadra => std::thread::available_parallelism().map_or(4, |n| n.get()),
+            chlad::Zataz::Pamat => 2,
+            chlad::Zataz::Ziadna => 0,
+        };
+        let vlakna = (0..pocet)
+            .map(|_| {
+                let (stop, stat) = (stop.clone(), stat.clone());
+                std::thread::spawn(move || {
+                    let _ = sys::nizka_priorita();
+                    while !stop.load(Ordering::Relaxed) {
+                        match druh {
+                            chlad::Zataz::Jadra => {
+                                // úloha so známym výsledkom – jadro, ktoré v teple počíta zle, sa prejaví
+                                let r = crate::test_jadier::vypocet();
+                                stat.vypoctov.fetch_add(1, Ordering::Relaxed);
+                                if r != crate::test_jadier::OCAKAVANE {
+                                    stat.chyb_jadier.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                            chlad::Zataz::Pamat => match crate::test_pamate::otestuj(256) {
+                                Ok(_) => {
+                                    stat.mb_pamate.fetch_add(256, Ordering::Relaxed);
+                                }
+                                Err(_) => {
+                                    stat.chyb_pamate.fetch_add(1, Ordering::Relaxed);
+                                }
+                            },
+                            chlad::Zataz::Ziadna => break,
+                        }
+                    }
+                })
+            })
+            .collect();
+        Zataznik { druh, stop, vlakna }
+    }
+
+    fn zastav(self) {
+        self.stop.store(true, Ordering::Relaxed);
+        for v in self.vlakna {
+            let _ = v.join();
+        }
+    }
+}
+
+fn popis_zataze(s: &StatZataze, max_teplota: Option<f64>) -> String {
+    format!(
+        "jadrá – výpočtov {} (každý so známym výsledkom), chýb {} · pamäť – {:.1} GB zapísaných a overených, chýb {} · najvyššia teplota pri záťaži {}",
+        s.vypoctov.load(Ordering::Relaxed),
+        s.chyb_jadier.load(Ordering::Relaxed),
+        s.mb_pamate.load(Ordering::Relaxed) as f64 / 1024.0,
+        s.chyb_pamate.load(Ordering::Relaxed),
+        max_teplota.map_or("–".into(), |t| format!("{t:.1} °C"))
+    )
+}
+
 /// Poistka hlbokého spánku jadier na karte (R167) a ako dlho po zapnutí ostane.
 const POISTKA_JADIER: &str = "JADRA-SPANOK.TXT";
 const POISTKA_JADIER_S: u64 = 300;
@@ -1303,6 +1379,13 @@ pub fn spusti() {
     let mut radice_odpojene: Vec<radice::Radic> = Vec::new();
     let mut radice_stav: Option<bool> = None;
     let mut spanok_jadier = SpanokJadier::Vypnuty;
+    // R184: dlhý test hardvéru – záťaž, jej počty, najvyššia teplota a vypnutie po teste
+    let stat_zataze = Arc::new(StatZataze::default());
+    let mut zataznik: Option<Zataznik> = None;
+    let mut max_teplota_zataze: Option<f64> = None;
+    let mut vypnutie_po_teste = false;
+    // R184: človek sa krabičky dotkol (ovládač, klávesnica, ovládač TV) – až potom smie dlhý test zapnúť TV
+    let mut clovek_bol = false;
     let mut rusene = [false; chlad::FAZY.len()];
     let mut usb_spanok_od: Option<(u64, u64)> = None;
     let mut usb_nastavene: Vec<String> = Vec::new();
@@ -1663,7 +1746,8 @@ pub fn spusti() {
             && (nastavenie.is_some() || hore >= 60.0)
         {
             video_spustene = true;
-            let skusat = nastavenie.as_ref().and_then(|(_, n)| n.video) == Some(true);
+            let skusat = nastavenie.as_ref().and_then(|(_, n)| n.video) == Some(true)
+                || nastavenie.as_ref().and_then(|(_, n)| n.dlhy_test) == Some(true);
             let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
             spusti_skusku_videa(skusat, spustaci, video_riadky.clone());
         }
@@ -1683,13 +1767,40 @@ pub fn spusti() {
                 profil.strop
             ));
         }
+        // R184: dlhý test hardvéru = tepelný pokus s tromi fázami navyše (záťaž jadier, pamäte, chladnutie)
+        let dlhy = nastavenie.as_ref().and_then(|(_, n)| n.dlhy_test) == Some(true);
+        let pocet_faz = chlad::pocet_faz(dlhy);
         let pokus_s =
             if pokus && !pokus_zastaveny { merania.as_ref().and_then(|m| m.uplynulo_s()) } else { None };
         if tv {
             let n = nastavenie.as_ref().map(|(_, n)| n);
             let zh = Zhasinanie::pre_tv(n.and_then(|n| n.zhasni_min), n.and_then(|n| n.vypni_min));
             let necinnost = posledna_aktivita.elapsed().as_secs();
-            let mut r = chlad::rozhodni(pokus_s, necinnost, ciel_obrazu(&nastavenie), &zh);
+            let mut r = chlad::rozhodni(pokus_s, pocet_faz, necinnost, ciel_obrazu(&nastavenie), &zh);
+            // R184: záťaž podľa fázy dlhého testu – vlákna sa spustia a zastavia pri zmene fázy
+            let chce_zataz = if pid1 && !skuska { r.zataz } else { chlad::Zataz::Ziadna };
+            if zataznik.as_ref().map_or(chlad::Zataz::Ziadna, |z| z.druh) != chce_zataz {
+                if let Some(z) = zataznik.take() {
+                    z.zastav();
+                    hlas(&format!(
+                        "dlhý test: záťaž skončila – {}",
+                        popis_zataze(&stat_zataze, max_teplota_zataze)
+                    ));
+                }
+                if chce_zataz != chlad::Zataz::Ziadna {
+                    zataznik = Some(Zataznik::spusti(chce_zataz, &stat_zataze));
+                    hlas(&format!(
+                        "dlhý test: záťaž – {}",
+                        if chce_zataz == chlad::Zataz::Jadra { "všetky jadrá" } else { "pamäť RAM" }
+                    ));
+                }
+                okolie.prekalibruj();
+            }
+            if zataznik.is_some()
+                && let Some(t) = teplota
+            {
+                max_teplota_zataze = Some(max_teplota_zataze.map_or(t, |m: f64| m.max(t)));
+            }
             // R181: televízor zaspal (CEC) – krabička vypne obraz hneď, nečaká na nečinnosť (ak ho vypínať smie)
             if tv_spi && r.faza.is_none() && zh.vypnuty_po_s.is_some() {
                 r.stav = StavObrazu::Vypnuty;
@@ -1754,7 +1865,7 @@ pub fn spusti() {
                         hlas(&format!(
                             "tepelný pokus: fáza {}/{} – {}",
                             f + 1,
-                            chlad::FAZY.len(),
+                            pocet_faz,
                             chlad::FAZY[f].nazov
                         ));
                     }
@@ -1802,7 +1913,13 @@ pub fn spusti() {
                 && cec_obraz != Some(r.stav)
             {
                 match r.stav {
+                    // počas pokusu (aj v noci) krabička televízor sama nezapína – len keď ju človek zobudí
+                    StavObrazu::Zapnuty if r.faza.is_some() && !r.rusi && necinnost >= 60 => {}
+                    // dlhý test (aj po nečakanom reštarte v noci) zapne televízor len pre človeka
+                    StavObrazu::Zapnuty if dlhy && !clovek_bol => {}
                     StavObrazu::Zapnuty => c.obraz_zapnuty(),
+                    // dlhý test na noc: televízor ide spať vždy, keď krabička vypne obraz (vlastník tak chcel)
+                    StavObrazu::Vypnuty if dlhy => c.uspi_tv_hned(),
                     StavObrazu::Vypnuty => c.obraz_vypnuty(),
                     StavObrazu::Cierny => {}
                 }
@@ -1932,7 +2049,7 @@ pub fn spusti() {
                     format!(
                         "pokus {}/{} {} – do {}",
                         f + 1,
-                        chlad::FAZY.len(),
+                        pocet_faz,
                         chlad::FAZY[f].nazov,
                         samomeranie::cas(koniec)
                     )
@@ -1971,10 +2088,10 @@ pub fn spusti() {
             && !pokus
             && !vypnute
             && merania.as_ref().is_some_and(|m| m.zaciatok_s().is_none())
-            && nastavenie.as_ref().and_then(|(_, n)| n.pokus) != Some(false)
+            && (nastavenie.as_ref().and_then(|(_, n)| n.pokus) != Some(false) || dlhy)
             && displej.as_ref().is_some_and(|d| d.je_kms())
         {
-            merania = Some(zaznam::Riadenie::s_milnikmi(chlad::milniky_pokusu()));
+            merania = Some(zaznam::Riadenie::s_milnikmi(chlad::milniky_pokusu(pocet_faz)));
             pokus = true;
         }
         let merania_teraz = merania.as_mut().filter(|_| !vypnute);
@@ -2211,15 +2328,19 @@ pub fn spusti() {
                             spanok_jadier.popis()
                         );
                         text += &format!("  prepínače (R183): {}{NL}", vypnute_novinky(&nastavenie));
+                        if dlhy {
+                            text += &format!(
+                                "  dlhý test (R184): {}{NL}",
+                                popis_zataze(&stat_zataze, max_teplota_zataze)
+                            );
+                        }
                         text += &format!(
                             "  CEC (R181): {}{NL}",
                             cec.as_ref().map_or_else(|| cec_stav.clone(), |c| c.popis())
                         );
                         if pokus {
-                            let r: Vec<String> = (0..chlad::FAZY.len())
-                                .filter(|&i| rusene[i])
-                                .map(|i| (i + 1).to_string())
-                                .collect();
+                            let r: Vec<String> =
+                                (0..pocet_faz).filter(|&i| rusene[i]).map(|i| (i + 1).to_string()).collect();
                             text += &format!(
                                 "  tepelný pokus: {} · rušené fázy (ovládač): {}{NL}",
                                 match faza_teraz {
@@ -2227,15 +2348,11 @@ pub fn spusti() {
                                         "koniec fázy {}, začína {}/{} – {}",
                                         f,
                                         f + 1,
-                                        chlad::FAZY.len(),
+                                        pocet_faz,
                                         chlad::FAZY[f].nazov
                                     ),
-                                    Some(f) => format!(
-                                        "fáza {}/{} – {}",
-                                        f + 1,
-                                        chlad::FAZY.len(),
-                                        chlad::FAZY[f].nazov
-                                    ),
+                                    Some(f) =>
+                                        format!("fáza {}/{} – {}", f + 1, pocet_faz, chlad::FAZY[f].nazov),
                                     None if minuta == 0 => "začína".into(),
                                     None => "hotový".into(),
                                 },
@@ -2272,11 +2389,53 @@ pub fn spusti() {
                         dovetok += &samomeranie::tabulka(m.krivka());
                         dovetok += &nadpis("SÚHRN MERANIA");
                         dovetok += &samomeranie::suhrn(m.krivka(), m.milniky());
+                        if dlhy {
+                            dovetok += &nadpis("VYHODNOTENIE HARDVÉRU (R184)");
+                            let (v, cj) = (
+                                stat_zataze.vypoctov.load(Ordering::Relaxed),
+                                stat_zataze.chyb_jadier.load(Ordering::Relaxed),
+                            );
+                            let (mb, cp) = (
+                                stat_zataze.mb_pamate.load(Ordering::Relaxed),
+                                stat_zataze.chyb_pamate.load(Ordering::Relaxed),
+                            );
+                            dovetok += &format!(
+                                "  procesor: {}{NL}",
+                                match (v, cj) {
+                                    (0, _) => "záťaž jadier neprebehla".to_string(),
+                                    (v, 0) => format!("✓ {v} výpočtov pri plnej záťaži, všetky správne"),
+                                    (v, c) =>
+                                        format!("✗ {c} z {v} výpočtov chybných – jadro v teple počíta zle"),
+                                }
+                            );
+                            dovetok += &format!(
+                                "  pamäť RAM: {}{NL}",
+                                match (mb, cp) {
+                                    (0, 0) => "záťaž pamäte neprebehla".to_string(),
+                                    (mb, 0) => format!(
+                                        "✓ {:.1} GB zapísaných a overených bez chyby",
+                                        mb as f64 / 1024.0
+                                    ),
+                                    (mb, c) => format!(
+                                        "✗ {c} chýb pri {:.1} GB – pamäť v teple chybuje",
+                                        mb as f64 / 1024.0
+                                    ),
+                                }
+                            );
+                            dovetok += &format!(
+                                "  teplota pri plnej záťaži: najviac {} (strop strážcu {:.0} °C){NL}",
+                                max_teplota_zataze.map_or("–".into(), |t| format!("{t:.1} °C")),
+                                profil.strop
+                            );
+                            dovetok += &format!(
+                                "  dekodér videa: časť VIDEO · obraz, HDMI a CEC: riadky CEC a časť OBRAZ, HDMI A KLÍČ · spánok jadier: riadok R167{NL}"
+                            );
+                        }
                         if pokus {
                             dovetok += &nadpis("TEPELNÝ POKUS (R160)");
                             let krivka: Vec<(u64, f64)> =
                                 m.krivka().iter().filter_map(|b| Some((b.s, b.teplota?))).collect();
-                            dovetok += &chlad::vysledok_pokusu(&krivka, &rusene, NL);
+                            dovetok += &chlad::vysledok_pokusu(&krivka, &rusene, pocet_faz, NL);
                             // R162: tok pamäte v každej fáze
                             if merac_pamate_je {
                                 dovetok += &format!("  tok pamäte po fázach (MB/s, okná 2 s):{NL}");
@@ -2359,6 +2518,31 @@ pub fn spusti() {
             prekreslit = false;
         }
         krokov += 1;
+        // R184: po dlhom teste (všetky záznamy zapísané, 10 min bez človeka) uspí televízor a vypne krabičku
+        if dlhy
+            && pid1
+            && !skuska
+            && !vypnutie_po_teste
+            && posledna_aktivita.elapsed() >= Duration::from_secs(600)
+            && merania.as_ref().is_some_and(|m| {
+                matches!(
+                    m.stav(),
+                    obrazovka::Samomeranie::Hotove { .. } | obrazovka::Samomeranie::Nezapisane(_)
+                )
+            })
+        {
+            vypnutie_po_teste = true;
+            if let Some(z) = zataznik.take() {
+                z.zastav();
+            }
+            hlas("dlhý test hardvéru hotový – televízor ide spať a krabička sa vypína");
+            if let Some(c) = cec.as_mut() {
+                c.uspi_tv_hned();
+            }
+            std::thread::sleep(Duration::from_secs(3));
+            let e = sys::vypni(false);
+            hlas(&format!("vypnutie zlyhalo: {e} – krabička ostáva zapnutá s vypnutým obrazom"));
+        }
         // R122: v skúške sa počká aj na prvý záznam samomerania (zápis na kartu emulátora)
         let zaznam_bezi = merania.as_ref().is_some_and(|m| !vypnute && !m.prvy_vybaveny());
         if skuska
@@ -2395,6 +2579,7 @@ pub fn spusti() {
                 if vstup {
                     posledna_aktivita = Instant::now();
                     tv_spi = false;
+                    clovek_bol = true;
                 }
                 // R181: správy z televízora – ovládač TV a výber vstupu krabičky ju zobudia, vypnutý TV ju uspí
                 if let Some(c) = cec.as_mut() {
@@ -2403,6 +2588,7 @@ pub fn spusti() {
                             cec::Udalost::Tlacidlo(_) | cec::Udalost::ChceMa => {
                                 posledna_aktivita = Instant::now();
                                 tv_spi = false;
+                                clovek_bol = true;
                             }
                             cec::Udalost::TvSpi => {
                                 hlas("CEC: televízor zaspal – krabička vypína obraz");

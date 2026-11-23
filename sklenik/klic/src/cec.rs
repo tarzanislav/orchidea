@@ -336,6 +336,16 @@ impl Cec {
         self.aktivny = false;
     }
 
+    /// Uspi televízor hneď (koniec dlhého testu v noci) – aj keď práve neukazuje krabičku.
+    pub fn uspi_tv_hned(&mut self) {
+        if let Some((ja, _)) = self.adresy()
+            && self.posli(&uspi_tv(ja))
+        {
+            self.uspati_tv += 1;
+            self.aktivny = false;
+        }
+    }
+
     /// Prečíta všetky čakajúce správy, odpovie na otázky a vráti udalosti pre KLÍČ.
     pub fn prijmi(&mut self, obraz: bool) -> Vec<Udalost> {
         let mut udalosti = Vec::new();
