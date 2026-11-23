@@ -222,6 +222,7 @@ fn zapis_na(
 /// Poistka na nosiči: súbor `meno` v priečinku `MERANIA`. `nastav` = `Some(obsah)` ho vytvorí, `None` zmaže;
 /// vráti, či tam bol predtým. Vlastný bod pripojenia – zápis záznamu môže bežať súčasne (jadro zdieľa ten istý
 /// súborový systém, odpojenie jedného bodu druhý neruší).
+#[cfg_attr(not(target_pointer_width = "64"), allow(dead_code))]
 pub fn poistka(n: &Nosic, meno: &str, nastav: Option<&str>) -> Result<bool, String> {
     const BOD: &str = "/run/karta-poistka";
     let _ = fs::create_dir_all(BOD);

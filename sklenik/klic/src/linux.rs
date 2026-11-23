@@ -530,6 +530,7 @@ fn rychlost_siete(mbs: u32) -> String {
 /// ostane, pri ktorom formáte).
 /// Poistka skúšky videa na karte: vznikne pred skúškou, zmizne po nej. Ak ju KLÍČ pri štarte nájde, predošlá
 /// skúška nedobehla (krabička zamrzla alebo sa reštartovala) – skúška sa vynechá, aby sa štart nezacyklil.
+#[cfg(target_pointer_width = "64")]
 const POISTKA_VIDEA: &str = "VIDEO-BEZI.TXT";
 
 fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex<Vec<String>>>) {
@@ -1240,7 +1241,10 @@ pub fn spusti() {
                 hw.uplatni(&uroven);
                 // R162, R176: tok pamäte v krátkom okne raz za minútu – nie pri obraze s veľkým tokom (pôvodný
                 // alebo ostrý obraz na celej ploche), lebo merač by rušil HDMI
+                // R177: len počas tepelného pokusu – v bežnom režime sa merač nespúšťa vôbec
                 let smie_merat = merac_pamate_je
+                    && pokus
+                    && faza_teraz.is_some()
                     && displej.as_ref().is_some_and(|d| {
                         d.stav_obrazu() != StavObrazu::Zapnuty || d.zvacsuje(StavObrazu::Zapnuty)
                     });

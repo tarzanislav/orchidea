@@ -221,12 +221,13 @@ pub const FAZY: [Faza; 8] = [
     f("pôvodne – kontrola", Ciel::Povodny, StavObrazu::Zapnuty, false, VPU_PLNY),
 ];
 
-/// Takt VPU podľa stavu a režimu mimo pokusu: vypnutý obraz → zaparkovaný; zväčšovaný obraz → 500 MHz (R175);
+/// Takt VPU podľa stavu a režimu mimo pokusu: vypnutý obraz → zaparkovaný; zväčšovaný obraz → plný (R175);
 /// režim do taktu bodov 148,5 MHz (Full HD @ 60) bez zväčšovania → 333 MHz; väčší (4K) → plný.
+/// R177: karta b2e2276 dávala zväčšovanému obrazu mimo pokusu 500 MHz a X96 po štarte stratil obraz – kým sa
+/// príčina nepotvrdí, bežný režim je ako na overenej karte 55bf954 (500 MHz len vo fáze 4 pokusu).
 pub fn takt_vpu(stav: StavObrazu, takt_bodov_khz: Option<u32>, zvacsuje: bool) -> u32 {
     match (stav, takt_bodov_khz) {
         (StavObrazu::Vypnuty, _) => VPU_PARKOVANY,
-        (_, Some(t)) if zvacsuje && t <= 148_500 => VPU_STREDNY,
         _ if zvacsuje => VPU_PLNY,
         (_, Some(t)) if t <= 148_500 => VPU_FULL_HD,
         _ => VPU_PLNY,
@@ -625,11 +626,7 @@ mod skusky {
         assert_eq!(rozhodni(Some(FAZA_S * 6 + 1), 5, Ciel::Chladny, &z).vpu_mhz, Some(VPU_STREDNY));
         assert_eq!(rozhodni(Some(FAZA_S * 3 + 1), 10_000, Ciel::Chladny, &z).vpu_mhz, Some(VPU_STREDNY));
         assert_eq!(takt_vpu(StavObrazu::Zapnuty, Some(74_250), false), VPU_FULL_HD);
-        assert_eq!(
-            takt_vpu(StavObrazu::Zapnuty, Some(148_500), true),
-            VPU_STREDNY,
-            "zväčšovaný obraz – R175"
-        );
+        assert_eq!(takt_vpu(StavObrazu::Zapnuty, Some(148_500), true), VPU_PLNY, "zväčšovaný obraz – R177");
         assert_eq!(takt_vpu(StavObrazu::Zapnuty, Some(594_000), true), VPU_PLNY, "4K zväčšovaný");
         assert_eq!(takt_vpu(StavObrazu::Cierny, Some(594_000), false), VPU_PLNY);
         assert_eq!(takt_vpu(StavObrazu::Vypnuty, Some(74_250), true), VPU_PARKOVANY);
