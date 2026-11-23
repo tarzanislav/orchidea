@@ -293,6 +293,15 @@ pub struct NastavenieZariadenia {
     pub jazyk: Option<String>,
     /// Samomeranie pri štarte (R122): `Some(false)` = vypnuté, inak zapnuté.
     pub meranie: Option<bool>,
+    /// Obraz TV krabičky (R132): `chladny` (predvolené), `ostry` (plné rozlíšenie, 16 bitov) alebo
+    /// `povodny` (1080p @ 60 Hz, 32 bitov – ako pred R132).
+    pub obraz: Option<String>,
+    /// Po koľkých minútach pokoja sa obraz začierni (0 = nikdy; R132).
+    pub zhasni_min: Option<u32>,
+    /// Po koľkých minútach pokoja sa obraz vypne (0 = nikdy; R132).
+    pub vypni_min: Option<u32>,
+    /// Tepelný pokus namiesto bežného samomerania (R134): `Some(false)` = vypnutý.
+    pub pokus: Option<bool>,
 }
 
 impl NastavenieZariadenia {
@@ -328,6 +337,27 @@ impl NastavenieZariadenia {
                 "meranie" => match ano_nie(v) {
                     Some(m) => n.meranie = Some(m),
                     None => upozornenia.push(format!("riadok {}: meranie má byť ano alebo nie", i + 1)),
+                },
+                "pokus" => match ano_nie(v) {
+                    Some(m) => n.pokus = Some(m),
+                    None => upozornenia.push(format!("riadok {}: pokus má byť ano alebo nie", i + 1)),
+                },
+                "obraz" => match v.to_lowercase().as_str() {
+                    "chladny" | "chladný" => n.obraz = Some("chladny".into()),
+                    "ostry" | "ostrý" => n.obraz = Some("ostry".into()),
+                    "povodny" | "pôvodný" => n.obraz = Some("povodny".into()),
+                    _ => upozornenia
+                        .push(format!("riadok {}: obraz má byť chladny, ostry alebo povodny", i + 1)),
+                },
+                "zhasni" | "vypni" => match v.parse::<u32>() {
+                    Ok(m) if m <= 24 * 60 => {
+                        if k == "zhasni" {
+                            n.zhasni_min = Some(m)
+                        } else {
+                            n.vypni_min = Some(m)
+                        }
+                    }
+                    _ => upozornenia.push(format!("riadok {}: {k} má byť počet minút (0 = nikdy)", i + 1)),
                 },
                 "meno" | "wifi" | "jazyk" => {
                     upozornenia.push(format!("riadok {}: neplatná hodnota „{k}“", i + 1))
@@ -654,6 +684,14 @@ mod skusky {
         assert_eq!(z.wifi_psk, None);
         assert_eq!(u.len(), 2, "{u:?}");
         assert!(!platne_meno("-pi") && !platne_meno("pi-") && platne_meno("pi-1"));
+        // R132, R134: obraz TV krabičky, zhasínanie a tepelný pokus
+        let (z, u) = NastavenieZariadenia::z_textu("obraz=Pôvodný\nzhasni=0\nvypni=15\npokus=nie\n");
+        assert_eq!(
+            (z.obraz.as_deref(), z.zhasni_min, z.vypni_min, z.pokus, u.len()),
+            (Some("povodny"), Some(0), Some(15), Some(false), 0)
+        );
+        let (z, u) = NastavenieZariadenia::z_textu("obraz=farebny\nzhasni=-1\nvypni=99999\n");
+        assert_eq!((z.obraz, z.zhasni_min, z.vypni_min, u.len()), (None, None, None, 3));
     }
 
     #[test]

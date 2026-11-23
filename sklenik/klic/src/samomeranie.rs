@@ -156,14 +156,14 @@ fn teplota_okolo(body: &[BodKrivky], s: u64) -> Option<f64> {
 }
 
 /// Súhrn krivky: teploty v míľnikoch, najvyššia, ohrev a jeho časová konštanta, ustálenie, zásahy strážcu.
-pub fn suhrn(body: &[BodKrivky]) -> String {
+pub fn suhrn(body: &[BodKrivky], milniky_min: &[u32]) -> String {
     let s_teplotou: Vec<(u64, f64)> = body.iter().filter_map(|b| Some((b.s, b.teplota?))).collect();
     let mut t = String::new();
     let Some(&(_, prva)) = s_teplotou.first() else {
         return format!("  teplota sa nemerala (doska nemá snímač){NL}");
     };
     let &(s_konca, posledna) = s_teplotou.last().unwrap_or(&(0, prva));
-    let milniky: Vec<String> = MILNIKY_MIN
+    let milniky: Vec<String> = milniky_min
         .iter()
         .filter_map(|&m| teplota_okolo(body, m as u64 * 60).map(|v| format!("{m}. min {v:.1}")))
         .collect();
@@ -444,7 +444,7 @@ mod skusky {
         // ohrev 40 → 50 °C s časovou konštantou 300 s
         let body: Vec<BodKrivky> =
             (0..=60).map(|i| bod(i * 30, 40.0 + 10.0 * (1.0 - (-((i * 30) as f64) / 300.0).exp()))).collect();
-        let s = suhrn(&body);
+        let s = suhrn(&body, &MILNIKY_MIN);
         assert!(s.contains("0. min 40.0 · 5. min 46.3 · 10. min 48.6 · 30. min 50.0"), "{s}");
         assert!(s.contains("časová konštanta ≈ 300 s"), "{s}");
         assert!(s.contains("ustálená od"), "{s}");
@@ -460,12 +460,14 @@ mod skusky {
     fn suhrn_bez_zmeny_so_strazcom_a_bez_snimaca() {
         let mut body: Vec<BodKrivky> = (0..=10).map(|i| bod(i * 30, 35.0 + (i % 2) as f64 * 0.2)).collect();
         body[4].vykon = 0.75;
-        let s = suhrn(&body);
+        let s = suhrn(&body, &MILNIKY_MIN);
         assert!(s.contains("takmer nemenila") && s.contains("najviac na 75 % (v 2:00)"), "{s}");
         // stále stúpa – neustálila sa
         let rastie: Vec<BodKrivky> = (0..=10).map(|i| bod(i * 30, 40.0 + i as f64)).collect();
-        assert!(suhrn(&rastie).contains("ešte sa neustálila"));
+        assert!(suhrn(&rastie, &MILNIKY_MIN).contains("ešte sa neustálila"));
         let bez: Vec<BodKrivky> = (0..3).map(|i| BodKrivky { teplota: None, ..bod(i * 30, 0.0) }).collect();
-        assert!(suhrn(&bez).contains("nemala") || suhrn(&bez).contains("nemerala"));
+        assert!(
+            suhrn(&bez, &MILNIKY_MIN).contains("nemala") || suhrn(&bez, &MILNIKY_MIN).contains("nemerala")
+        );
     }
 }

@@ -18,6 +18,8 @@ pub enum DruhVstupu {
     Dotyk,
     /// Touchpad, grafický tablet a podobne (ukazovanie mimo obrazu).
     Ukazovatko,
+    /// Diaľkový ovládač (infračervený prijímač TV krabičky, HDMI-CEC) – šípky a OK (R132).
+    Ovladac,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -87,6 +89,11 @@ const KEY_A: usize = 30;
 const KEY_SPACE: usize = 57;
 const BTN_LEFT: usize = 0x110;
 const BTN_TOUCH: usize = 0x14a;
+const KEY_UP: usize = 103;
+const KEY_DOWN: usize = 108;
+const KEY_ENTER: usize = 28;
+const KEY_OK: usize = 0x160;
+const KEY_SELECT: usize = 0x161;
 const INPUT_PROP_DIRECT: usize = 1;
 
 fn citaj(cesta: impl AsRef<Path>) -> Option<String> {
@@ -135,6 +142,9 @@ pub fn druh_vstupu(ev: &str, kluce: &str, vlastnosti: &str, bitov_slova: usize) 
     }
     if kluc(KEY_A) && kluc(KEY_SPACE) {
         return Some(DruhVstupu::Klavesnica);
+    }
+    if kluc(KEY_UP) && kluc(KEY_DOWN) && (kluc(KEY_OK) || kluc(KEY_ENTER) || kluc(KEY_SELECT)) {
+        return Some(DruhVstupu::Ovladac);
     }
     None
 }
@@ -336,6 +346,7 @@ impl Supis {
                         DruhVstupu::Mys => "myš",
                         DruhVstupu::Dotyk => "dotyková obrazovka",
                         DruhVstupu::Ukazovatko => "ukazovacie zariadenie",
+                        DruhVstupu::Ovladac => "diaľkový ovládač",
                     };
                     format!("{d} ({})", v.meno)
                 })
@@ -474,6 +485,13 @@ mod skusky {
         let dotyk = "400 0 0 0 0 0";
         assert_eq!(druh_vstupu("b", dotyk, "2", 64), Some(DruhVstupu::Dotyk));
         assert_eq!(druh_vstupu("b", dotyk, "0", 64), Some(DruhVstupu::Ukazovatko));
+        // diaľkový ovládač X96 (meson-ir, mapa rc-x96max): šípky, OK, vypínač – bez písmen
+        let mut bity = [0u64; 8];
+        for b in [103usize, 108, 105, 106, 116, 0x160] {
+            bity[b / 64] |= 1 << (b % 64);
+        }
+        let ovladac: Vec<String> = bity.iter().rev().map(|w| format!("{w:x}")).collect();
+        assert_eq!(druh_vstupu("100013", &ovladac.join(" "), "0", 64), Some(DruhVstupu::Ovladac));
         // tlačidlo napájania a podobne: nič
         assert_eq!(druh_vstupu("3", "10000000000000 0", "0", 64), None);
         assert_eq!(druh_vstupu("", "", "", 64), None);

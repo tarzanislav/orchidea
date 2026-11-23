@@ -589,8 +589,10 @@ struct Vysledok {
 pub struct Riadenie {
     /// Začiatok merania: okamih a hodiny „beží“ (s).
     zaciatok: Option<(Instant, u64)>,
-    /// Index ďalšieho míľnika v `MILNIKY_MIN`.
+    /// Index ďalšieho míľnika (minúty záznamov – `MILNIKY_MIN`, pri tepelnom pokuse koniec každej fázy).
     dalsi: usize,
+    /// Vlastné míľniky (R134 – tepelný pokus); prázdne = `MILNIKY_MIN`.
+    milniky: Vec<u32>,
     zaznamy: Vec<(u32, bool)>,
     krivka: Vec<samomeranie::BodKrivky>,
     dalsi_bod_s: u64,
@@ -604,6 +606,21 @@ pub struct Riadenie {
 }
 
 impl Riadenie {
+    /// Meranie s vlastnými minútami záznamov (R134 – tepelný pokus).
+    pub fn s_milnikmi(milniky: Vec<u32>) -> Riadenie {
+        Riadenie { milniky, ..Riadenie::default() }
+    }
+
+    /// Minúty záznamov.
+    pub fn milniky(&self) -> &[u32] {
+        if self.milniky.is_empty() { &samomeranie::MILNIKY_MIN } else { &self.milniky }
+    }
+
+    /// Sekundy od začiatku merania.
+    pub fn uplynulo_s(&self) -> Option<u64> {
+        self.zaciatok.map(|z| z.0.elapsed().as_secs())
+    }
+
     /// Začne meranie (raz). Vráti `true`, ak práve začalo.
     pub fn zacni(&mut self, bezi_s: u64) -> bool {
         if self.zaciatok.is_some() {
@@ -630,7 +647,7 @@ impl Riadenie {
     ) {
         let Some((z, _)) = self.zaciatok else { return };
         let s = z.elapsed().as_secs();
-        let koniec = *samomeranie::MILNIKY_MIN.last().unwrap_or(&30) as u64 * 60;
+        let koniec = *self.milniky().last().unwrap_or(&30) as u64 * 60;
         if s < self.dalsi_bod_s || self.dalsi_bod_s > koniec {
             return;
         }
@@ -656,7 +673,7 @@ impl Riadenie {
         if self.vlakno.is_some() {
             return None;
         }
-        if let Some(&m) = samomeranie::MILNIKY_MIN.get(self.dalsi) {
+        if let Some(&m) = self.milniky().get(self.dalsi) {
             return (z.elapsed() >= Duration::from_secs(m as u64 * 60)).then_some(Uloha::Zaznam(m));
         }
         (!self.fronta.is_empty() && self.dalsi_pokus.is_none_or(|t| Instant::now() >= t))
@@ -781,7 +798,7 @@ impl Riadenie {
         use crate::obrazovka::Samomeranie;
         let Some((_, s0)) = self.zaciatok else { return Samomeranie::Pripravuje };
         let poradie = self.predosle.as_ref().map(|p| p.1);
-        let n = samomeranie::MILNIKY_MIN.len();
+        let n = self.milniky().len();
         let vsetko = self.dalsi >= n && self.vlakno.is_none();
         match (vsetko, poradie) {
             (true, Some(p)) if self.fronta.is_empty() => {
@@ -792,8 +809,9 @@ impl Riadenie {
             ),
             _ => Samomeranie::Bezi {
                 zaznamy: self.zaznamy.clone(),
-                pri_s: s0 + samomeranie::MILNIKY_MIN[self.dalsi.min(n - 1)] as u64 * 60,
+                pri_s: s0 + self.milniky()[self.dalsi.min(n - 1)] as u64 * 60,
                 poradie,
+                milniky: self.milniky().to_vec(),
             },
         }
     }

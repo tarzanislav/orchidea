@@ -29,6 +29,16 @@ unsafe extern "C" {
     fn bind(fd: c_int, adresa: *const c_void, dlzka: u32) -> c_int;
     fn poll(fds: *mut PollFd, pocet: c_ulong, cakanie_ms: c_int) -> c_int;
     fn recv(fd: c_int, buf: *mut c_void, dlzka: usize, priznaky: c_int) -> isize;
+    fn read(fd: c_int, buf: *mut c_void, dlzka: usize) -> isize;
+    fn mmap(
+        adresa: *mut c_void,
+        dlzka: usize,
+        ochrana: c_int,
+        priznaky: c_int,
+        fd: c_int,
+        posun: i64,
+    ) -> *mut c_void;
+    fn munmap(adresa: *mut c_void, dlzka: usize) -> c_int;
 }
 
 /// `struct pollfd`
@@ -239,9 +249,21 @@ pub fn ponuka_bez_gigabitu(ponuka: u32) -> Option<u32> {
     (nova != ponuka && nova & 0xF != 0).then_some(nova)
 }
 
+/// Nové ponúkané režimy s gigabitom (1000BASE-T, ak ho čip podporuje); `None`, ak sa nič nemení.
+pub fn ponuka_s_gigabitom(podporovane: u32, ponuka: u32) -> Option<u32> {
+    let nova = ponuka | (podporovane & !BEZ_GIGABITU & 0x30);
+    (nova != ponuka).then_some(nova)
+}
+
 /// R126: Ethernet ponúkne len 10/100 Mb/s (gigabitový čip siete berie v pokoji viac energie). Spojenie sa
 /// znova dohodne (asi 2–3 s). Vráti `Ok(true)`, ak sa ponuka zmenila.
 pub fn ethernet_bez_gigabitu(meno: &str) -> io::Result<bool> {
+    ethernet_gigabit(meno, false)
+}
+
+/// Sieť podľa potreby (R133): ponuka gigabitu zapnutá alebo vypnutá. Vráti `Ok(true)`, ak sa zmenila
+/// (spojenie sa znova dohodne, asi 2–3 s).
+pub fn ethernet_gigabit(meno: &str, gigabit: bool) -> io::Result<bool> {
     if meno.is_empty() || meno.len() >= 16 || meno.contains('\0') {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "neplatné meno rozhrania"));
     }
@@ -268,7 +290,8 @@ pub fn ethernet_bez_gigabitu(meno: &str) -> io::Result<bool> {
         };
         volaj(&mut cmd)?;
         let autoneg = cmd[4].to_ne_bytes()[2];
-        let Some(nova) = ponuka_bez_gigabitu(cmd[2]).filter(|_| autoneg == 1) else {
+        let nova = if gigabit { ponuka_s_gigabitom(cmd[1], cmd[2]) } else { ponuka_bez_gigabitu(cmd[2]) };
+        let Some(nova) = nova.filter(|_| autoneg == 1) else {
             return Ok(false);
         };
         cmd[0] = ETHTOOL_SSET;
@@ -413,13 +436,19 @@ impl Udalosti {
 
     /// Čaká najviac `ms` milisekúnd. Vráti `true`, ak prišla aspoň jedna udalosť (všetky sa vyberú).
     pub fn cakaj(&self, ms: u64) -> bool {
+        self.cakaj_so_vstupmi(ms, &[]).0
+    }
+
+    /// Čaká na udalosti jadra aj na vstupné zariadenia (`/dev/input/event*` – klávesnica, myš, diaľkový
+    /// ovládač; R132 – prebudenie obrazu). Vráti (udalosť jadra, stlačenie/pohyb na vstupe); všetko sa vyberie.
+    pub fn cakaj_so_vstupmi(&self, ms: u64, vstupy: &[c_int]) -> (bool, bool) {
         let mut p: Vec<PollFd> =
-            self.fds.iter().map(|&fd| PollFd { fd, udalosti: POLLIN, vratene: 0 }).collect();
+            self.fds.iter().chain(vstupy).map(|&fd| PollFd { fd, udalosti: POLLIN, vratene: 0 }).collect();
         let ms = ms.min(i32::MAX as u64) as c_int;
         // SAFETY: p je platné pole struct pollfd s dĺžkou p.len(), žije počas volania.
         let n = unsafe { poll(p.as_mut_ptr(), p.len() as c_ulong, ms) };
         if n <= 0 {
-            return false;
+            return (false, false);
         }
         let mut buf = [0u8; 8192];
         let mut bolo = false;
@@ -429,7 +458,29 @@ impl Udalosti {
                 bolo = true;
             }
         }
-        bolo
+        let mut vstup = false;
+        for (i, &fd) in vstupy.iter().enumerate() {
+            if p[self.fds.len() + i].vratene == 0 {
+                continue;
+            }
+            // struct input_event: čas (16 B na 64-bitovom, 8 B na 32-bitovom jadre), typ, kód, hodnota
+            let dlzka = 2 * size_of::<usize>() + 8;
+            loop {
+                // SAFETY: buf je platná vyrovnávacia pamäť; zariadenie je otvorené bez čakania (O_NONBLOCK).
+                let n = unsafe { read(fd, buf.as_mut_ptr() as *mut c_void, buf.len()) };
+                if n <= 0 {
+                    break;
+                }
+                for u in buf[..n as usize].chunks_exact(dlzka) {
+                    let typ = u16::from_ne_bytes([u[dlzka - 8], u[dlzka - 7]]);
+                    // EV_SYN (0) len oddeľuje dávky; EV_KEY, EV_REL, EV_ABS, EV_MSC (ovládač) sú činnosť
+                    if typ != 0 {
+                        vstup = true;
+                    }
+                }
+            }
+        }
+        (bolo, vstup)
     }
 }
 
@@ -439,5 +490,61 @@ impl Drop for Udalosti {
             // SAFETY: fd sú naše otvorené deskriptory, každý sa zatvára raz.
             unsafe { close(fd) };
         }
+    }
+}
+
+/// Volanie ioctl s jednou štruktúrou (DRM/KMS – vlastný ovládač obrazovky, R132).
+///
+/// `T` musí byť štruktúra `#[repr(C)]` presne podľa hlavičky jadra (veľkosť je zakódovaná v `poziadavka`)
+/// a polia s ukazovateľmi (`*_ptr`) musia ukazovať na pamäť, ktorá žije počas volania. Jadro môže volanie
+/// prerušiť signálom alebo požiadať o opakovanie – opakuje sa ako v knižnici libdrm.
+pub fn ioctl_struct<T: Copy>(fd: c_int, poziadavka: c_ulong, s: &mut T) -> io::Result<()> {
+    loop {
+        // SAFETY: s je platná štruktúra s veľkosťou z požiadavky; ukazovatele v nej zaručuje volajúci.
+        if unsafe { ioctl(fd, poziadavka, s as *mut T as *mut c_void) } >= 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        if !matches!(e.raw_os_error(), Some(4) | Some(11)) {
+            return Err(e);
+        }
+    }
+}
+
+/// Adresa poľa pre polia `*_ptr` v štruktúrach jadra.
+pub fn adresa<T>(pole: &mut [T]) -> u64 {
+    pole.as_mut_ptr() as usize as u64
+}
+
+/// Pamäť zariadenia namapovaná do procesu (obrazový buffer KMS) – uvoľní sa pri zániku.
+pub struct Mapa {
+    ptr: *mut u8,
+    dlzka: usize,
+}
+
+// SAFETY: mapa patrí jednému vlastníkovi; prístup len cez &mut self.
+unsafe impl Send for Mapa {}
+
+impl Mapa {
+    /// Namapuje `dlzka` bajtov zariadenia `fd` od posunu `posun` na čítanie aj zápis (zdieľane).
+    pub fn otvor(fd: c_int, dlzka: usize, posun: u64) -> io::Result<Mapa> {
+        // SAFETY: jadro vráti novú oblasť alebo MAP_FAILED; dĺžka a posun sú od ovládača.
+        let p = unsafe { mmap(std::ptr::null_mut(), dlzka, 3, 1, fd, posun as i64) };
+        if p as isize == -1 || p.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Mapa { ptr: p as *mut u8, dlzka })
+    }
+
+    pub fn bajty(&mut self) -> &mut [u8] {
+        // SAFETY: oblasť je namapovaná s dĺžkou `dlzka` a žije, kým žije Mapa.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.dlzka) }
+    }
+}
+
+impl Drop for Mapa {
+    fn drop(&mut self) {
+        // SAFETY: odmapuje sa presne oblasť, ktorú vrátil mmap, raz.
+        unsafe { munmap(self.ptr as *mut c_void, self.dlzka) };
     }
 }

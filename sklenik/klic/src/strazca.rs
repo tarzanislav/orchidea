@@ -109,7 +109,15 @@ pub struct Regulator {
     ustalena: Option<f64>,
     /// Úspora v nečinnosti pri horúcom okolí (R126): v nečinnosti najviac úsporná úroveň.
     uspora: bool,
+    /// Parkovanie jadier v pokoji (R135, TV krabičky).
+    parkovanie: bool,
+    necinny_s: f64,
+    /// Úroveň pred zaparkovaním – keď príde práca, vráti sa na ňu hneď.
+    pred_parkovanim: Option<usize>,
 }
+
+/// Po koľkých sekundách nečinnosti sa jadrá zaparkujú.
+const PARKOVANIE_PO_S: f64 = 20.0;
 
 /// Ako ďaleko dopredu (s) regulátor predpovedá teplotu.
 const HORIZONT_S: f64 = 30.0;
@@ -132,7 +140,26 @@ impl Regulator {
             od_zmeny: 0.0,
             ustalena: None,
             uspora: false,
+            parkovanie: false,
+            necinny_s: 0.0,
+            pred_parkovanim: None,
         }
+    }
+
+    /// R135: parkovanie jadier v pokoji (TV krabičky). Nečinné, ale zapnuté jadrá stále žerú prúd únikom
+    /// (rastie s teplotou exponenciálne); vypnuté jadro odpojí firmvér (PSCI CPU_OFF) od napájania. Po 20 s
+    /// nečinnosti ostane jedno jadro na najnižšom takte; keď príde práca, strážca sa **hneď** vráti na
+    /// predošlú úroveň (nie po krokoch) – odozva ostáva, teplo v pokoji klesne.
+    pub fn nastav_parkovanie(&mut self, parkovanie: bool) {
+        self.parkovanie = parkovanie;
+        self.necinny_s = 0.0;
+        if !parkovanie && let Some(p) = self.pred_parkovanim.take() {
+            self.nastav(p.min(self.urovne.len() - 1));
+        }
+    }
+
+    pub fn zaparkovane(&self) -> bool {
+        self.pred_parkovanim.is_some()
     }
 
     /// R126: pri horúcom okolí sa aj nečinnosť šetrí – každý watt navyše zostáva v doske (poučenie z vrtov
@@ -201,8 +228,34 @@ impl Regulator {
         let ustali_sa_nad = !necinny && self.ustalena.is_some_and(|u| u > ciel + 2.0) && teplota > ciel - 8.0;
         let ustali_sa_pod = self.ustalena.is_none_or(|u| u < ciel - 1.0);
         if teplota >= strop - NUDZA_POD_STROPOM {
+            self.pred_parkovanim = None;
             self.nastav(0);
-        } else if self.uspora && necinny && self.index > self.usporna() && self.od_zmeny >= 5.0 {
+            return self.uroven();
+        }
+        if self.parkovanie
+            && let Some(v) = vytazenie
+        {
+            if v < NECINNOST {
+                self.necinny_s += dt;
+                if self.necinny_s >= PARKOVANIE_PO_S && self.pred_parkovanim.is_none() && self.index > 0 {
+                    self.pred_parkovanim = Some(self.index);
+                    self.nastav(0);
+                }
+                if self.pred_parkovanim.is_some() {
+                    return self.uroven();
+                }
+            } else {
+                self.necinny_s = 0.0;
+                if let Some(p) = self.pred_parkovanim.take() {
+                    // práca prišla – späť hneď, ak to teplota dovolí (inak bežné zvyšovanie po krokoch)
+                    if predikcia < ciel {
+                        self.nastav(p.min(self.urovne.len() - 1));
+                    }
+                    return self.uroven();
+                }
+            }
+        }
+        if self.uspora && necinny && self.index > self.usporna() && self.od_zmeny >= 5.0 {
             self.nastav(self.index - 1);
         } else if ((predikcia > strop - NUDZA_POD_STROPOM || (teplota > ciel && !necinny))
             && self.od_zmeny >= 2.0)
@@ -588,5 +641,50 @@ mod skusky {
         let x96 = Profil::pre_model("Amediatech X96 Max Plus");
         assert_eq!((x96.ciel, x96.strop), (55.0, 65.0));
         assert_eq!(Profil::pre_model("Tanix TX68").strop, 65.0);
+    }
+
+    #[test]
+    fn parkovanie_jadier_v_pokoji_a_hned_spat_pri_praci() {
+        let mut r =
+            Regulator::novy(urovne(&[100_000, 1_000_000, 1_908_000], 4), Profil { ciel: 55.0, strop: 65.0 });
+        r.nastav_parkovanie(true);
+        let horna = r.pocet_urovni() - 1;
+        r.index = horna;
+        // 19 s pokoja – ešte nie
+        for _ in 0..19 {
+            r.krok_s_vytazenim(45.0, 1.0, Some(0.02));
+        }
+        assert_eq!(r.index(), horna);
+        r.krok_s_vytazenim(45.0, 1.0, Some(0.02));
+        assert_eq!(r.index(), 0, "zaparkované");
+        assert!(r.zaparkovane());
+        assert_eq!(r.uroven().jadra, 1);
+        // dlhý pokoj – ostáva zaparkované (nezvyšuje sa)
+        for _ in 0..100 {
+            r.krok_s_vytazenim(44.0, 4.0, Some(0.01));
+        }
+        assert_eq!(r.index(), 0);
+        // práca – hneď späť na pôvodnú úroveň
+        r.krok_s_vytazenim(45.0, 1.0, Some(0.9));
+        assert_eq!(r.index(), horna);
+        assert!(!r.zaparkovane());
+        // pri strope sa parkovanie zruší a ide sa na najnižšiu úroveň
+        for _ in 0..25 {
+            r.krok_s_vytazenim(45.0, 1.0, Some(0.0));
+        }
+        assert!(r.zaparkovane());
+        r.krok_s_vytazenim(63.0, 1.0, Some(0.0));
+        assert!(!r.zaparkovane());
+        // vypnutie parkovania vráti úroveň
+        let mut r2 = Regulator::novy(urovne(&[100_000, 1_908_000], 4), Profil { ciel: 55.0, strop: 65.0 });
+        r2.nastav_parkovanie(true);
+        let p = r2.index();
+        for _ in 0..21 {
+            r2.krok_s_vytazenim(40.0, 1.0, Some(0.0));
+        }
+        assert_eq!(r2.index(), 0);
+        r2.nastav_parkovanie(false);
+        // vráti sa na úroveň pred zaparkovaním (v pokoji ju strážca medzitým zvyšoval)
+        assert!(r2.index() >= p && r2.index() > 0);
     }
 }

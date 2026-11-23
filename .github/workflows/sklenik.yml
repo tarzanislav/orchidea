@@ -518,6 +518,16 @@ jobs:
             fdtput -t s "$f" /soc/mmc@ffe03000 status disabled
             echo "$f: $(fdtget "$f" / model) – Wi-Fi $(fdtget "$f" /soc/mmc@ffe03000 status)"
           done
+          # R135: X96 Max Plus – nepoužívané časti čipu vypnuté: grafický procesor Mali (obraz skladajú roviny
+          # obvodu obrazu VPU, GPU netreba; bez napájania v popise hlásil chybu) a USB OTG dwc2 (krabička nikdy
+          # nie je USB zariadením – oba porty natrvalo ako hostiteľ, bez pokusu o g_mass_storage)
+          for d in meson-sm1-x96-air-gbit meson-sm1-x96-air; do
+            f="boot/dtb/amlogic/$d.dtb"
+            fdtput -t s "$f" /soc/gpu@ffe40000 status disabled
+            fdtput -t s "$f" /soc/usb@ffe09000/usb@ff400000 status disabled
+            fdtput -t s "$f" /soc/usb@ffe09000 dr_mode host
+            echo "$f: GPU $(fdtget "$f" /soc/gpu@ffe40000 status), USB OTG $(fdtget "$f" /soc/usb@ffe09000/usb@ff400000 status), USB $(fdtget "$f" /soc/usb@ffe09000 dr_mode)"
+          done
           # X96 Max Plus – gigabitový čip siete býva iný ako v referenčnej doske (iná adresa, iný výrobca):
           # reset čipu presunutý na zbernicu MDIO (čip sa prebudí PRED hľadaním), bez pevnej adresy (jadro ho
           # hľadá na všetkých 32 adresách) a bez prerušenia (môže byť zapojené inak – jadro sa pýta samo)

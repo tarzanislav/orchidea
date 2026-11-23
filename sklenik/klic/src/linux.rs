@@ -1,12 +1,14 @@
 //! KLÍČ na Linuxe: štart systému, periférie a sieť, tepelný strážca nad súbormi jadra (`/sys`) a stav na
 //! obrazovke.
 
+use crate::chlad::{self, Ciel, SietPodlaPotreby, StavObrazu, Zhasinanie};
+use crate::kms;
 use crate::obrazovka::{self, Eee, FormatBodu, Jazyk, MeranieKarty, Stav};
 use crate::okolie::{self, Okolie};
 use crate::periferie::{Supis, Ulozisko};
 use crate::poda::Poda;
 use crate::samomeranie::{self, NL, ZNACKA_NOSICA, ZNACKA_PORADIA, nadpis};
-use crate::strazca::{Hardver, Profil, Regulator, Uroven, stupen_ventilatora, urovne};
+use crate::strazca::{Hardver, Profil, Regulator, Uroven, je_tv_krabicka, stupen_ventilatora, urovne};
 use crate::sys;
 use crate::zaznam;
 use orchidea_pismo::{Pismo, Platno};
@@ -21,6 +23,29 @@ use std::time::{Duration, Instant};
 const CPU: &str = "/sys/devices/system/cpu";
 /// Súbor, z ktorého ORCHIDEA číta tepelný rozpočet (koľko vlákien smie použiť a ako rýchlo).
 const ROZPOCET: &str = "/run/sklenik/teplo";
+/// Po koľkých ms nečinnosti zaspí USB úložisko (R133).
+const USB_SPANOK_MS: u32 = 2000;
+
+/// Cieľ obrazu z nastavenia (R132): `obraz=povodny` – ako pred R132, inak chladný.
+fn ciel_obrazu(n: &Option<(String, NastavenieZariadenia)>) -> Ciel {
+    match n.as_ref().and_then(|(_, n)| n.obraz.as_deref()) {
+        Some("povodny") => Ciel::Povodny,
+        _ => Ciel::Chladny,
+    }
+}
+
+/// `obraz=ostry` – plné rozlíšenie (16 bitov, najnižšia obnova), bez zväčšovania.
+fn ostry_obraz(n: &Option<(String, NastavenieZariadenia)>) -> bool {
+    n.as_ref().and_then(|(_, n)| n.obraz.as_deref()) == Some("ostry")
+}
+
+fn slovo_stavu(s: StavObrazu) -> &'static str {
+    match s {
+        StavObrazu::Zapnuty => "zapnutý",
+        StavObrazu::Cierny => "čierny",
+        StavObrazu::Vypnuty => "vypnutý",
+    }
+}
 
 /// Zápis do sériovej linky, na obrazovku (konzola jadra) aj do denníka jadra.
 fn hlas(sprava: &str) {
@@ -183,9 +208,15 @@ fn zapni_siet() -> Vec<String> {
     chyby
 }
 
-/// Grafická obrazovka (framebuffer jadra) – zapisujú sa len zmenené riadky.
+/// Kam sa kreslí: framebuffer jadra alebo vlastný ovládač KMS (R132).
+enum Vystup {
+    Fb(fs::File),
+    Kms(Box<kms::Kms>),
+}
+
+/// Grafická obrazovka – zapisujú sa len zmenené riadky.
 struct Displej {
-    fb: fs::File,
+    vystup: Vystup,
     sirka: usize,
     vyska: usize,
     riadok_bajtov: u64,
@@ -193,6 +224,53 @@ struct Displej {
     format: FormatBodu,
     predosle: Option<Platno>,
     _tty: Option<fs::File>,
+    /// Vlastný ovládač: režim a kreslenie (pre riadok Chlad a záznam).
+    kms_nastavenie: Option<(kms::Rezim, kms::Kreslenie)>,
+}
+
+/// Konzola v grafickom režime: jadro do obrazovky nepíše.
+fn graficka_konzola() -> Option<fs::File> {
+    let tty = fs::OpenOptions::new().read(true).write(true).open("/dev/tty1").ok();
+    if let Some(t) = &tty
+        && let Err(e) = sys::graficka_konzola(t)
+    {
+        hlas(&format!("obrazovka: grafický režim konzoly sa nepodaril: {e}"));
+    }
+    tty
+}
+
+fn format_kms(f: u32) -> FormatBodu {
+    if f == kms::RGB565 {
+        FormatBodu { bajtov: 2, r: (11, 5), g: (5, 6), b: (0, 5), a: (0, 0) }
+    } else {
+        FormatBodu { bajtov: 4, r: (16, 8), g: (8, 8), b: (0, 8), a: (24, 0) }
+    }
+}
+
+/// Nastaví režim a kreslenie podľa cieľa; skúša od najchladnejšieho, kým ovládač jadra niečo neprijme.
+fn nastav_kms(k: &mut kms::Kms, ciel: Ciel, ostre: bool) -> Option<(kms::Rezim, kms::Kreslenie)> {
+    let rezimy = k.rezimy();
+    let i = kms::vyber_rezim(&rezimy, ciel)?;
+    let r = rezimy[i];
+    let plne16 = kms::Kreslenie { sirka: r.sirka as u32, vyska: r.vyska as u32, bitov: 16 };
+    let poradie = match ciel {
+        Ciel::Povodny => vec![kms::Kreslenie::povodne(&r)],
+        Ciel::Chladny if ostre => vec![plne16, kms::Kreslenie::povodne(&r)],
+        Ciel::Chladny => vec![kms::Kreslenie::chladne(&r), plne16, kms::Kreslenie::povodne(&r)],
+    };
+    for kr in poradie {
+        match k.nastav(i, kr) {
+            Ok(()) => return Some((r, kr)),
+            Err(e) => hlas(&format!(
+                "obraz: {} s kreslením {}×{} ({} b) ovládač neprijal: {e}",
+                r.popis(),
+                kr.sirka,
+                kr.vyska,
+                kr.bitov
+            )),
+        }
+    }
+    None
 }
 
 impl Displej {
@@ -208,15 +286,139 @@ impl Displej {
             .and_then(|s| s.parse().ok())
             .unwrap_or(v[2] as u64 * format.bajtov as u64);
         let zaciatok = v[5] as u64 * riadok_bajtov + v[4] as u64 * format.bajtov as u64;
-        // konzola v grafickom režime: jadro do obrazovky nepíše
-        let tty = fs::OpenOptions::new().read(true).write(true).open("/dev/tty1").ok();
-        if let Some(t) = &tty
-            && let Err(e) = sys::graficka_konzola(t)
-        {
-            hlas(&format!("obrazovka: grafický režim konzoly sa nepodaril: {e}"));
-        }
+        let tty = graficka_konzola();
         hlas(&format!("obrazovka: {sirka}×{vyska}, {} bitov na bod", format.bajtov * 8));
-        Some(Displej { fb, sirka, vyska, riadok_bajtov, zaciatok, format, predosle: None, _tty: tty })
+        Some(Displej {
+            vystup: Vystup::Fb(fb),
+            sirka,
+            vyska,
+            riadok_bajtov,
+            zaciatok,
+            format,
+            predosle: None,
+            _tty: tty,
+            kms_nastavenie: None,
+        })
+    }
+
+    /// R132: vlastný ovládač obrazovky cez KMS (TV krabičky). `None` = ostane sa pri `/dev/fb0`.
+    fn otvor_kms(ciel: Ciel, ostre: bool) -> Option<Displej> {
+        let mut k = match kms::Kms::otvor() {
+            Ok(k) => k,
+            Err(e) => {
+                hlas(&format!("obraz: vlastný ovládač KMS nie je k dispozícii ({e}) – obyčajná obrazovka"));
+                return None;
+            }
+        };
+        let nastavenie = nastav_kms(&mut k, ciel, ostre)?;
+        let mut d = Displej {
+            vystup: Vystup::Kms(Box::new(k)),
+            sirka: 0,
+            vyska: 0,
+            riadok_bajtov: 0,
+            zaciatok: 0,
+            format: format_kms(kms::XRGB8888),
+            predosle: None,
+            _tty: graficka_konzola(),
+            kms_nastavenie: None,
+        };
+        d.prevezmi_kms(nastavenie);
+        Some(d)
+    }
+
+    fn prevezmi_kms(&mut self, nastavenie: (kms::Rezim, kms::Kreslenie)) {
+        let Vystup::Kms(k) = &mut self.vystup else { return };
+        let Some((_, riadok, w, h, f)) = k.pamat() else { return };
+        self.sirka = w as usize;
+        self.vyska = h as usize;
+        self.riadok_bajtov = riadok as u64;
+        self.zaciatok = 0;
+        self.format = format_kms(f);
+        self.predosle = None;
+        let (r, kr) = nastavenie;
+        let video = if k.video.is_some() { "áno" } else { "nie" };
+        hlas(&format!(
+            "obraz: vlastný ovládač KMS – {}, kreslí {}×{} v {} bitoch{}, z pamäte {:.0} MB/s (pôvodne 1080p60 32 b: 498 MB/s); rovina videa NV12: {video}",
+            r.popis(),
+            kr.sirka,
+            kr.vyska,
+            kr.bitov,
+            if kr.sirka < r.sirka as u32 { " (zväčšuje obvod obrazu)" } else { "" },
+            kr.citanie_mb_s(r.obnova)
+        ));
+        self.kms_nastavenie = Some(nastavenie);
+    }
+
+    /// R134: iný cieľ obrazu (fáza tepelného pokusu) bez znovuotvorenia karty.
+    fn prestav(&mut self, ciel: Ciel, ostre: bool) -> bool {
+        let Vystup::Kms(k) = &mut self.vystup else { return false };
+        match nastav_kms(k, ciel, ostre) {
+            Some(n) => {
+                self.prevezmi_kms(n);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn je_kms(&self) -> bool {
+        matches!(self.vystup, Vystup::Kms(_))
+    }
+
+    fn stav_obrazu(&self) -> StavObrazu {
+        match &self.vystup {
+            Vystup::Kms(k) => k.stav,
+            Vystup::Fb(_) => StavObrazu::Zapnuty,
+        }
+    }
+
+    fn nastav_stav_obrazu(&mut self, stav: StavObrazu) {
+        let Vystup::Kms(k) = &mut self.vystup else { return };
+        let pred = k.stav;
+        match k.stav_obrazu(stav) {
+            Ok(()) if pred != stav => hlas(&format!(
+                "obraz: {}",
+                match stav {
+                    StavObrazu::Zapnuty => "zapnutý",
+                    StavObrazu::Cierny if k.cierny_cez_buffer() =>
+                        "čierny (malý čierny obraz zväčšený 5× – ovládač nedovolil vypnúť rovinu)",
+                    StavObrazu::Cierny => "čierny – z pamäte sa nečíta nič, signál HDMI beží",
+                    StavObrazu::Vypnuty => "vypnutý – stojí kódovač obrazu aj vysielač HDMI",
+                }
+            )),
+            Ok(()) => {}
+            Err(e) => hlas(&format!("obraz: zmena stavu sa nepodarila: {e}")),
+        }
+    }
+
+    /// Popis pre riadok Chlad a záznam.
+    fn popis(&self) -> String {
+        match &self.kms_nastavenie {
+            Some((r, k)) if k.sirka < r.sirka as u32 => {
+                format!("obraz {} · {} b · kreslí {}×{}", r.popis(), k.bitov, k.sirka, k.vyska)
+            }
+            Some((r, k)) => format!("obraz {} · {} b", r.popis(), k.bitov),
+            None => format!("obraz {}×{} (obyčajná obrazovka)", self.sirka, self.vyska),
+        }
+    }
+
+    fn zapis(&mut self, posun: u64, bajty: &[u8]) -> bool {
+        match &mut self.vystup {
+            Vystup::Fb(f) => f.write_at(bajty, posun).is_ok(),
+            Vystup::Kms(k) => match k.pamat() {
+                Some((pamat, ..)) => {
+                    let od = posun as usize;
+                    match pamat.get_mut(od..od + bajty.len()) {
+                        Some(ciel) => {
+                            ciel.copy_from_slice(bajty);
+                            true
+                        }
+                        None => false,
+                    }
+                }
+                None => false,
+            },
+        }
     }
 
     /// Zapíše plátno; vráti počet zapísaných riadkov.
@@ -230,7 +432,8 @@ impl Displej {
                 continue;
             }
             self.format.preved(riadok, &mut bajty);
-            if self.fb.write_at(&bajty, self.zaciatok + y as u64 * self.riadok_bajtov).is_ok() {
+            let posun = self.zaciatok + y as u64 * self.riadok_bajtov;
+            if self.zapis(posun, &bajty) {
                 zapisane += 1;
             }
         }
@@ -240,24 +443,54 @@ impl Displej {
 
     /// Zapíše na obrazovku len obdĺžnik z posledného plátna (R109 – hodiny).
     fn ukaz_obdlznik(&mut self, x: usize, y: usize, w: usize, v: usize) {
-        let Some(p) = self.predosle.as_ref() else { return };
-        if x >= self.sirka {
-            return;
+        let Some(p) = self.predosle.take() else { return };
+        if x < self.sirka {
+            let mut bajty = Vec::with_capacity(w * self.format.bajtov);
+            for yy in y..(y + v).min(self.vyska) {
+                let od = yy * self.sirka + x;
+                let riadok = &p.body[od..od + w.min(self.sirka - x)];
+                self.format.preved(riadok, &mut bajty);
+                let posun = self.zaciatok + yy as u64 * self.riadok_bajtov + (x * self.format.bajtov) as u64;
+                self.zapis(posun, &bajty);
+            }
         }
-        let mut bajty = Vec::with_capacity(w * self.format.bajtov);
-        for yy in y..(y + v).min(self.vyska) {
-            let od = yy * self.sirka + x;
-            let riadok = &p.body[od..od + w.min(self.sirka - x)];
-            self.format.preved(riadok, &mut bajty);
-            let _ = self.fb.write_at(
-                &bajty,
-                self.zaciatok + yy as u64 * self.riadok_bajtov + (x * self.format.bajtov) as u64,
-            );
-        }
+        self.predosle = Some(p);
     }
 }
 
-/// Nastavenie zariadenia zo súboru SKLENIK.TXT na karte – číta sa priamo z disku, len na čítanie.
+/// Otvorí obrazovku: na TV krabičke vlastný ovládač KMS (chladný obraz), inak a pri chybe `/dev/fb0`.
+fn otvor_displej(chlad: bool, ciel: Ciel, ostre: bool) -> Option<Displej> {
+    if chlad && let Some(d) = Displej::otvor_kms(ciel, ostre) {
+        return Some(d);
+    }
+    Displej::otvor()
+}
+
+/// Vstupné zariadenia (klávesnica, myš, diaľkový ovládač) – stlačenie prebudí obraz (R132).
+struct Vstupy {
+    subory: Vec<fs::File>,
+}
+
+impl Vstupy {
+    fn otvor() -> Vstupy {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut subory = Vec::new();
+        for z in fs::read_dir("/dev/input").into_iter().flatten().flatten() {
+            if z.file_name().to_string_lossy().starts_with("event")
+                && let Ok(f) = fs::OpenOptions::new().read(true).custom_flags(0o4000).open(z.path())
+            {
+                subory.push(f);
+            }
+        }
+        Vstupy { subory }
+    }
+
+    fn fds(&self) -> Vec<i32> {
+        use std::os::fd::AsRawFd;
+        self.subory.iter().map(|f| f.as_raw_fd()).collect()
+    }
+}
+
 fn nacitaj_nastavenie(supis: &Supis) -> Option<(String, NastavenieZariadenia)> {
     for u in &supis.ulozisko {
         let cesta = format!("/dev/{}", u.meno);
@@ -522,7 +755,14 @@ pub fn spusti() {
     let predpona_merania = samomeranie::predpona(&model, "", zaznam::seriove_cislo().as_deref());
     let mut vytazenie_teraz: Option<f64> = None;
     let pismo = Pismo::stonka();
-    let mut displej = if len_sledovanie { None } else { Displej::otvor() };
+    // R132–R135: správca chladu na TV krabičkách – vlastný ovládač obrazu, USB, sieť, jadrá, tepelný pokus
+    let tv = je_tv_krabicka(&model) && pid1 && !skuska;
+    let mut displej = if len_sledovanie {
+        None
+    } else {
+        otvor_displej(tv, ciel_obrazu(&nastavenie), ostry_obraz(&nastavenie))
+    };
+    let mut obraz_teraz = displej.as_ref().filter(|d| d.je_kms()).map(|_| ciel_obrazu(&nastavenie));
     let profil = Profil::pre_model(&model);
     let mut hw = Sysfs::najdi();
     let mut regulator = Regulator::novy(urovne(&hw.takty(), hw.jadier()), profil);
@@ -617,6 +857,20 @@ pub fn spusti() {
     }
     let mut slepy_hlaseny = false;
     let mut eee = SledovanieEee::nove(&supis);
+    let mut vstupy = Vstupy::otvor();
+    let mut posledna_aktivita = Instant::now();
+    let mut alr = SietPodlaPotreby::nova();
+    let mut alr_vzorka: Option<(String, u64, u64)> = None;
+    let mut alr_prepnuti = 0u32;
+    let mut periferie_teraz: Option<bool> = None;
+    let mut rusene = [false; chlad::FAZY.len()];
+    let mut usb_spanok_od: Option<(u64, u64)> = None;
+    let mut usb_nastavene: Vec<String> = Vec::new();
+    let mut obrazovka_zmenena = false;
+    let mut pokus = false;
+    let mut faza_teraz: Option<usize> = None;
+    let mut zobrazeny_chlad: Option<obrazovka::Chlad> = None;
+    let mut prekreslit = false;
     let mut vytazenie = Vytazenie::nove();
     let mut kmsg = Hlasenia::otvor(&model);
     kmsg.citaj();
@@ -643,7 +897,9 @@ pub fn spusti() {
             let stav_okolia = okolie.stav();
             regulator.nastav_predpoved(stav_okolia.ustalena);
             // R126: horúce okolie – šetrí sa aj nečinnosť (raz za beh; nečinný príkon sa zmení → prepočet)
-            if pid1 && !skuska && !uspora && stav_okolia.prostredie.horuce() {
+            // počas tepelného pokusu sa nemení nič okrem fáz (R134 – porovnanie musí byť čisté)
+            let pokus_bezi = pokus && faza_teraz.is_some();
+            if pid1 && !skuska && !uspora && !pokus_bezi && stav_okolia.prostredie.horuce() {
                 uspora = true;
                 regulator.nastav_usporu(true);
                 hlas(&format!(
@@ -651,8 +907,11 @@ pub fn spusti() {
                     stav_okolia.okolie.map_or("?".into(), |o| format!("≈ {o:.0} °C")),
                     stav_okolia.prostredie.slovo()
                 ));
-                for r in
-                    supis.siet.iter().filter(|r| !r.bezdrotove && r.rychlost_mbs.is_some_and(|v| v >= 1000))
+                // TV krabička má sieť podľa potreby (R133) – rýchlosť riadi tá
+                for r in supis
+                    .siet
+                    .iter()
+                    .filter(|r| !tv && !r.bezdrotove && r.rychlost_mbs.is_some_and(|v| v >= 1000))
                 {
                     match sys::ethernet_bez_gigabitu(&r.meno) {
                         Ok(true) => {
@@ -685,6 +944,36 @@ pub fn spusti() {
             }
             if !len_sledovanie {
                 hw.uplatni(&uroven);
+                // R133: sieť podľa potreby – prenos za posledný krok rozhodne o gigabite
+                if tv
+                    && periferie_teraz == Some(true)
+                    && let Some(r) = supis.siet.iter().find(|r| !r.bezdrotove && r.spojenie == Some(true))
+                {
+                    let cesta = format!("/sys/class/net/{}/statistics", r.meno);
+                    let bajty = |f: &str| citaj(format!("{cesta}/{f}")).and_then(|v| v.parse::<u64>().ok());
+                    if let (Some(rx), Some(tx)) = (bajty("rx_bytes"), bajty("tx_bytes")) {
+                        if let Some((_, rx0, tx0)) = alr_vzorka.as_ref().filter(|v| v.0 == r.meno) {
+                            let bajtov = rx.saturating_sub(*rx0).max(tx.saturating_sub(*tx0));
+                            let mbit = bajtov as f64 * 8.0 / dt / 1e6;
+                            if let Some(g) = alr.krok(dt, mbit) {
+                                match sys::ethernet_gigabit(&r.meno, g) {
+                                    Ok(_) => {
+                                        alr_prepnuti += 1;
+                                        hlas(&format!(
+                                            "sieť {}: {} (prenos {mbit:.0} Mb/s) – sieť podľa potreby",
+                                            r.meno,
+                                            if g { "gigabit zapnutý" } else { "späť na 100 Mb/s" }
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        hlas(&format!("sieť {}: zmena rýchlosti sa nepodarila: {e}", r.meno))
+                                    }
+                                }
+                            }
+                        }
+                        alr_vzorka = Some((r.meno.clone(), rx, tx));
+                    }
+                }
                 if let Some(t) = teplota {
                     // R129: v horúcom okolí sa ventilátor zapína o 5 °C skôr
                     hw.ventiluj(if stav_okolia.prostredie.horuce() { t + 5.0 } else { t }, profil);
@@ -745,11 +1034,33 @@ pub fn spusti() {
                 }
                 // obrazovka sa môže objaviť až po štarte (ovládač grafiky Odroidu) alebo zmeniť rozlíšenie
                 if !len_sledovanie && novy.obrazovky != supis.obrazovky {
-                    displej = Displej::otvor();
+                    // zhasnutý obraz: televízor v pohotovosti môže hlásiť odpojenie – znova sa otvorí až po prebudení
+                    if displej.as_ref().is_some_and(|d| d.je_kms() && d.stav_obrazu() != StavObrazu::Zapnuty)
+                    {
+                        obrazovka_zmenena = true;
+                    } else {
+                        // starú kartu treba zatvoriť skôr – vlastníkom obrazu (DRM master) je len prvý otvárajúci
+                        drop(displej.take());
+                        displej = otvor_displej(tv, ciel_obrazu(&nastavenie), ostry_obraz(&nastavenie));
+                        obraz_teraz =
+                            displej.as_ref().filter(|d| d.je_kms()).map(|_| ciel_obrazu(&nastavenie));
+                        prekreslit = true;
+                    }
+                }
+                // nové vstupné zariadenie sa sleduje hneď; pripojenie zariadenia je činnosť človeka
+                if novy.vstupy != supis.vstupy {
+                    vstupy = Vstupy::otvor();
+                }
+                if novy.usb != supis.usb || novy.vstupy != supis.vstupy {
+                    posledna_aktivita = Instant::now();
                 }
                 hlas(&novy.riadok());
                 supis = novy;
                 podpatie_bolo |= supis.podpatie == Some(true);
+                // nový USB kľúč tiež spí medzi zápismi (R133)
+                if tv && periferie_teraz == Some(true) {
+                    usb_nastavene = chlad::nastav_spanok_usb(Path::new("/"), true, USB_SPANOK_MS);
+                }
                 eee.obnov(&supis);
                 // karta sa môže objaviť až chvíľu po štarte
                 if nastavenie.is_none() {
@@ -782,6 +1093,120 @@ pub fn spusti() {
             }
         }
 
+        // R132–R135: správca chladu – obraz, periférie a fázy tepelného pokusu
+        let pokus_s = if pokus { merania.as_ref().and_then(|m| m.uplynulo_s()) } else { None };
+        if tv {
+            let n = nastavenie.as_ref().map(|(_, n)| n);
+            let zh = Zhasinanie::pre_tv(n.and_then(|n| n.zhasni_min), n.and_then(|n| n.vypni_min));
+            let necinnost = posledna_aktivita.elapsed().as_secs();
+            let r = chlad::rozhodni(pokus_s, necinnost, ciel_obrazu(&nastavenie), &zh);
+            match r.faza {
+                Some(f) => {
+                    rusene[f] |= r.rusi;
+                    if faza_teraz != Some(f) {
+                        faza_teraz = Some(f);
+                        hlas(&format!(
+                            "tepelný pokus: fáza {}/{} – {}",
+                            f + 1,
+                            chlad::FAZY.len(),
+                            chlad::FAZY[f].nazov
+                        ));
+                    }
+                }
+                None => {
+                    if faza_teraz.take().is_some() {
+                        hlas("tepelný pokus: hotový – ďalej bežný chladný režim");
+                    }
+                }
+            }
+            // obraz sa po prebudení znova otvorí, ak sa medzitým zmenil televízor
+            if r.stav == StavObrazu::Zapnuty && obrazovka_zmenena {
+                obrazovka_zmenena = false;
+                drop(displej.take());
+                displej = otvor_displej(tv, r.obraz, ostry_obraz(&nastavenie));
+                obraz_teraz = displej.as_ref().filter(|d| d.je_kms()).map(|_| r.obraz);
+                prekreslit = true;
+            }
+            if let Some(d) = displej.as_mut().filter(|d| d.je_kms()) {
+                if obraz_teraz != Some(r.obraz) {
+                    if d.prestav(r.obraz, ostry_obraz(&nastavenie)) {
+                        prekreslit = true;
+                    }
+                    obraz_teraz = Some(r.obraz);
+                }
+                d.nastav_stav_obrazu(r.stav);
+            }
+            if periferie_teraz != Some(r.periferie) {
+                let p = r.periferie;
+                usb_nastavene = chlad::nastav_spanok_usb(Path::new("/"), p, USB_SPANOK_MS);
+                regulator.nastav_parkovanie(p);
+                alr = SietPodlaPotreby::nova();
+                alr_vzorka = None;
+                let mut siete = Vec::new();
+                for rz in supis.siet.iter().filter(|x| !x.bezdrotove) {
+                    if let Ok(true) = sys::ethernet_gigabit(&rz.meno, !p) {
+                        siete.push(rz.meno.clone());
+                    }
+                }
+                usb_spanok_od = if p { chlad::cas_spanku_usb(Path::new("/")) } else { None };
+                hlas(&format!(
+                    "periférie {}: USB úložisko {} ({}) · jadrá v pokoji {} · sieť {}{}",
+                    if p { "úsporné" } else { "pôvodné" },
+                    if p { "spí medzi zápismi" } else { "bdie" },
+                    if usb_nastavene.is_empty() { "žiadne".to_string() } else { usb_nastavene.join(", ") },
+                    if p { "zaparkované" } else { "pracujú" },
+                    if p { "100 Mb/s, gigabit podľa potreby" } else { "s gigabitom" },
+                    if siete.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (zmenené: {})", siete.join(", "))
+                    }
+                ));
+                periferie_teraz = Some(p);
+            }
+        }
+        let chlad_stav = tv.then(|| {
+            let mut casti = Vec::new();
+            if let Some(d) = displej.as_ref() {
+                casti.push(d.popis());
+            }
+            if periferie_teraz == Some(true) {
+                if let (Some(od), Some(teraz)) = (usb_spanok_od, chlad::cas_spanku_usb(Path::new("/"))) {
+                    let (spi, bdie) = (teraz.0.saturating_sub(od.0), teraz.1.saturating_sub(od.1));
+                    if spi + bdie > 10_000 {
+                        casti.push(format!(
+                            "USB kľúč spí {:.0} %",
+                            (spi as f64 / (spi + bdie) as f64 * 10.0).round() * 10.0
+                        ));
+                    }
+                }
+                casti.push(format!("sieť {} podľa potreby", if alr.gigabit { "1 Gb/s" } else { "100 Mb/s" }));
+                if regulator.zaparkovane() {
+                    casti.push("jadrá zaparkované".into());
+                }
+            }
+            if faza_teraz.is_none() {
+                let n = nastavenie.as_ref().map(|(_, n)| n);
+                let zh = Zhasinanie::pre_tv(n.and_then(|n| n.zhasni_min), n.and_then(|n| n.vypni_min));
+                if let Some(c) = zh.cierny_po_s.or(zh.vypnuty_po_s) {
+                    casti.push(format!("zhasne po {} min – prebudí ho ovládač", c / 60));
+                }
+            }
+            obrazovka::Chlad {
+                text: casti.join(" · "),
+                pokus: faza_teraz.map(|f| {
+                    let koniec = merania.as_ref().and_then(|m| m.zaciatok_s()).unwrap_or(0)
+                        + (f as u64 + 1) * chlad::FAZA_S;
+                    format!(
+                        "pokus {}/{} {} – do {}",
+                        f + 1,
+                        chlad::FAZY.len(),
+                        chlad::FAZY[f].nazov,
+                        samomeranie::cas(koniec)
+                    )
+                }),
+            }
+        });
         let stav = (teplota.map_or(-1000, |t| (t * 2.0).round() as i64), regulator.index());
         let mut meranie_karty = meranie.lock().map(|g| g.clone()).unwrap_or(MeranieKarty::Caka);
         if let MeranieKarty::Bezi(mb) = meranie_karty {
@@ -808,6 +1233,18 @@ pub fn spusti() {
         // R122: samomeranie začne, keď je systém pripravený – skúška pamäte a meranie karty (ktoré procesor
         // na chvíľu zaťažia) sú hotové, takže meranie teploty neovplyvnia
         let vypnute = nastavenie.as_ref().is_some_and(|(_, n)| n.meranie == Some(false));
+        // R134: na TV krabičke s vlastným ovládačom obrazu sa namiesto 30-minútového merania robí tepelný
+        // pokus (6 fáz po 20 min); vypne sa nastavením `pokus=nie`
+        if tv
+            && !pokus
+            && !vypnute
+            && merania.as_ref().is_some_and(|m| m.zaciatok_s().is_none())
+            && nastavenie.as_ref().and_then(|(_, n)| n.pokus) != Some(false)
+            && displej.as_ref().is_some_and(|d| d.je_kms())
+        {
+            merania = Some(zaznam::Riadenie::s_milnikmi(chlad::milniky_pokusu()));
+            pokus = true;
+        }
         let merania_teraz = merania.as_mut().filter(|_| !vypnute);
         if let Some(m) = merania_teraz {
             if let Some(sprava) = m.dokonci() {
@@ -841,7 +1278,13 @@ pub fn spusti() {
         let novy_cas = Some(bezi_s) != zobrazeny_cas;
         let n = nastavenie.as_ref().map(|(_, n)| n);
         let jazyk = Jazyk::z_kodu(n.and_then(|n| n.jazyk.as_deref()));
-        let vsetko = zobrazene != Some(stav) || zmena_periferii || nove_meranie || nove_ine;
+        let nove_chlad = zobrazeny_chlad != chlad_stav;
+        let vsetko = zobrazene != Some(stav)
+            || zmena_periferii
+            || nove_meranie
+            || nove_ine
+            || nove_chlad
+            || prekreslit;
         let postav_stav = || Stav {
             model: &model,
             meno: n.and_then(|n| n.meno.as_deref()),
@@ -866,6 +1309,7 @@ pub fn spusti() {
             siet_chyby: &ine.3,
             samomeranie: ine.4.as_ref(),
             okolie: (!hw.snimace.is_empty()).then_some(&stav_okolia),
+            chlad: chlad_stav.as_ref(),
             uspora,
         };
         // R122: záznam samomerania – hlavná slučka len odčíta, čo už má; snímku stlačí a zapíše vlákno s
@@ -887,7 +1331,7 @@ pub fn spusti() {
                             (Some(p), o)
                         }
                     };
-                    let posledna = minuta == *samomeranie::MILNIKY_MIN.last().unwrap_or(&30);
+                    let posledna = minuta == *m.milniky().last().unwrap_or(&30);
                     let mut text = format!("{}{NL}", "═".repeat(66));
                     text +=
                         &format!("SKLENÍK – samomeranie č. {ZNACKA_PORADIA} · záznam {minuta}. minúty{NL}");
@@ -920,6 +1364,74 @@ pub fn spusti() {
                         vytazenie_teraz.map_or("–".into(), |v| format!("{:.0} %", v * 100.0)),
                     );
                     text += &format!("  {}{NL}", rozpoznanie(&model, &poda, profil));
+                    if tv {
+                        text += &nadpis("SPRÁVCA CHLADU (R132–R135)");
+                        let d = displej.as_ref();
+                        text += &format!(
+                            "  {} · stav: {} · vlastný ovládač KMS: {}{NL}",
+                            d.map_or("bez obrazovky".into(), |d| d.popis()),
+                            slovo_stavu(d.map_or(StavObrazu::Zapnuty, |d| d.stav_obrazu())),
+                            if d.is_some_and(|d| d.je_kms()) { "áno" } else { "nie – /dev/fb0" }
+                        );
+                        let spanok = match (usb_spanok_od, chlad::cas_spanku_usb(Path::new("/"))) {
+                            (Some(od), Some(t)) if periferie_teraz == Some(true) => {
+                                let (spi, bdie) = (t.0.saturating_sub(od.0), t.1.saturating_sub(od.1));
+                                format!(
+                                    "spí {:.0} % času ({} s spánku, {} s činnosti)",
+                                    spi as f64 * 100.0 / (spi + bdie).max(1) as f64,
+                                    spi / 1000,
+                                    bdie / 1000
+                                )
+                            }
+                            _ => "bdie (pôvodne)".into(),
+                        };
+                        text += &format!(
+                            "  USB úložisko ({}): {spanok}{NL}",
+                            if usb_nastavene.is_empty() {
+                                "žiadne".into()
+                            } else {
+                                usb_nastavene.join(", ")
+                            }
+                        );
+                        text += &format!(
+                            "  sieť: {} · prepnutí {alr_prepnuti} · jadrá: {}{NL}",
+                            if periferie_teraz == Some(true) {
+                                format!(
+                                    "podľa potreby – teraz {}",
+                                    if alr.gigabit { "1 Gb/s" } else { "100 Mb/s" }
+                                )
+                            } else {
+                                "s gigabitom (pôvodne)".into()
+                            },
+                            if regulator.zaparkovane() { "zaparkované (1 jadro)" } else { "pracujú" }
+                        );
+                        if pokus {
+                            let r: Vec<String> = (0..chlad::FAZY.len())
+                                .filter(|&i| rusene[i])
+                                .map(|i| (i + 1).to_string())
+                                .collect();
+                            text += &format!(
+                                "  tepelný pokus: {} · rušené fázy (ovládač): {}{NL}",
+                                match faza_teraz {
+                                    Some(f) if minuta > 0 => format!(
+                                        "koniec fázy {}, začína {}/{} – {}",
+                                        f,
+                                        f + 1,
+                                        chlad::FAZY.len(),
+                                        chlad::FAZY[f].nazov
+                                    ),
+                                    Some(f) => format!(
+                                        "fáza {}/{} – {}",
+                                        f + 1,
+                                        chlad::FAZY.len(),
+                                        chlad::FAZY[f].nazov
+                                    ),
+                                    None => "hotový".into(),
+                                },
+                                if r.is_empty() { "žiadne".into() } else { r.join(", ") }
+                            );
+                        }
+                    }
                     text += &format!("  {}{NL}", popis_okolia(&stav_okolia, uspora));
                     text += &format!("  {}{NL}  SÚPIS – {}{NL}", poda.riadok(), supis.riadok());
                     let mut dovetok = nadpis(if minuta == 0 {
@@ -939,7 +1451,13 @@ pub fn spusti() {
                         dovetok += &nadpis("KRIVKA TEPLOTY (každých 30 s)");
                         dovetok += &samomeranie::tabulka(m.krivka());
                         dovetok += &nadpis("SÚHRN MERANIA");
-                        dovetok += &samomeranie::suhrn(m.krivka());
+                        dovetok += &samomeranie::suhrn(m.krivka(), m.milniky());
+                        if pokus {
+                            dovetok += &nadpis("TEPELNÝ POKUS (R134)");
+                            let krivka: Vec<(u64, f64)> =
+                                m.krivka().iter().filter_map(|b| Some((b.s, b.teplota?))).collect();
+                            dovetok += &chlad::vysledok_pokusu(&krivka, &rusene, NL);
+                        }
                     }
                     zaznam::Priprava {
                         text,
@@ -1003,6 +1521,8 @@ pub fn spusti() {
             zobrazeny_cas = Some(bezi_s);
             zobrazene_meranie = meranie_karty.clone();
             zobrazene_ine = Some(ine);
+            zobrazeny_chlad = chlad_stav.clone();
+            prekreslit = false;
         }
         krokov += 1;
         // R122: v skúške sa počká aj na prvý záznam samomerania (zápis na kartu emulátora)
@@ -1035,7 +1555,11 @@ pub fn spusti() {
         let cakat = dalsi_krok.saturating_duration_since(Instant::now());
         udalost = match &udalosti {
             Some(u) => {
-                let bola = u.cakaj(cakat.as_millis() as u64);
+                let (bola, vstup) = u.cakaj_so_vstupmi(cakat.as_millis() as u64, &vstupy.fds());
+                // R132: stlačenie na ovládači, klávesnici alebo pohyb myši prebudí obraz
+                if vstup {
+                    posledna_aktivita = Instant::now();
+                }
                 if bola {
                     // pripojenie zariadenia je dávka udalostí – počká sa, kým utíchne (najviac 1 s)
                     let t = Instant::now();

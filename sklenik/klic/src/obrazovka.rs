@@ -109,6 +109,16 @@ pub struct Stav<'a> {
     pub okolie: Option<&'a crate::okolie::StavOkolia>,
     /// Úsporný režim pre horúce okolie (R126).
     pub uspora: bool,
+    /// Správca chladu TV krabičky (R132–R135) – `None` na ostatných doskách.
+    pub chlad: Option<&'a Chlad>,
+}
+
+/// Riadok „Chlad“: čo správca chladu práve robí a priebeh tepelného pokusu.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Chlad {
+    pub text: String,
+    /// Tepelný pokus (R134): fáza a čas – zelenou.
+    pub pokus: Option<String>,
 }
 
 /// Samomeranie (R122) – čo ukazuje riadok „Meranie“.
@@ -119,7 +129,7 @@ pub enum Samomeranie {
     /// Beží: záznamy (minúta, podaril sa zápis?), ďalší záznam pri `pri_s` sekundách hodín „beží“
     /// a poradové číslo merania (známe po prvom zápise). Text sa mení len pri zázname – žiadne prekresľovanie
     /// celej obrazovky každú minútu, ktoré by meranie teploty ovplyvnilo.
-    Bezi { zaznamy: Vec<(u32, bool)>, pri_s: u64, poradie: Option<u32> },
+    Bezi { zaznamy: Vec<(u32, bool)>, pri_s: u64, poradie: Option<u32>, milniky: Vec<u32> },
     /// Všetko je zapísané: poradové číslo a nosič (napr. „SD karta“).
     Hotove { poradie: u32, nosic: String },
     /// Meranie skončilo, ale zápis sa nepodaril – skúša sa znova; dôvod.
@@ -331,6 +341,7 @@ pub fn nakresli_s_opisom(
         j.t("Jadro", "Jádro", "Kernel"),
         j.t("Meranie", "Měření", "Self-test"),
         j.t("Okolie", "Okolí", "Ambient"),
+        j.t("Chlad", "Chlad", "Cooling"),
     ];
     let stlpec = m + popisy.iter().map(|t| pismo.sirka(t, v, h)).fold(0.0, f32::max) + 1.5 * v;
     // riadkov je podľa počtu sietí a úložísk – rozostup sa prispôsobí, aby sa zmestili všetky
@@ -340,7 +351,8 @@ pub fn nakresli_s_opisom(
         + s.supis.ulozisko.len().clamp(1, 2)
         + hlasenia
         + usize::from(s.samomeranie.is_some())
-        + usize::from(s.okolie.is_some());
+        + usize::from(s.okolie.is_some())
+        + usize::from(s.chlad.is_some());
     // posledný riadok musí ostať nad pätou (tri riadky malého písma)
     let spodok = vyska as f32 - mv - 4.0 * v;
     let volne = spodok - (y + 0.4 * v);
@@ -394,6 +406,11 @@ pub fn nakresli_s_opisom(
         let casti = riadok_okolia(o, s.uspora, j);
         let casti: Vec<(&str, Farba)> = casti.iter().map(|(t, f)| (t.as_str(), *f)).collect();
         riadok(&mut p, &mut y, popisy[12], &casti);
+    }
+    // R132–R135: správca chladu TV krabičky
+    if let Some(c) = s.chlad {
+        let pokus = c.pokus.as_deref().map(|t| format!("· {t}")).unwrap_or_default();
+        riadok(&mut p, &mut y, popisy[13], &[(&c.text, TEXT), (&pokus, ZELENA)]);
     }
     // R122: samomeranie hneď pod teplotou – je to to, na čo sa pri skúške čaká
     if let Some(m) = s.samomeranie {
@@ -533,6 +550,13 @@ pub fn nakresli_s_opisom(
     let znak = |b: bool| if b { ("✓", ZELENA) } else { ("–", TLMENY) };
     let (k, mys, dotyk) =
         (znak(ma(DruhVstupu::Klavesnica)), znak(ma(DruhVstupu::Mys)), znak(ma(DruhVstupu::Dotyk)));
+    // diaľkový ovládač (R132) – na TV krabičke namiesto dotyku (ten tam nebýva)
+    let ovladac = ma(DruhVstupu::Ovladac);
+    let (posledny, posledny_znak) = if ovladac {
+        (j.t("  ovládač", "  ovladač", "  remote"), znak(true))
+    } else {
+        (j.t("  dotyk", "  dotyk", "  touch"), dotyk)
+    };
     riadok(
         &mut p,
         &mut y,
@@ -542,8 +566,8 @@ pub fn nakresli_s_opisom(
             k,
             (j.t("  myš", "  myš", "  mouse"), TEXT),
             mys,
-            (j.t("  dotyk", "  dotyk", "  touch"), TEXT),
-            dotyk,
+            (posledny, TEXT),
+            posledny_znak,
         ],
     );
 
@@ -820,12 +844,12 @@ fn riadok_merania(m: &Samomeranie, j: Jazyk) -> Vec<(String, Farba)> {
             .into(),
             TLMENY,
         )],
-        Samomeranie::Bezi { zaznamy, pri_s, poradie } => {
+        Samomeranie::Bezi { zaznamy, pri_s, poradie, milniky } => {
             let mut v = Vec::new();
             if let Some(c) = poradie {
                 v.push((format!("č. {c:02} ·"), TEXT));
             }
-            for &minuta in &crate::samomeranie::MILNIKY_MIN {
+            for &minuta in milniky {
                 let (znak, farba) = match zaznamy.iter().find(|z| z.0 == minuta) {
                     Some((_, true)) => ("✓", ZELENA),
                     Some((_, false)) => ("✗", JANTAROVA),
@@ -972,6 +996,7 @@ mod skusky {
             samomeranie: None,
             okolie: None,
             uspora: false,
+            chlad: None,
             vykon: 1.0,
             podpatie: Some(false),
             podpatie_bolo: false,
@@ -1090,7 +1115,12 @@ mod skusky {
         assert!(opis.iter().any(|r| r.contains("Pamäť") && r.contains("overená ✓")), "{opis:?}");
         assert!(!opis.iter().any(|r| r.contains("Meranie")));
         assert!(opis.last().is_some_and(|r| r.contains("kedykoľvek")));
-        let bezi = Samomeranie::Bezi { zaznamy: vec![(0, true), (5, false)], pri_s: 725, poradie: Some(3) };
+        let bezi = Samomeranie::Bezi {
+            zaznamy: vec![(0, true), (5, false)],
+            pri_s: 725,
+            poradie: Some(3),
+            milniky: crate::samomeranie::MILNIKY_MIN.to_vec(),
+        };
         st.samomeranie = Some(&bezi);
         let (p, opis) = nakresli_s_opisom(&pismo, 1920, 1080, &st, Jazyk::Sk);
         let r = opis.iter().find(|r| r.contains("Meranie")).cloned().unwrap_or_default();
@@ -1117,6 +1147,23 @@ mod skusky {
                 assert!(o.iter().any(|r| r.contains("USB")) && o.len() >= 16, "{o:?}");
                 assert_eq!(p, nakresli(&pismo, w, h, &st, j));
             }
+        }
+    }
+
+    #[test]
+    fn chlad_na_obrazovke() {
+        let pismo = Pismo::stonka();
+        let s = supis();
+        let mut st = stav(&s, Some(52.0));
+        let c = Chlad {
+            text: "obraz 1920×1080 @ 24 Hz · 16 b · kreslí 960×540 · USB kľúč spí 93 %".into(),
+            pokus: Some("pokus 3/6 chladný obraz (12/20 min)".into()),
+        };
+        st.chlad = Some(&c);
+        for (w, h) in [(960, 540), (1920, 1080), (640, 480)] {
+            let (_, opis) = nakresli_s_opisom(&pismo, w, h, &st, Jazyk::Sk);
+            let r = opis.iter().find(|r| r.contains("Chlad")).cloned().unwrap_or_default();
+            assert!(r.contains("24 Hz") && r.contains("pokus 3/6"), "{r}");
         }
     }
 
