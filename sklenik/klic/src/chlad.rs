@@ -562,6 +562,8 @@ mod skusky {
         assert!(r.contains("fáza 1 vyšla o"), "{r}");
     }
 
+    // mená v /sys obsahujú dvojbodky (1-2:1.0) – vo Windows nemožné, skúška len na unixových systémoch
+    #[cfg(unix)]
     #[test]
     fn usb_ulozisko_spi_a_meria_sa_spanok() {
         let k = std::env::temp_dir().join(format!("sklenik-usb-{}", std::process::id()));
