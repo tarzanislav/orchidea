@@ -165,6 +165,9 @@ jobs:
           # R166: vlastné ovládače SKLENÍKA priamo v jadre (takt obvodu obrazu VPU podľa potreby)
           cp ../sklenik/jadro-ovladace/sklenik_vpu.c drivers/soc/amlogic/
           echo 'obj-y += sklenik_vpu.o' >> drivers/soc/amlogic/Makefile
+          # R174: vlastný kodek HEVC v jadre meson-vdec (formát HEVC pre SM1, prívod toku podľa voľných snímok)
+          cp ../sklenik/jadro-ovladace/sklenik_hevc.c ../sklenik/jadro-ovladace/sklenik_hevc.h drivers/staging/media/meson/vdec/
+          patch -p1 --forward < ../sklenik/jadro-ovladace/sklenik-hevc.patch
           # R165: firmvér dekodéra videa (mikrokód jeho procesora AMRISC z linux-firmware, LICENSE.amlogic_vdec) ide
           # priamo do jadra (CONFIG_EXTRA_FIRMWARE) – overený odtlačkom SHA-256, aby sa nič nezmenilo potichu
           lf="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain"
@@ -189,6 +192,7 @@ jobs:
           make -s -j"$(nproc)" Image $(for d in $dtb; do printf 'amlogic/%s.dtb ' "$d"; done)
           grep -q sklenik_vpu_probe System.map || { echo "ovládač sklenik_vpu chýba v jadre"; exit 1; }
           grep -q " vdec_probe$" System.map || { echo "dekodér videa meson-vdec chýba v jadre"; exit 1; }
+          grep -q " sklenik_hevc_ops$" System.map || { echo "vlastný kodek HEVC chýba v jadre"; exit 1; }
           for f in g12a_h264 sm1_vp9_mmu gxl_mpeg12 sm1_hevc_mmu; do
             grep -aq "meson/vdec/$f.bin" arch/arm64/boot/Image || { echo "firmvér $f chýba v jadre"; exit 1; }
           done
@@ -561,12 +565,12 @@ jobs:
             fdtput -t s "$f" /soc/usb@ffe09000 dr_mode host
             echo "$f: GPU $(fdtget "$f" /soc/gpu@ffe40000 status), USB OTG $(fdtget "$f" /soc/usb@ffe09000/usb@ff400000 status), USB $(fdtget "$f" /soc/usb@ffe09000 dr_mode)"
             # R166: vlastný ovládač taktu VPU – takty z hlavného ovládača taktov (ID podľa dt-bindings g12a-clkc.h:
-            # VPU 116, VPU_0 112, VPU_1 115, VPU_0_SEL 110, VPU_1_SEL 113, FCLK_DIV3 3)
+            # VPU 116, VPU_0 112, VPU_1 115, VPU_0_SEL 110, VPU_1_SEL 113, FCLK_DIV3 3, FCLK_DIV4 4, FCLK_DIV5 5)
             ph=$(fdtget -t u "$f" /soc/bus@ff600000/bus@3c000/system-controller@0/clock-controller phandle)
             fdtput -c "$f" /sklenik-vpu
             fdtput -t s "$f" /sklenik-vpu compatible sklenik,vpu-takt
-            fdtput -t u "$f" /sklenik-vpu clocks $ph 116 $ph 112 $ph 115 $ph 110 $ph 113 $ph 3
-            fdtput -t s "$f" /sklenik-vpu clock-names vpu vpu_0 vpu_1 vpu_0_sel vpu_1_sel fclk_div3
+            fdtput -t u "$f" /sklenik-vpu clocks $ph 116 $ph 112 $ph 115 $ph 110 $ph 113 $ph 3 $ph 4 $ph 5
+            fdtput -t s "$f" /sklenik-vpu clock-names vpu vpu_0 vpu_1 vpu_0_sel vpu_1_sel fclk_div3 fclk_div4 fclk_div5
             echo "$f: takt VPU – $(fdtget "$f" /sklenik-vpu compatible), takty $(fdtget "$f" /sklenik-vpu clock-names)"
             # R168: jadro sa na teplotu pýta raz za 5 s namiesto každú sekundu (menej prebudení čipu); nad hranicou
             # pasívneho chladenia ostáva 100 ms – bezpečnosť sa nemení (čas ohrevu čipu je v minútach)

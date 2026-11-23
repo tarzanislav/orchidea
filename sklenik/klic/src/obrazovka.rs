@@ -1156,7 +1156,7 @@ mod skusky {
         let s = supis();
         let mut st = stav(&s, Some(52.0));
         let c = Chlad {
-            text: "obraz 1920×1080 @ 24 Hz · 16 b · kreslí 960×540 · USB kľúč spí 93 %".into(),
+            text: "obraz 1920×1080 · 24 Hz · 16 b · kreslí 960×540 · USB kľúč spí 93 %".into(),
             pokus: Some("pokus 3/6 chladný obraz (12/20 min)".into()),
         };
         st.chlad = Some(&c);

@@ -287,7 +287,7 @@ impl Rezim {
         } else {
             format!("{:.3}", self.obnova).replace('.', ",")
         };
-        format!("{}×{} @ {obnova} Hz", self.sirka, self.vyska)
+        format!("{}×{} · {obnova} Hz", self.sirka, self.vyska)
     }
 }
 
@@ -880,7 +880,7 @@ mod skusky {
                 ..ModeInfo::default()
             })
             .popis(),
-            "1920×1080 @ 24 Hz"
+            "1920×1080 · 24 Hz"
         );
     }
 }

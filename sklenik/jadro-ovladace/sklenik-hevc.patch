@@ -1,0 +1,62 @@
+diff --git a/drivers/staging/media/meson/vdec/Makefile b/drivers/staging/media/meson/vdec/Makefile
+index 6e726af84..7aaafd26b 100644
+--- a/drivers/staging/media/meson/vdec/Makefile
++++ b/drivers/staging/media/meson/vdec/Makefile
+@@ -4,5 +4,6 @@
+ meson-vdec-objs = esparser.o vdec.o vdec_helpers.o vdec_platform.o
+ meson-vdec-objs += vdec_1.o vdec_hevc.o
+ meson-vdec-objs += codec_mpeg12.o codec_h264.o codec_hevc_common.o codec_vp9.o
++meson-vdec-objs += sklenik_hevc.o
+ 
+ obj-$(CONFIG_VIDEO_MESON_VDEC) += meson-vdec.o
+diff --git a/drivers/staging/media/meson/vdec/esparser.c b/drivers/staging/media/meson/vdec/esparser.c
+index 4632346f0..e4d5b431d 100644
+--- a/drivers/staging/media/meson/vdec/esparser.c
++++ b/drivers/staging/media/meson/vdec/esparser.c
+@@ -308,7 +308,8 @@ esparser_queue(struct amvdec_session *sess, struct vb2_v4l2_buffer *vbuf)
+ 	 * they could pause when there is no capture buffer available and
+ 	 * resume on this notification.
+ 	 */
+-	if (sess->fmt_out->pixfmt == V4L2_PIX_FMT_VP9) {
++	if (sess->fmt_out->pixfmt == V4L2_PIX_FMT_VP9 ||
++	    sess->fmt_out->pixfmt == V4L2_PIX_FMT_HEVC) {
+ 		if (codec_ops->num_pending_bufs)
+ 			num_dst_bufs = codec_ops->num_pending_bufs(sess);
+ 
+diff --git a/drivers/staging/media/meson/vdec/vdec_platform.c b/drivers/staging/media/meson/vdec/vdec_platform.c
+index 66bb307db..7352e9f2a 100644
+--- a/drivers/staging/media/meson/vdec/vdec_platform.c
++++ b/drivers/staging/media/meson/vdec/vdec_platform.c
+@@ -12,6 +12,7 @@
+ #include "codec_mpeg12.h"
+ #include "codec_h264.h"
+ #include "codec_vp9.h"
++#include "sklenik_hevc.h"
+ 
+ static const struct amvdec_format vdec_formats_gxbb[] = {
+ 	{
+@@ -264,6 +265,19 @@ static const struct amvdec_format vdec_formats_sm1[] = {
+ 		.pixfmts_cap = { V4L2_PIX_FMT_NV12M, 0 },
+ 		.flags = V4L2_FMT_FLAG_COMPRESSED |
+ 			 V4L2_FMT_FLAG_DYN_RESOLUTION,
++	}, {
++		/* SKLENÍK (R174): vlastný kodek HEVC – sklenik_hevc.c */
++		.pixfmt = V4L2_PIX_FMT_HEVC,
++		.min_buffers = 4,
++		.max_buffers = 24,
++		.max_width = 3840,
++		.max_height = 2160,
++		.vdec_ops = &vdec_hevc_ops,
++		.codec_ops = &sklenik_hevc_ops,
++		.firmware_path = "meson/vdec/sm1_hevc_mmu.bin",
++		.pixfmts_cap = { V4L2_PIX_FMT_NV12M, 0 },
++		.flags = V4L2_FMT_FLAG_COMPRESSED |
++			 V4L2_FMT_FLAG_DYN_RESOLUTION,
+ 	}, {
+ 		.pixfmt = V4L2_PIX_FMT_MPEG1,
+ 		.min_buffers = 8,
+@@ -333,3 +347,4 @@ MODULE_FIRMWARE("meson/vdec/gxl_mpeg12.bin");
+ MODULE_FIRMWARE("meson/vdec/gxl_vp9.bin");
+ MODULE_FIRMWARE("meson/vdec/gxm_h264.bin");
+ MODULE_FIRMWARE("meson/vdec/sm1_vp9_mmu.bin");
++MODULE_FIRMWARE("meson/vdec/sm1_hevc_mmu.bin");

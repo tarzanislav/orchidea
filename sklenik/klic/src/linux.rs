@@ -394,6 +394,15 @@ impl Displej {
         }
     }
 
+    /// Zväčšuje obvod obrazu obraz (rovina menšia ako režim) – R175.
+    fn zvacsuje(&self, stav: StavObrazu) -> bool {
+        match (&self.vystup, &self.kms_nastavenie) {
+            (Vystup::Kms(k), _) if stav == StavObrazu::Cierny => k.cierny_cez_buffer(),
+            (_, Some((r, kr))) => stav == StavObrazu::Zapnuty && kr.sirka < r.sirka as u32,
+            _ => false,
+        }
+    }
+
     /// Popis pre riadok Chlad a záznam.
     fn popis(&self) -> String {
         match &self.kms_nastavenie {
@@ -539,22 +548,27 @@ fn spusti_skusku_videa(skusat: bool, riadky: Arc<Mutex<Vec<String>>>) {
                 pridaj("skúška vlastnými tokmi vypnutá (zapne ju riadok video=ano v SKLENIK.TXT)".into());
                 return;
             }
-            let snimky: Vec<video::Obraz> = (0..8).map(|n| video::vzor(320, 240, n)).collect();
-            for (f, meno, toky) in [
-                (v4l2::H264, "H.264", video::h264_pcm(&snimky)),
-                (v4l2::HEVC, "HEVC", video::hevc_pcm(&snimky)),
-            ] {
-                if !d.vie(f) {
-                    pridaj(format!("{meno}: dekodér tento formát nepozná"));
-                    continue;
-                }
-                pridaj(format!(
-                    "{meno}: skúška – {} snímok 320×240 (bloky PCM, presne známy obraz)",
-                    snimky.len()
-                ));
-                match v4l2::skus(&d.cesta, f, &toky, &snimky, Duration::from_secs(10)) {
-                    Ok(v) => pridaj(format!("{meno}: {}", v.popis(snimky.len()))),
-                    Err(e) => pridaj(format!("{meno}: chyba – {e}")),
+            // 320×240 a 720×576 (šírka nie je násobkom 32 – overí aj zarovnanie riadkov NV12)
+            for (sirka, vyska) in [(320, 240), (720, 576)] {
+                let snimky: Vec<video::Obraz> = (0..8).map(|n| video::vzor(sirka, vyska, n)).collect();
+                for (f, meno, toky) in [
+                    (v4l2::H264, "H.264", video::h264_pcm(&snimky)),
+                    (v4l2::HEVC, "HEVC", video::hevc_pcm(&snimky)),
+                ] {
+                    if !d.vie(f) {
+                        if sirka == 320 {
+                            pridaj(format!("{meno}: dekodér tento formát nepozná"));
+                        }
+                        continue;
+                    }
+                    pridaj(format!(
+                        "{meno} {sirka}×{vyska}: skúška – {} snímok (bloky PCM, presne známy obraz)",
+                        snimky.len()
+                    ));
+                    match v4l2::skus(&d.cesta, f, &toky, &snimky, Duration::from_secs(10)) {
+                        Ok(v) => pridaj(format!("{meno} {sirka}×{vyska}: {}", v.popis(snimky.len()))),
+                        Err(e) => pridaj(format!("{meno} {sirka}×{vyska}: chyba – {e}")),
+                    }
                 }
             }
         }
@@ -1370,7 +1384,11 @@ pub fn spusti() {
             }
             // R166: takt VPU – zvýšiť pred zapnutím/zmenou obrazu, znížiť až po nej
             let rezim_khz = displej.as_ref().and_then(|d| d.kms_nastavenie.map(|(rz, _)| rz.takt_khz));
-            let ciel_vpu = r.vpu_mhz.unwrap_or_else(|| chlad::takt_vpu(r.stav, rezim_khz));
+            // R175: zväčšovaný obraz (chladný 960×540, čierny cez malý buffer) potrebuje plný takt VPU – teraz
+            // aj po zmene (chladný obraz bez „ostrého“ sa kreslí zmenšený)
+            let zvacsuje = displej.as_ref().is_some_and(|d| d.zvacsuje(r.stav))
+                || (r.stav == StavObrazu::Zapnuty && r.obraz == Ciel::Chladny && !ostry_obraz(&nastavenie));
+            let ciel_vpu = r.vpu_mhz.unwrap_or_else(|| chlad::takt_vpu(r.stav, rezim_khz, zvacsuje));
             if let Some(t) = takt_vpu.as_mut()
                 && t.teraz.is_none_or(|x| ciel_vpu > x)
                 && t.nastav(ciel_vpu)

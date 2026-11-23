@@ -195,7 +195,13 @@ pub struct Faza {
 pub const FAZA_S: u64 = 15 * 60;
 
 /// Takt VPU: ako hlavné jadro (aj 4K), dosť pre Full HD, zaparkovaný pri vypnutom obraze (R166).
+///
+/// R175 (meranie 23. 11. 2026, X96 Max Plus, 1080p @ 60 Hz): 333 MHz stačí na obraz Full HD bez
+/// zväčšovania, ale **nie na zväčšovaný chladný obraz** (960×540 → 1920×1080) – rovina OSD nestíha čítať,
+/// chýba modrá zložka, obraz sa posunie a vľavo je pás. Zväčšovaný obraz preto ide vždy na plný takt.
 pub const VPU_PLNY: u32 = 666;
+/// Stredný takt (zdroj fclk_div4) – v pokuse sa skúša, či stačí na zväčšovaný obraz.
+pub const VPU_STREDNY: u32 = 500;
 pub const VPU_FULL_HD: u32 = 333;
 pub const VPU_PARKOVANY: u32 = 51;
 
@@ -207,18 +213,19 @@ pub const FAZY: [Faza; 8] = [
     f("pôvodne (ako doteraz)", Ciel::Povodny, StavObrazu::Zapnuty, false, VPU_PLNY),
     f("úsporné periférie", Ciel::Povodny, StavObrazu::Zapnuty, true, VPU_PLNY),
     f("chladný obraz", Ciel::Chladny, StavObrazu::Zapnuty, true, VPU_PLNY),
-    f("chladný + takt VPU 333", Ciel::Chladny, StavObrazu::Zapnuty, true, VPU_FULL_HD),
+    f("chladný + takt VPU 500 (skúška)", Ciel::Chladny, StavObrazu::Zapnuty, true, VPU_STREDNY),
     f("čierny obraz", Ciel::Chladny, StavObrazu::Cierny, true, VPU_FULL_HD),
     f("obraz vypnutý", Ciel::Chladny, StavObrazu::Vypnuty, true, VPU_PLNY),
     f("vypnutý + VPU zaparkovaný", Ciel::Chladny, StavObrazu::Vypnuty, true, VPU_PARKOVANY),
     f("pôvodne – kontrola", Ciel::Povodny, StavObrazu::Zapnuty, false, VPU_PLNY),
 ];
 
-/// Takt VPU podľa stavu a režimu mimo pokusu: vypnutý obraz → zaparkovaný; režim do takt bodov 148,5 MHz
-/// (Full HD @ 60) → 333 MHz; väčší (4K) → plný.
-pub fn takt_vpu(stav: StavObrazu, takt_bodov_khz: Option<u32>) -> u32 {
+/// Takt VPU podľa stavu a režimu mimo pokusu: vypnutý obraz → zaparkovaný; zväčšovaný obraz → plný (R175);
+/// režim do taktu bodov 148,5 MHz (Full HD @ 60) bez zväčšovania → 333 MHz; väčší (4K) → plný.
+pub fn takt_vpu(stav: StavObrazu, takt_bodov_khz: Option<u32>, zvacsuje: bool) -> u32 {
     match (stav, takt_bodov_khz) {
         (StavObrazu::Vypnuty, _) => VPU_PARKOVANY,
+        _ if zvacsuje => VPU_PLNY,
         (_, Some(t)) if t <= 148_500 => VPU_FULL_HD,
         _ => VPU_PLNY,
     }
@@ -263,7 +270,8 @@ pub fn rozhodni(pokus_s: Option<u64>, necinnost_s: u64, obraz: Ciel, z: &Zhasina
             faza: Some(i),
             rusi,
             // prebudený obraz vo fáze s vypnutým obrazom potrebuje takt na zobrazenie
-            vpu_mhz: Some(if rusi { f.vpu_mhz.max(VPU_FULL_HD) } else { f.vpu_mhz }),
+            // rušená fáza: zapnutý chladný obraz je zväčšovaný – plný takt (R175)
+            vpu_mhz: Some(if rusi { VPU_PLNY } else { f.vpu_mhz }),
         };
     }
     Rozhodnutie { obraz, stav: z.stav(necinnost_s), periferie: true, faza: None, rusi: false, vpu_mhz: None }
@@ -612,10 +620,12 @@ mod skusky {
         assert_eq!(faza(FAZA_S * 8), None);
         assert_eq!(milniky_pokusu(), vec![0, 15, 30, 45, 60, 75, 90, 105, 120]);
         assert_eq!(rozhodni(Some(FAZA_S * 6 + 1), 10_000, Ciel::Chladny, &z).vpu_mhz, Some(VPU_PARKOVANY));
-        assert_eq!(rozhodni(Some(FAZA_S * 6 + 1), 5, Ciel::Chladny, &z).vpu_mhz, Some(VPU_FULL_HD));
-        assert_eq!(takt_vpu(StavObrazu::Zapnuty, Some(74_250)), VPU_FULL_HD);
-        assert_eq!(takt_vpu(StavObrazu::Cierny, Some(594_000)), VPU_PLNY);
-        assert_eq!(takt_vpu(StavObrazu::Vypnuty, Some(74_250)), VPU_PARKOVANY);
+        assert_eq!(rozhodni(Some(FAZA_S * 6 + 1), 5, Ciel::Chladny, &z).vpu_mhz, Some(VPU_PLNY));
+        assert_eq!(rozhodni(Some(FAZA_S * 3 + 1), 10_000, Ciel::Chladny, &z).vpu_mhz, Some(VPU_STREDNY));
+        assert_eq!(takt_vpu(StavObrazu::Zapnuty, Some(74_250), false), VPU_FULL_HD);
+        assert_eq!(takt_vpu(StavObrazu::Zapnuty, Some(148_500), true), VPU_PLNY, "zväčšovaný obraz – R175");
+        assert_eq!(takt_vpu(StavObrazu::Cierny, Some(594_000), false), VPU_PLNY);
+        assert_eq!(takt_vpu(StavObrazu::Vypnuty, Some(74_250), true), VPU_PARKOVANY);
         let r = rozhodni(Some(FAZA_S * 4 + 10), 10_000, Ciel::Chladny, &z);
         assert_eq!((r.stav, r.faza, r.rusi), (StavObrazu::Cierny, Some(4), false));
         // ovládač stlačený pred 20 s – obraz sa zapne, fáza je rušená
