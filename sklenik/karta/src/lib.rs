@@ -370,6 +370,9 @@ pub struct NastavenieZariadenia {
     /// Skúška hardvérového dekodéra videa pri štarte (R165) – vlastné toky s presne známym obrazom:
     /// `Some(true)` = áno (H.264 a HEVC), inak len zoznam formátov dekodéra.
     pub video: Option<bool>,
+    /// Ovládanie televízora cez HDMI CEC (R181): `ano` (predvolené – zapína aj uspáva TV), `zapni` (len
+    /// zapína), `nie`.
+    pub cec: Option<String>,
 }
 
 impl NastavenieZariadenia {
@@ -413,6 +416,12 @@ impl NastavenieZariadenia {
                 "video" => match ano_nie(v) {
                     Some(m) => n.video = Some(m),
                     None => upozornenia.push(format!("riadok {}: video má byť ano alebo nie", i + 1)),
+                },
+                "cec" => match v.to_lowercase().as_str() {
+                    "nie" | "0" | "no" | "off" => n.cec = Some("nie".into()),
+                    "zapni" | "zapnut" | "zapnúť" => n.cec = Some("zapni".into()),
+                    "ano" | "áno" | "1" | "yes" | "on" => n.cec = Some("ano".into()),
+                    _ => upozornenia.push(format!("riadok {}: cec má byť ano, zapni alebo nie", i + 1)),
                 },
                 "obraz" => match v.to_lowercase().as_str() {
                     "chladny" | "chladný" => n.obraz = Some("chladny".into()),
@@ -798,6 +807,10 @@ mod skusky {
         );
         let (z, u) = NastavenieZariadenia::z_textu("video=ano\n");
         assert_eq!((z.video, u.len()), (Some(true), 0));
+        let (z, u) = NastavenieZariadenia::z_textu("cec=zapni\n");
+        assert_eq!((z.cec.as_deref(), u.len()), (Some("zapni"), 0));
+        let (z, u) = NastavenieZariadenia::z_textu("cec=mozno\n");
+        assert_eq!((z.cec, u.len()), (None, 1));
         let (z, u) = NastavenieZariadenia::z_textu("obraz=farebny\nzhasni=-1\nvypni=99999\n");
         assert_eq!((z.obraz, z.zhasni_min, z.vypni_min, u.len()), (None, None, None, 3));
     }

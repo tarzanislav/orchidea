@@ -456,20 +456,27 @@ impl Udalosti {
 
     /// Čaká najviac `ms` milisekúnd. Vráti `true`, ak prišla aspoň jedna udalosť (všetky sa vyberú).
     pub fn cakaj(&self, ms: u64) -> bool {
-        self.cakaj_so_vstupmi(ms, &[]).0
+        self.cakaj_so_vstupmi(ms, &[], &[]).0
     }
 
     /// Čaká na udalosti jadra aj na vstupné zariadenia (`/dev/input/event*` – klávesnica, myš, diaľkový
     /// ovládač; R158 – prebudenie obrazu). Vráti (udalosť jadra, stlačenie/pohyb na vstupe); všetko sa vyberie.
-    pub fn cakaj_so_vstupmi(&self, ms: u64, vstupy: &[c_int]) -> (bool, bool) {
-        let mut p: Vec<PollFd> =
-            self.fds.iter().chain(vstupy).map(|&fd| PollFd { fd, udalosti: POLLIN, vratene: 0 }).collect();
+    /// `ine` sa len sledujú (napr. CEC) – čítanie je na volajúcom; tretia hodnota = niektorý je pripravený.
+    pub fn cakaj_so_vstupmi(&self, ms: u64, vstupy: &[c_int], ine: &[c_int]) -> (bool, bool, bool) {
+        let mut p: Vec<PollFd> = self
+            .fds
+            .iter()
+            .chain(vstupy)
+            .chain(ine)
+            .map(|&fd| PollFd { fd, udalosti: POLLIN, vratene: 0 })
+            .collect();
         let ms = ms.min(i32::MAX as u64) as c_int;
         // SAFETY: p je platné pole struct pollfd s dĺžkou p.len(), žije počas volania.
         let n = unsafe { poll(p.as_mut_ptr(), p.len() as c_ulong, ms) };
         if n <= 0 {
-            return (false, false);
+            return (false, false, false);
         }
+        let ine_pripravene = p[self.fds.len() + vstupy.len()..].iter().any(|x| x.vratene != 0);
         let mut buf = [0u8; 8192];
         let mut bolo = false;
         for fd in &self.fds {
@@ -500,7 +507,7 @@ impl Udalosti {
                 }
             }
         }
-        (bolo, vstup)
+        (bolo, vstup, ine_pripravene)
     }
 }
 
@@ -620,7 +627,6 @@ pub fn cakaj_na(fd: c_int, udalosti: i16, ms: u64) -> io::Result<i16> {
     Ok(p[0].vratene)
 }
 
-#[cfg(target_pointer_width = "64")]
 /// Ako [`ioctl_struct`], ale „skús znova“ (EAGAIN) vráti volajúcemu – pre neblokujúce zariadenia (V4L2: ešte
 /// nie je hotový buffer). Opakuje sa len prerušenie signálom.
 pub fn ioctl_raz<T: Copy>(fd: c_int, poziadavka: c_ulong, s: &mut T) -> io::Result<()> {

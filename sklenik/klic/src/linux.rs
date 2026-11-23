@@ -1,6 +1,7 @@
 //! KLÍČ na Linuxe: štart systému, periférie a sieť, tepelný strážca nad súbormi jadra (`/sys`) a stav na
 //! obrazovke.
 
+use crate::cec;
 use crate::chlad::{self, Ciel, SietPodlaPotreby, StavObrazu, Zhasinanie};
 use crate::kms;
 use crate::obrazovka::{self, Eee, FormatBodu, Jazyk, MeranieKarty, Stav};
@@ -1278,6 +1279,14 @@ pub fn spusti() {
     let mut pamat_fazy: Vec<(usize, pamat::SumaToku)> = Vec::new();
     let mut budenia_pri_zazname: Option<(Instant, Vec<(String, u64)>)> = None;
     let mut ochrana_pamate = false;
+    // R181: vlastný ovládač CEC – televízor a krabička sa dohovoria cez HDMI (otvára sa v slučke, keď je
+    // známe nastavenie a jadro má adaptér /dev/cec0)
+    let mut cec: Option<cec::Cec> = None;
+    let mut cec_stav = String::from("zatiaľ neotvorené");
+    let mut cec_dalsi_pokus_s = 5.0;
+    let mut cec_obraz: Option<StavObrazu> = None;
+    // televízor išiel spať – obraz krabičky sa vypne, kým sa niekto neozve
+    let mut tv_spi = false;
     // R166: takt obvodu obrazu podľa potreby (vlastný ovládač jadra)
     let mut takt_vpu = if tv { TaktVpu::otvor() } else { None };
     if let Some(t) = &takt_vpu {
@@ -1544,6 +1553,7 @@ pub fn spusti() {
                 }
                 if novy.usb != supis.usb || novy.vstupy != supis.vstupy {
                     posledna_aktivita = Instant::now();
+                    tv_spi = false;
                 }
                 hlas(&novy.riadok());
                 supis = novy;
@@ -1617,6 +1627,32 @@ pub fn spusti() {
             let zh = Zhasinanie::pre_tv(n.and_then(|n| n.zhasni_min), n.and_then(|n| n.vypni_min));
             let necinnost = posledna_aktivita.elapsed().as_secs();
             let mut r = chlad::rozhodni(pokus_s, necinnost, ciel_obrazu(&nastavenie), &zh);
+            // R181: televízor zaspal (CEC) – krabička vypne obraz hneď, nečaká na nečinnosť (ak ho vypínať smie)
+            if tv_spi && r.faza.is_none() && zh.vypnuty_po_s.is_some() {
+                r.stav = StavObrazu::Vypnuty;
+            }
+            // R181: CEC – otvorí sa podľa nastavenia; keď jadro adaptér ešte nemá, skúsi sa znova o 30 s
+            let cec_rezim = cec::Rezim::z_nastavenia(n.and_then(|n| n.cec.as_deref()));
+            if cec_rezim == cec::Rezim::Nic {
+                if cec.take().is_some() || cec_stav != "vypnuté (cec=nie)" {
+                    cec_stav = "vypnuté (cec=nie)".into();
+                }
+            } else if let Some(c) = cec.as_mut() {
+                c.rezim = cec_rezim;
+            } else if pid1 && !skuska && hore >= cec_dalsi_pokus_s && (nastavenie.is_some() || hore >= 60.0) {
+                match cec::Cec::otvor(cec_rezim) {
+                    Ok(c) => {
+                        hlas("CEC: adaptér /dev/cec0 otvorený – krabička ovláda televízor cez HDMI (R181)");
+                        cec_stav = "otvorené".into();
+                        cec = Some(c);
+                        cec_obraz = None;
+                    }
+                    Err(e) => {
+                        cec_stav = format!("nedostupné ({e})");
+                        cec_dalsi_pokus_s = hore + 30.0;
+                    }
+                }
+            }
             // R164: pamäť pod 85 °C – nad ňou DDR obnovuje 2× častejšie (viac tepla → ešte viac obnovy)
             if r.faza.is_none()
                 && let Some(d) = teplota_pamate()
@@ -1696,6 +1732,17 @@ pub fn spusti() {
                     // nečinný príkon sa zmenil – okolie sa drží, vlastný ohrev sa prepočíta
                     okolie.prekalibruj();
                 }
+            }
+            // R181: televízor ide s obrazom krabičky – zapne sa s ním a zaspí s ním
+            if let Some(c) = cec.as_mut()
+                && cec_obraz != Some(r.stav)
+            {
+                match r.stav {
+                    StavObrazu::Zapnuty => c.obraz_zapnuty(),
+                    StavObrazu::Vypnuty => c.obraz_vypnuty(),
+                    StavObrazu::Cierny => {}
+                }
+                cec_obraz = Some(r.stav);
             }
             if let Some(t) = takt_vpu.as_mut()
                 && t.teraz.is_some_and(|x| ciel_vpu < x)
@@ -2091,6 +2138,10 @@ pub fn spusti() {
                             },
                             spanok_jadier.popis()
                         );
+                        text += &format!(
+                            "  CEC (R181): {}{NL}",
+                            cec.as_ref().map_or_else(|| cec_stav.clone(), |c| c.popis())
+                        );
                         if pokus {
                             let r: Vec<String> = (0..chlad::FAZY.len())
                                 .filter(|&i| rusene[i])
@@ -2256,10 +2307,28 @@ pub fn spusti() {
         let cakat = dalsi_krok.saturating_duration_since(Instant::now());
         udalost = match &udalosti {
             Some(u) => {
-                let (bola, vstup) = u.cakaj_so_vstupmi(cakat.as_millis() as u64, &vstupy.fds());
+                let ine: Vec<i32> = cec.as_ref().map(|c| vec![c.fd()]).unwrap_or_default();
+                let (bola, vstup, _) = u.cakaj_so_vstupmi(cakat.as_millis() as u64, &vstupy.fds(), &ine);
                 // R158: stlačenie na ovládači, klávesnici alebo pohyb myši prebudí obraz
                 if vstup {
                     posledna_aktivita = Instant::now();
+                    tv_spi = false;
+                }
+                // R181: správy z televízora – ovládač TV a výber vstupu krabičky ju zobudia, vypnutý TV ju uspí
+                if let Some(c) = cec.as_mut() {
+                    for ud in c.prijmi(cec_obraz == Some(StavObrazu::Zapnuty)) {
+                        match ud {
+                            cec::Udalost::Tlacidlo(_) | cec::Udalost::ChceMa => {
+                                posledna_aktivita = Instant::now();
+                                tv_spi = false;
+                            }
+                            cec::Udalost::TvSpi => {
+                                hlas("CEC: televízor zaspal – krabička vypína obraz");
+                                tv_spi = true;
+                            }
+                            cec::Udalost::InyZdroj => {}
+                        }
+                    }
                 }
                 if bola {
                     // pripojenie zariadenia je dávka udalostí – počká sa, kým utíchne (najviac 1 s)
