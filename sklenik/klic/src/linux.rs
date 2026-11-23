@@ -512,6 +512,10 @@ fn takty_merane() -> Option<String> {
     (!casti.is_empty()).then(|| casti.join(" · "))
 }
 
+fn rychlost_siete(mbs: u32) -> String {
+    if mbs >= 1000 { "1 Gb/s".into() } else { format!("{mbs} Mb/s") }
+}
+
 /// Teplota snímača pamäte DDR (zóna „ddr-thermal“), ak ho čip má.
 fn teplota_pamate() -> Option<f64> {
     for z in fs::read_dir("/sys/class/thermal").ok()?.flatten() {
@@ -821,6 +825,10 @@ pub fn spusti() {
     let pismo = Pismo::stonka();
     // R158–R161: správca chladu na TV krabičkách – vlastný ovládač obrazu, USB, sieť, jadrá, tepelný pokus
     let tv = je_tv_krabicka(&model) && pid1 && !skuska;
+    // R169: časovače KLÍČA smú meškať až 50 ms – jadro ich zlúči s inými budeniami
+    if tv {
+        sys::tolerancia_casovacov(50_000_000);
+    }
     let mut displej = if len_sledovanie {
         None
     } else {
@@ -926,6 +934,9 @@ pub fn spusti() {
     let mut alr = SietPodlaPotreby::nova();
     let mut alr_vzorka: Option<(String, u64, u64)> = None;
     let mut alr_prepnuti = 0u32;
+    // R170: čip siete bez kábla spí (podľa mena rozhrania)
+    let mut kable: std::collections::HashMap<String, chlad::Kabel> = std::collections::HashMap::new();
+    let mut kabel_hladani = 0u32;
     let mut periferie_teraz: Option<bool> = None;
     let mut rusene = [false; chlad::FAZY.len()];
     let mut usb_spanok_od: Option<(u64, u64)> = None;
@@ -1051,13 +1062,12 @@ pub fn spusti() {
                             let bajtov = rx.saturating_sub(*rx0).max(tx.saturating_sub(*tx0));
                             let mbit = bajtov as f64 * 8.0 / dt / 1e6;
                             if let Some(g) = alr.krok(dt, mbit) {
-                                match sys::ethernet_gigabit(&r.meno, g) {
+                                match sys::ethernet_rychlost(&r.meno, g) {
                                     Ok(_) => {
                                         alr_prepnuti += 1;
                                         hlas(&format!(
-                                            "sieť {}: {} (prenos {mbit:.0} Mb/s) – sieť podľa potreby",
-                                            r.meno,
-                                            if g { "gigabit zapnutý" } else { "späť na 100 Mb/s" }
+                                            "sieť {}: najviac {g} Mb/s (prenos {mbit:.1} Mb/s) – sieť podľa potreby",
+                                            r.meno
                                         ));
                                     }
                                     Err(e) => {
@@ -1067,6 +1077,35 @@ pub fn spusti() {
                             }
                         }
                         alr_vzorka = Some((r.meno.clone(), rx, tx));
+                    }
+                }
+                // R170: čip siete bez kábla spí; raz za 30 s sa na chvíľu zobudí a hľadá kábel
+                if tv && periferie_teraz == Some(true) {
+                    for r in supis.siet.iter().filter(|r| !r.bezdrotove && !siet_chyby.contains(&r.meno)) {
+                        let k = kable.entry(r.meno.clone()).or_insert_with(chlad::Kabel::novy);
+                        let spojenie =
+                            citaj(format!("/sys/class/net/{}/carrier", r.meno)).as_deref() == Some("1");
+                        let Some(p) = k.krok(dt, spojenie) else { continue };
+                        let zapnut = matches!(p, chlad::PrechodKabla::Hladaj);
+                        if p != chlad::PrechodKabla::Najdeny
+                            && let Err(e) = sys::nastav_rozhranie(&r.meno, zapnut)
+                        {
+                            hlas(&format!("sieť {}: {e} – čip siete ostáva zapnutý", r.meno));
+                            *k = chlad::Kabel::novy();
+                            continue;
+                        }
+                        match p {
+                            chlad::PrechodKabla::Uspi => hlas(&format!(
+                                "sieť {}: bez kábla – čip siete spí, kábel sa hľadá raz za {} s",
+                                r.meno,
+                                chlad::SPANOK_PHY_S as u32
+                            )),
+                            chlad::PrechodKabla::Najdeny => {
+                                hlas(&format!("sieť {}: kábel pripojený – čip siete zapnutý", r.meno))
+                            }
+                            chlad::PrechodKabla::Hladaj => kabel_hladani += 1,
+                            chlad::PrechodKabla::Spat => {}
+                        }
                     }
                 }
                 if let Some(t) = teplota {
@@ -1121,7 +1160,17 @@ pub fn spusti() {
         let interval = if udalosti.is_some() { 10 } else { 2 };
         let zmena_periferii = if udalost || posledny_supis.elapsed() >= Duration::from_secs(interval) {
             posledny_supis = Instant::now();
-            let novy = Supis::nacitaj(Path::new("/"));
+            let mut novy = Supis::nacitaj(Path::new("/"));
+            // R170: rozhranie, ktoré správca uspal alebo práve hľadá kábel, je „kábel nepripojený“ – nie zmena
+            for r in novy.siet.iter_mut() {
+                if r.spojenie != Some(true) && kable.get(&r.meno).is_some_and(|k| k.riadeny()) {
+                    r.spojenie = Some(false);
+                    r.rychlost_mbs = None;
+                    if let Some(stary) = supis.siet.iter().find(|x| x.meno == r.meno) {
+                        r.cip.clone_from(&stary.cip);
+                    }
+                }
+            }
             let zmena = novy != supis;
             if zmena {
                 if pid1 && novy.siet.len() != supis.siet.len() {
@@ -1302,6 +1351,11 @@ pub fn spusti() {
                 regulator.nastav_parkovanie(p);
                 alr = SietPodlaPotreby::nova();
                 alr_vzorka = None;
+                for (meno, k) in kable.drain() {
+                    if k.riadeny() {
+                        let _ = sys::zapni_rozhranie(&meno);
+                    }
+                }
                 let mut siete = Vec::new();
                 for rz in supis.siet.iter().filter(|x| !x.bezdrotove) {
                     if let Ok(true) = sys::ethernet_gigabit(&rz.meno, !p) {
@@ -1351,7 +1405,7 @@ pub fn spusti() {
                         ));
                     }
                 }
-                casti.push(format!("sieť {} podľa potreby", if alr.gigabit { "1 Gb/s" } else { "100 Mb/s" }));
+                casti.push(format!("sieť {} podľa potreby", rychlost_siete(alr.mbs)));
                 if regulator.zaparkovane() {
                     casti.push("jadrá zaparkované".into());
                 }
@@ -1607,14 +1661,16 @@ pub fn spusti() {
                             }
                         );
                         text += &format!(
-                            "  sieť: {} · prepnutí {alr_prepnuti} · jadrá: {}{NL}",
+                            "  sieť: {} · prepnutí {alr_prepnuti} · bez kábla: {} · jadrá: {}{NL}",
                             if periferie_teraz == Some(true) {
-                                format!(
-                                    "podľa potreby – teraz {}",
-                                    if alr.gigabit { "1 Gb/s" } else { "100 Mb/s" }
-                                )
+                                format!("podľa potreby – teraz {}", rychlost_siete(alr.mbs))
                             } else {
                                 "s gigabitom (pôvodne)".into()
+                            },
+                            if kable.values().any(|k| k.riadeny()) {
+                                format!("čip spí, hľadaní kábla {kabel_hladani}")
+                            } else {
+                                format!("kábel zapojený, hľadaní {kabel_hladani}")
                             },
                             if regulator.zaparkovane() { "zaparkované (1 jadro)" } else { "pracujú" }
                         );
@@ -2291,10 +2347,18 @@ mod skusky {
     fn ethernet_bez_gigabitu() {
         // R126: 10/100 a gigabit (bity 0–5), samočinné dohodnutie, TP, MII, riadenie toku
         let ponuka = 0x3F | 1 << 6 | 1 << 7 | 1 << 9 | 1 << 13;
-        assert_eq!(sys::ponuka_bez_gigabitu(ponuka), Some(0x0F | 1 << 6 | 1 << 7 | 1 << 9 | 1 << 13));
-        assert_eq!(sys::ponuka_bez_gigabitu(0x0F | 1 << 6), None, "už bez gigabitu");
-        assert_eq!(sys::ponuka_bez_gigabitu(1 << 5 | 1 << 6), None, "bez 10/100 by spojenie zaniklo");
-        assert_eq!(sys::ponuka_bez_gigabitu(0x0F | 1 << 15), Some(0x0F), "aj 2,5 Gb/s preč");
+        let vsetko = 0x3F | 1 << 6 | 1 << 7 | 1 << 9 | 1 << 13;
+        assert_eq!(sys::ponuka_do(vsetko, ponuka, 100), Some(0x0F | 1 << 6 | 1 << 7 | 1 << 9 | 1 << 13));
+        assert_eq!(sys::ponuka_do(vsetko, 0x0F | 1 << 6, 100), None, "už bez gigabitu");
+        assert_eq!(sys::ponuka_do(0x0F | 1 << 15, 0x0F | 1 << 15, 100), Some(0x0F), "aj 2,5 Gb/s preč");
+        // R170: tri stupne
+        assert_eq!(
+            sys::ponuka_do(vsetko, 0x0F | 1 << 6, 10),
+            Some(0x03 | 1 << 6),
+            "10 Mb/s v hlbokom pokoji"
+        );
+        assert_eq!(sys::ponuka_do(vsetko, 0x03 | 1 << 6, 1000), Some(0x3F | 1 << 6), "späť s gigabitom");
+        assert_eq!(sys::ponuka_do(0x30, 0x30, 10), None, "bez 10/100 by spojenie zaniklo");
     }
 
     #[test]

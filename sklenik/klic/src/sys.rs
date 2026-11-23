@@ -40,6 +40,7 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn munmap(adresa: *mut c_void, dlzka: usize) -> c_int;
     fn syscall(cislo: std::ffi::c_long, ...) -> std::ffi::c_long;
+    fn prctl(volba: c_int, ...) -> c_int;
 }
 
 /// `struct pollfd`
@@ -156,6 +157,12 @@ pub fn zber_procesov() -> usize {
 
 /// Zapne sieťové rozhranie (ako `ip link set <meno> up`). Vráti `true`, ak bolo vypnuté a zaplo sa.
 pub fn zapni_rozhranie(meno: &str) -> io::Result<bool> {
+    nastav_rozhranie(meno, true)
+}
+
+/// Zapne alebo vypne sieťové rozhranie (`ip link set <meno> up/down`). Vypnuté rozhranie odpojí čip siete
+/// (PHY prejde do úsporného stavu) a vypne takty radiča. Vráti `true`, ak sa stav zmenil.
+pub fn nastav_rozhranie(meno: &str, zapnute: bool) -> io::Result<bool> {
     if meno.is_empty() || meno.len() >= 16 || meno.contains('\0') {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "neplatné meno rozhrania"));
     }
@@ -172,10 +179,11 @@ pub fn zapni_rozhranie(meno: &str) -> io::Result<bool> {
             return Err(io::Error::last_os_error());
         }
         let priznaky = i16::from_ne_bytes([ifr[16], ifr[17]]);
-        if priznaky & IFF_UP != 0 {
+        if (priznaky & IFF_UP != 0) == zapnute {
             return Ok(false);
         }
-        ifr[16..18].copy_from_slice(&(priznaky | IFF_UP).to_ne_bytes());
+        let nove = if zapnute { priznaky | IFF_UP } else { priznaky & !IFF_UP };
+        ifr[16..18].copy_from_slice(&nove.to_ne_bytes());
         // SAFETY: ako vyššie.
         if unsafe { ioctl(fd, SIOCSIFFLAGS, ifr.as_mut_ptr()) } < 0 {
             return Err(io::Error::last_os_error());
@@ -244,27 +252,38 @@ const ETHTOOL_SSET: u32 = 0x2;
 /// rozhraní a riadenie toku (bity 6–11, 13, 14).
 pub const BEZ_GIGABITU: u32 = 0x0000_6FCF;
 
-/// Nové ponúkané režimy bez gigabitu; `None`, ak sa nič nemení alebo by nezostal žiadny režim 10/100.
-pub fn ponuka_bez_gigabitu(ponuka: u32) -> Option<u32> {
-    let nova = ponuka & BEZ_GIGABITU;
-    (nova != ponuka && nova & 0xF != 0).then_some(nova)
-}
-
-/// Nové ponúkané režimy s gigabitom (1000BASE-T, ak ho čip podporuje); `None`, ak sa nič nemení.
-pub fn ponuka_s_gigabitom(podporovane: u32, ponuka: u32) -> Option<u32> {
-    let nova = ponuka | (podporovane & !BEZ_GIGABITU & 0x30);
-    (nova != ponuka).then_some(nova)
-}
-
 /// R126: Ethernet ponúkne len 10/100 Mb/s (gigabitový čip siete berie v pokoji viac energie). Spojenie sa
 /// znova dohodne (asi 2–3 s). Vráti `Ok(true)`, ak sa ponuka zmenila.
 pub fn ethernet_bez_gigabitu(meno: &str) -> io::Result<bool> {
-    ethernet_gigabit(meno, false)
+    // len gigabit preč, 10/100 ostáva (ako pred R170)
+    ethernet_rychlost(meno, 100)
 }
 
-/// Sieť podľa potreby (R159): ponuka gigabitu zapnutá alebo vypnutá. Vráti `Ok(true)`, ak sa zmenila
-/// (spojenie sa znova dohodne, asi 2–3 s).
+/// Sieť podľa potreby (R159): ponuka gigabitu zapnutá alebo vypnutá.
 pub fn ethernet_gigabit(meno: &str, gigabit: bool) -> io::Result<bool> {
+    ethernet_rychlost(meno, if gigabit { 1000 } else { 100 })
+}
+
+/// Ponúkané režimy najviac do `max_mbs` (10, 100, 1000) z podporovaných; ostatné bity (autoneg, pauza)
+/// ostávajú. `None`, ak sa nič nemení alebo by nezostal žiadny režim.
+pub fn ponuka_do(podporovane: u32, ponuka: u32, max_mbs: u32) -> Option<u32> {
+    let rychlosti = match max_mbs {
+        0..=10 => 0x03,
+        11..=100 => 0x0F,
+        _ => 0x3F,
+    };
+    let nova = if max_mbs > 100 {
+        (ponuka & !0x3F) | (podporovane & rychlosti)
+    } else {
+        // bez gigabitu aj bez rýchlejších režimov (2,5/10 Gb/s)
+        (ponuka & BEZ_GIGABITU & !0x0F) | (podporovane & rychlosti)
+    };
+    (nova != ponuka && nova & 0x3F != 0).then_some(nova)
+}
+
+/// R170: sieť v troch stupňoch – ponuka najviac 10, 100 alebo 1000 Mb/s. Vráti `Ok(true)`, ak sa zmenila
+/// (spojenie sa znova dohodne, asi 2–3 s).
+pub fn ethernet_rychlost(meno: &str, max_mbs: u32) -> io::Result<bool> {
     if meno.is_empty() || meno.len() >= 16 || meno.contains('\0') {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "neplatné meno rozhrania"));
     }
@@ -291,7 +310,7 @@ pub fn ethernet_gigabit(meno: &str, gigabit: bool) -> io::Result<bool> {
         };
         volaj(&mut cmd)?;
         let autoneg = cmd[4].to_ne_bytes()[2];
-        let nova = if gigabit { ponuka_s_gigabitom(cmd[1], cmd[2]) } else { ponuka_bez_gigabitu(cmd[2]) };
+        let nova = ponuka_do(cmd[1], cmd[2], max_mbs);
         let Some(nova) = nova.filter(|_| autoneg == 1) else {
             return Ok(false);
         };
@@ -577,4 +596,11 @@ pub fn perf_pocitadlo(typ: u32, config: u64, config1: u64, cpu: i32) -> io::Resu
     }
     // SAFETY: jadro vrátilo nový deskriptor, ktorý odteraz vlastní File (O_CLOEXEC = príznak 8).
     Ok(unsafe { std::fs::File::from_raw_fd(fd as c_int) })
+}
+
+/// R169: väčšia tolerancia časovačov procesu (jadro môže budenia zlúčiť s inými) – menej prebudení čipu.
+/// Dedia ju nové vlákna aj procesy: prehrávač videa spustený z KLÍČA si musí nastaviť späť 50 µs.
+pub fn tolerancia_casovacov(ns: u64) {
+    // SAFETY: PR_SET_TIMERSLACK (29) s číselným argumentom; výsledok netreba.
+    unsafe { prctl(29, ns as c_ulong) };
 }

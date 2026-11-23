@@ -67,10 +67,15 @@ impl Zhasinanie {
     }
 }
 
-/// Sieť podľa potreby (R159, Adaptive Link Rate).
+/// Sieť podľa potreby (R159, R170 – Adaptive Link Rate v troch stupňoch).
+///
+/// 10BASE-T v pokoji posiela len krátke impulzy (každých 16 ms), 100BASE-TX vysiela nepretržite – preto
+/// v hlbokom pokoji 10 Mb/s, pri bežnej práci 100 Mb/s a gigabit len pri veľkom prenose. Každý stupeň má dva
+/// prahy (hore rýchlo, dole pomaly), aby spojenie nekmitalo.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SietPodlaPotreby {
-    pub gigabit: bool,
+    /// Najvyššia ponúkaná rýchlosť (Mb/s): 10, 100 alebo 1000.
+    pub mbs: u32,
     nad_s: f64,
     pod_s: f64,
 }
@@ -79,29 +84,98 @@ pub struct SietPodlaPotreby {
 pub const ALR_HORE_MBS: f64 = 60.0;
 /// Prenos, pod ktorým gigabit netreba (po 2 min) – späť na 100 Mb/s.
 pub const ALR_DOLE_MBS: f64 = 15.0;
+/// Prenos, pri ktorom 10 Mb/s nestačí – hneď na 100 Mb/s (po 2 s).
+pub const ALR_Z_POKOJA_MBS: f64 = 2.0;
+/// Hlboký pokoj: pod týmto prenosom 5 minút → 10 Mb/s.
+pub const ALR_POKOJ_MBS: f64 = 0.2;
 
 impl SietPodlaPotreby {
     pub fn nova() -> SietPodlaPotreby {
-        SietPodlaPotreby { gigabit: false, nad_s: 0.0, pod_s: 0.0 }
+        SietPodlaPotreby { mbs: 100, nad_s: 0.0, pod_s: 0.0 }
     }
 
-    /// Krok: čas od posledného kroku (s) a prenos (Mb/s – väčší z príjmu a odosielania). Vráti nový stav,
-    /// keď sa má ponuka zmeniť.
-    pub fn krok(&mut self, dt_s: f64, mbit_s: f64) -> Option<bool> {
-        if self.gigabit {
-            self.pod_s = if mbit_s < ALR_DOLE_MBS { self.pod_s + dt_s } else { 0.0 };
-            if self.pod_s >= 120.0 {
-                *self = SietPodlaPotreby::nova();
-                return Some(false);
-            }
+    /// Krok: čas od posledného kroku (s) a prenos (Mb/s – väčší z príjmu a odosielania). Vráti novú najvyššiu
+    /// rýchlosť, keď sa má ponuka zmeniť.
+    pub fn krok(&mut self, dt_s: f64, mbit_s: f64) -> Option<u32> {
+        let (hore_prah, hore_s, dole_prah, dole_s, vyssia, nizsia) = match self.mbs {
+            10 => (ALR_Z_POKOJA_MBS, 2.0, f64::MIN, f64::MAX, 100, 10),
+            100 => (ALR_HORE_MBS, 3.0, ALR_POKOJ_MBS, 300.0, 1000, 10),
+            _ => (f64::MAX, f64::MAX, ALR_DOLE_MBS, 120.0, 1000, 100),
+        };
+        self.nad_s = if mbit_s >= hore_prah { self.nad_s + dt_s } else { 0.0 };
+        self.pod_s = if mbit_s < dole_prah { self.pod_s + dt_s } else { 0.0 };
+        let novy = if self.nad_s >= hore_s {
+            vyssia
+        } else if self.pod_s >= dole_s {
+            nizsia
         } else {
-            self.nad_s = if mbit_s >= ALR_HORE_MBS { self.nad_s + dt_s } else { 0.0 };
-            if self.nad_s >= 3.0 {
-                *self = SietPodlaPotreby { gigabit: true, nad_s: 0.0, pod_s: 0.0 };
-                return Some(true);
+            return None;
+        };
+        *self = SietPodlaPotreby { mbs: novy, nad_s: 0.0, pod_s: 0.0 };
+        Some(novy)
+    }
+}
+
+/// R170: čip siete bez kábla spí. Rozhranie bez spojenia sa po minúte vypne (PHY do úsporného stavu, takty
+/// radiča preč) a raz za 30 s sa na pár sekúnd zapne – ak sa medzitým zasunul kábel, spojenie sa dohodne.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Kabel {
+    /// Rozhranie zapnuté; ako dlho je bez spojenia.
+    Zapnute { bez_kabla_s: f64 },
+    /// Rozhranie vypnuté (čip spí).
+    Spi { s: f64 },
+    /// Rozhranie na chvíľu zapnuté – hľadá sa kábel.
+    Hlada { s: f64 },
+}
+
+/// Čo urobiť s rozhraním po kroku.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PrechodKabla {
+    /// Prvýkrát bez kábla – vypnúť (oznámiť).
+    Uspi,
+    /// Krátko zapnúť a hľadať kábel.
+    Hladaj,
+    /// Kábel sa nenašiel – znova vypnúť.
+    Spat,
+    /// Kábel sa našiel – rozhranie ostáva zapnuté (oznámiť).
+    Najdeny,
+}
+
+/// Bez spojenia takto dlho → čip siete spí.
+pub const BEZ_KABLA_S: f64 = 60.0;
+/// Ako dlho čip spí medzi hľadaniami kábla.
+pub const SPANOK_PHY_S: f64 = 30.0;
+/// Ako dlho sa čaká na spojenie pri hľadaní (dohodnutie 10/100 Mb/s trvá 2–3 s).
+pub const HLADANIE_S: f64 = 6.0;
+
+impl Kabel {
+    pub fn novy() -> Kabel {
+        Kabel::Zapnute { bez_kabla_s: 0.0 }
+    }
+
+    /// Riadi ho správca (spí alebo hľadá) – stav „bez spojenia“ je zámer, nie zmena.
+    pub fn riadeny(&self) -> bool {
+        !matches!(self, Kabel::Zapnute { .. })
+    }
+
+    /// Krok: čas od posledného kroku (s) a či je spojenie (kábel s dohodnutou rýchlosťou).
+    pub fn krok(&mut self, dt_s: f64, spojenie: bool) -> Option<PrechodKabla> {
+        let (novy, prechod) = match *self {
+            Kabel::Zapnute { .. } if spojenie => (Kabel::novy(), None),
+            Kabel::Zapnute { bez_kabla_s } if bez_kabla_s + dt_s >= BEZ_KABLA_S => {
+                (Kabel::Spi { s: 0.0 }, Some(PrechodKabla::Uspi))
             }
-        }
-        None
+            Kabel::Zapnute { bez_kabla_s } => (Kabel::Zapnute { bez_kabla_s: bez_kabla_s + dt_s }, None),
+            Kabel::Spi { s } if s + dt_s >= SPANOK_PHY_S => {
+                (Kabel::Hlada { s: 0.0 }, Some(PrechodKabla::Hladaj))
+            }
+            Kabel::Spi { s } => (Kabel::Spi { s: s + dt_s }, None),
+            Kabel::Hlada { .. } if spojenie => (Kabel::novy(), Some(PrechodKabla::Najdeny)),
+            Kabel::Hlada { s } if s + dt_s >= HLADANIE_S => (Kabel::Spi { s: 0.0 }, Some(PrechodKabla::Spat)),
+            Kabel::Hlada { s } => (Kabel::Hlada { s: s + dt_s }, None),
+        };
+        *self = novy;
+        prechod
     }
 }
 
@@ -461,26 +535,73 @@ mod skusky {
     }
 
     #[test]
-    fn siet_podla_potreby_s_hysterezou() {
+    fn siet_podla_potreby_v_troch_stupnoch() {
         let mut s = SietPodlaPotreby::nova();
-        // krátky nárast neprepne
+        assert_eq!(s.mbs, 100);
         assert_eq!(s.krok(1.0, 90.0), None);
         assert_eq!(s.krok(1.0, 10.0), None);
-        // trvalý prenos nad 60 Mb/s 3 s → gigabit
         assert_eq!(s.krok(1.0, 80.0), None);
         assert_eq!(s.krok(1.0, 80.0), None);
-        assert_eq!(s.krok(1.0, 80.0), Some(true));
-        assert!(s.gigabit);
-        // 30 Mb/s je medzi prahmi – gigabit ostáva (žiadne kmitanie)
+        assert_eq!(s.krok(1.0, 80.0), Some(1000));
+        assert_eq!(s.mbs, 1000);
         for _ in 0..300 {
             assert_eq!(s.krok(1.0, 30.0), None);
         }
-        // pod 15 Mb/s 2 minúty → späť na 100
         for _ in 0..119 {
             assert_eq!(s.krok(1.0, 1.0), None);
         }
-        assert_eq!(s.krok(1.0, 1.0), Some(false));
-        assert!(!s.gigabit);
+        assert_eq!(s.krok(1.0, 1.0), Some(100));
+        // 1 Mb/s nie je hlboký pokoj – 100 ostáva
+        for _ in 0..600 {
+            assert_eq!(s.krok(1.0, 1.0), None);
+        }
+        // hlboký pokoj 5 minút → 10 Mb/s
+        for _ in 0..299 {
+            assert_eq!(s.krok(1.0, 0.01), None);
+        }
+        assert_eq!(s.krok(1.0, 0.01), Some(10));
+        // prenos 2 s nad 2 Mb/s → hneď 100
+        assert_eq!(s.krok(1.0, 5.0), None);
+        assert_eq!(s.krok(1.0, 5.0), Some(100));
+    }
+
+    #[test]
+    fn cip_siete_bez_kabla_spi_a_hlada() {
+        let mut k = Kabel::novy();
+        // so spojením sa nič nedeje
+        for _ in 0..100 {
+            assert_eq!(k.krok(1.0, true), None);
+        }
+        // kábel vytiahnutý: po minúte spí
+        for _ in 0..59 {
+            assert_eq!(k.krok(1.0, false), None);
+        }
+        assert_eq!(k.krok(1.0, false), Some(PrechodKabla::Uspi));
+        assert!(k.riadeny());
+        // po 30 s krátko hľadá, bez kábla znova spí
+        for _ in 0..29 {
+            assert_eq!(k.krok(1.0, false), None);
+        }
+        assert_eq!(k.krok(1.0, false), Some(PrechodKabla::Hladaj));
+        for _ in 0..5 {
+            assert_eq!(k.krok(1.0, false), None);
+        }
+        assert_eq!(k.krok(1.0, false), Some(PrechodKabla::Spat));
+        // zapína sa najviac 6 s z 36 s – čip spí 5/6 času
+        for _ in 0..29 {
+            assert_eq!(k.krok(1.0, false), None);
+        }
+        assert_eq!(k.krok(1.0, false), Some(PrechodKabla::Hladaj));
+        assert_eq!(k.krok(1.0, false), None);
+        // kábel zasunutý počas hľadania
+        assert_eq!(k.krok(1.0, true), Some(PrechodKabla::Najdeny));
+        assert!(!k.riadeny());
+        // krátky výpadok spojenia (prepnutie rýchlosti) čip neuspí
+        for _ in 0..10 {
+            assert_eq!(k.krok(1.0, false), None);
+        }
+        assert_eq!(k.krok(1.0, true), None);
+        assert_eq!(k, Kabel::novy());
     }
 
     #[test]
