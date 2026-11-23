@@ -168,18 +168,25 @@ jobs:
           # R174: vlastný kodek HEVC v jadre meson-vdec (formát HEVC pre SM1, prívod toku podľa voľných snímok)
           cp ../sklenik/jadro-ovladace/sklenik_hevc.c ../sklenik/jadro-ovladace/sklenik_hevc.h drivers/staging/media/meson/vdec/
           patch -p1 --forward < ../sklenik/jadro-ovladace/sklenik-hevc.patch
-          # R165: firmvér dekodéra videa (mikrokód jeho procesora AMRISC z linux-firmware, LICENSE.amlogic_vdec) ide
-          # priamo do jadra (CONFIG_EXTRA_FIRMWARE) – overený odtlačkom SHA-256, aby sa nič nezmenilo potichu
+          # R165/R174: firmvér dekodéra videa (mikrokód jeho procesora AMRISC z linux-firmware) – overený odtlačkom
+          # SHA-256; na karte ako samostatné súbory s menami 8.3 (licencia LICENSE.amlogic_vdec nedovoľuje vložiť ho
+          # do jadra), KLÍČ ich pri štarte skopíruje do /lib/firmware
           lf="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain"
-          mkdir -p firmver/meson/vdec
-          for z in g12a_h264.bin:ed2014edb5b759654956b829770181b46efb91c68a2e6c6510c354ffdcbe1a0a \
-                   sm1_vp9_mmu.bin:a999eac69ec6d87785951b11eb53bc2c8e5fc3e464a356411cb2f646c68e2b1a \
-                   gxl_mpeg12.bin:4a851302785a48e84cb846e5e974a4f51a4ca87c52d961aab4307b1c91daf2b2 \
-                   sm1_hevc_mmu.bin:f98249d9586a66a5e747b386f9eba76a670efbbcf0d744612387febb3b2b0d2a; do
-            curl -sSfL --retry 3 -o "firmver/meson/vdec/${z%%:*}" "$lf/meson/vdec/${z%%:*}"
-            echo "${z#*:}  firmver/meson/vdec/${z%%:*}" | sha256sum -c -
+          lg="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main"
+          mkdir -p ../jadro-vystup/amlogic/vdec
+          stiahni() { curl -sSfL --retry 3 -o "$2" "$lf/$1" || curl -sSfL --retry 3 -o "$2" "$lg/$1"; }
+          for z in g12a_h264.bin:g12ah264.bin:ed2014edb5b759654956b829770181b46efb91c68a2e6c6510c354ffdcbe1a0a \
+                   sm1_vp9_mmu.bin:sm1vp9.bin:a999eac69ec6d87785951b11eb53bc2c8e5fc3e464a356411cb2f646c68e2b1a \
+                   gxl_mpeg12.bin:gxlmpg12.bin:4a851302785a48e84cb846e5e974a4f51a4ca87c52d961aab4307b1c91daf2b2 \
+                   sm1_hevc_mmu.bin:sm1hevc.bin:f98249d9586a66a5e747b386f9eba76a670efbbcf0d744612387febb3b2b0d2a; do
+            povodne=${z%%:*}; zvysok=${z#*:}; kratke=${zvysok%%:*}; odtlacok=${zvysok#*:}
+            stiahni "meson/vdec/$povodne" "../jadro-vystup/amlogic/vdec/$kratke"
+            echo "$odtlacok  ../jadro-vystup/amlogic/vdec/$kratke" | sha256sum -c -
           done
-          curl -sSfL --retry 3 -o firmver/LICENSE.amlogic_vdec "$lf/LICENSE.amlogic_vdec"
+          l=../jadro-vystup/amlogic/vdec/licencia.txt
+          stiahni LICENSE.amlogic_vdec "$l" || stiahni "LICENSE.amlogic_vdec?h=main" "$l" \
+            || curl -sSfL --retry 3 -o "$l" https://scancode-licensedb.aboutcode.org/amlogic-linux-firmware.LICENSE
+          grep -q "Amlogic" "$l" && head -3 "$l"
           make -s defconfig
           # platformy iných výrobcov preč – zostane len Amlogic Meson (procesor Odroidu C4)
           for a in $(grep -oE '^config ARCH_[A-Z0-9_]+' arch/arm64/Kconfig.platforms | cut -d' ' -f2); do
@@ -193,14 +200,12 @@ jobs:
           grep -q sklenik_vpu_probe System.map || { echo "ovládač sklenik_vpu chýba v jadre"; exit 1; }
           grep -q " vdec_probe$" System.map || { echo "dekodér videa meson-vdec chýba v jadre"; exit 1; }
           grep -q " sklenik_hevc_ops$" System.map || { echo "vlastný kodek HEVC chýba v jadre"; exit 1; }
-          for f in g12a_h264 sm1_vp9_mmu gxl_mpeg12 sm1_hevc_mmu; do
-            grep -aq "meson/vdec/$f.bin" arch/arm64/boot/Image || { echo "firmvér $f chýba v jadre"; exit 1; }
-          done
+          # firmvér Amlogic nesmie byť v jadre (licencia)
+          ! grep -q "^CONFIG_EXTRA_FIRMWARE=\".*meson" .config
           mkdir -p ../jadro-vystup/amlogic/dtb/amlogic
           cp arch/arm64/boot/Image ../jadro-vystup/amlogic/
           for d in $dtb; do cp "arch/arm64/boot/dts/amlogic/$d.dtb" ../jadro-vystup/amlogic/dtb/amlogic/; done
           cp .config ../jadro-vystup/amlogic/jadro-s905x3.config
-          cp firmver/LICENSE.amlogic_vdec ../jadro-vystup/amlogic/
           ls -lR ../jadro-vystup/amlogic
       - name: Uloženie zostaveného jadra do pamäte
         if: steps.pamat.outputs.cache-hit != 'true'
@@ -537,8 +542,8 @@ jobs:
           # (U-Boot si vyberie podľa svojho fdtfile), nastavenie zavádzača U-Boot v extlinux/
           mkdir -p boot/amlogic boot/dtb
           cp jadra/amlogic/Image jadra/amlogic/jadro-s905x3.config boot/amlogic/
-          # R165: licencia firmvéru dekodéra videa, ktorý je v jadre
-          cp jadra/amlogic/LICENSE.amlogic_vdec boot/amlogic/
+          # R174: firmvér dekodéra videa a jeho licencia (samostatné súbory, KLÍČ ich dá do /lib/firmware)
+          mkdir -p boot/amlogic/vdec && cp jadra/amlogic/vdec/* boot/amlogic/vdec/
           cp -r jadra/amlogic/dtb/amlogic boot/dtb/
           cp -r sklenik/boot/extlinux boot/
           # R96: Odroid C4 – rýchle režimy SD (UHS) preč z popisu hardvéru, aby fungoval reštart zo SD karty
@@ -595,7 +600,7 @@ jobs:
           echo "$f: reset MDIO $(fdtget -t x "$f" "$m" reset-gpios), čip bez adresy: $(fdtget "$f" "$c" reg 2>&1 | head -1)"
           # pôvodný zavádzač krabičky hľadá skripty a u-boot.ext v koreni karty
           cp uboot/x96/aml_autoscript uboot/x96/s905_autoscript uboot/x96/u-boot.ext boot/
-          printf 'SKLENÍK %s – univerzálna karta pre Raspberry Pi 1, 2, 3, 4, 5, Zero, Zero W, Zero 2 W, Odroid C4 a X96 Max Plus\njadro: https://github.com/raspberrypi/linux/tree/%s + sklenik/jadro.config (úplné nastavenie v jadro-*.config)\nfirmvér: https://github.com/raspberrypi/firmware/tree/%s/boot (LICENCE.broadcom)\nAmlogic S905X3 (Odroid C4, X96 Max Plus) – jadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-odroid.config (amlogic/jadro-s905x3.config)\nfirmvér dekodéra videa (v jadre): https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/meson/vdec (amlogic/LICENSE.amlogic_vdec)\nOdroid C4 – zavádzač (prvé 4 MiB karty): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+) a podpísané časti Amlogic https://github.com/LibreELEC/amlogic-boot-fip/tree/%s/odroid-c4\nX96 Max Plus – u-boot.ext: https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+, bananapi-m5_defconfig + popis X96 Air), skripty sklenik/boot/amlogic/\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
+          printf 'SKLENÍK %s – univerzálna karta pre Raspberry Pi 1, 2, 3, 4, 5, Zero, Zero W, Zero 2 W, Odroid C4 a X96 Max Plus\njadro: https://github.com/raspberrypi/linux/tree/%s + sklenik/jadro.config (úplné nastavenie v jadro-*.config)\nfirmvér: https://github.com/raspberrypi/firmware/tree/%s/boot (LICENCE.broadcom)\nAmlogic S905X3 (Odroid C4, X96 Max Plus) – jadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-odroid.config (amlogic/jadro-s905x3.config)\nfirmvér dekodéra videa (amlogic/vdec/, samostatne – nie v jadre): https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/meson/vdec (licencia amlogic/vdec/licencia.txt)\nOdroid C4 – zavádzač (prvé 4 MiB karty): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+) a podpísané časti Amlogic https://github.com/LibreELEC/amlogic-boot-fip/tree/%s/odroid-c4\nX96 Max Plus – u-boot.ext: https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+, bananapi-m5_defconfig + popis X96 Air), skripty sklenik/boot/amlogic/\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
             "$GITHUB_SHA" "$JADRO_TAG" "$FIRMVER_TAG" "$ODROID_JADRO" "$UBOOT_TAG" "$FIP_COMMIT" "$UBOOT_TAG" > boot/ZDROJE.txt
           ls -l boot
           du -sh boot

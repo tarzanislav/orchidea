@@ -623,6 +623,37 @@ impl Vstupy {
     }
 }
 
+/// R174: firmvér dekodéra videa Amlogic (mikrokód jeho procesora, linux-firmware) je na karte ako samostatné
+/// súbory v `amlogic/vdec/` – licencia Amlogic nedovoľuje vložiť ho do jadra. KLÍČ ho pri štarte skopíruje
+/// do `/lib/firmware` v pamäti, odkiaľ si ho ovládač meson-vdec načíta pri prvom videu.
+fn nahraj_firmver_videa(zariadenie: &str) {
+    const SUBORY: [(&str, &str); 4] = [
+        ("amlogic/vdec/g12ah264.bin", "g12a_h264.bin"),
+        ("amlogic/vdec/sm1vp9.bin", "sm1_vp9_mmu.bin"),
+        ("amlogic/vdec/gxlmpg12.bin", "gxl_mpeg12.bin"),
+        ("amlogic/vdec/sm1hevc.bin", "sm1_hevc_mmu.bin"),
+    ];
+    let ciel = Path::new("/lib/firmware/meson/vdec");
+    if !Path::new("/sys/bus/platform/drivers/meson-vdec").exists() || ciel.join(SUBORY[3].1).exists() {
+        return;
+    }
+    let Ok(mut f) = fs::File::open(zariadenie) else { return };
+    let _ = fs::create_dir_all(ciel);
+    let mut nahrane = Vec::new();
+    for (na_karte, meno) in SUBORY {
+        match sklenik_karta::citaj_subor(&mut f, na_karte) {
+            Ok(data) if fs::write(ciel.join(meno), &data).is_ok() => {
+                nahrane.push(format!("{meno} ({} KB)", data.len() / 1024))
+            }
+            Ok(_) => hlas(&format!("video: firmvér {meno} sa nedal zapísať do /lib/firmware")),
+            Err(e) => hlas(&format!("video: firmvér {meno}: {e}")),
+        }
+    }
+    if !nahrane.is_empty() {
+        hlas(&format!("video: firmvér dekodéra z karty – {}", nahrane.join(", ")));
+    }
+}
+
 fn nacitaj_nastavenie(supis: &Supis) -> Option<(String, NastavenieZariadenia)> {
     for u in &supis.ulozisko {
         let cesta = format!("/dev/{}", u.meno);
@@ -866,6 +897,11 @@ pub fn spusti() {
     let mut podpatie_bolo = supis.podpatie == Some(true);
     let mut nastavenie = nacitaj_nastavenie(&supis);
     let nastav_zariadenie = |n: &Option<(String, NastavenieZariadenia)>| {
+        if let Some((cesta, _)) = n
+            && pid1
+        {
+            nahraj_firmver_videa(cesta);
+        }
         if let Some((cesta, n)) = n {
             hlas(&format!(
                 "nastavenie z {cesta}: meno {}, jazyk {}, Wi-Fi {}",

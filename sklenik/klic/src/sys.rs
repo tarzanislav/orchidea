@@ -605,6 +605,7 @@ pub fn tolerancia_casovacov(ns: u64) {
     unsafe { prctl(29, ns as c_ulong) };
 }
 
+#[cfg(target_pointer_width = "64")]
 /// Čaká na udalosti `udalosti` (POLLIN 1, POLLPRI 2, POLLOUT 4) jedného deskriptora najviac `ms` milisekúnd;
 /// vráti, čo nastalo (0 = vypršal čas).
 pub fn cakaj_na(fd: c_int, udalosti: i16, ms: u64) -> io::Result<i16> {
@@ -619,6 +620,7 @@ pub fn cakaj_na(fd: c_int, udalosti: i16, ms: u64) -> io::Result<i16> {
     Ok(p[0].vratene)
 }
 
+#[cfg(target_pointer_width = "64")]
 /// Ako [`ioctl_struct`], ale „skús znova“ (EAGAIN) vráti volajúcemu – pre neblokujúce zariadenia (V4L2: ešte
 /// nie je hotový buffer). Opakuje sa len prerušenie signálom.
 pub fn ioctl_raz<T: Copy>(fd: c_int, poziadavka: c_ulong, s: &mut T) -> io::Result<()> {

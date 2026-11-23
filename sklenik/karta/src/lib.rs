@@ -172,6 +172,71 @@ pub fn citaj_nastavenie(z: &mut (impl Read + Seek)) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&obsah).trim_end().to_string())
 }
 
+/// Meno 8.3 položky adresára FAT („vdec“ → `VDEC       `, „sm1hevc.bin“ → `SM1HEVC BIN`); `None`, ak sa
+/// do 8.3 nezmestí.
+fn meno_83(meno: &str) -> Option<[u8; 11]> {
+    let (zaklad, pripona) = meno.rsplit_once('.').unwrap_or((meno, ""));
+    if zaklad.is_empty() || zaklad.len() > 8 || pripona.len() > 3 || !meno.is_ascii() {
+        return None;
+    }
+    let mut m = [b' '; 11];
+    m[..zaklad.len()].copy_from_slice(zaklad.to_ascii_uppercase().as_bytes());
+    m[8..8 + pripona.len()].copy_from_slice(pripona.to_ascii_uppercase().as_bytes());
+    Some(m)
+}
+
+/// Prečíta súbor z oddielu FAT32 karty podľa cesty s menami 8.3 (napr. `amlogic/vdec/sm1hevc.bin`) – R174:
+/// firmvér dekodéra videa je na karte ako samostatný súbor (licencia Amlogic nedovoľuje vložiť ho do jadra).
+pub fn citaj_subor(z: &mut (impl Read + Seek), cesta: &str) -> Result<Vec<u8>, String> {
+    let f = Fat32::najdi(z)?;
+    let casti: Vec<&str> = cesta.split('/').filter(|c| !c.is_empty()).collect();
+    let mut adresar = f.korenovy;
+    for (i, cast) in casti.iter().enumerate() {
+        let meno = meno_83(cast).ok_or_else(|| format!("meno „{cast}“ nie je v tvare 8.3"))?;
+        let posledna = i + 1 == casti.len();
+        let mut najdene = None;
+        'hladaj: for c in f.retaz(z, adresar)? {
+            let blok = citaj_na(z, f.klaster(c), f.velkost_klastra() as usize).map_err(|e| e.to_string())?;
+            for zaznam in blok.chunks_exact(32) {
+                match zaznam[0] {
+                    0x00 => break 'hladaj,
+                    0xE5 => continue,
+                    _ => {}
+                }
+                // dlhé mená (atribút 0x0F) a menovka zväzku sa preskočia; adresár má bit 0x10
+                if zaznam[11] & 0x0F == 0x0F || zaznam[11] & 0x08 != 0 || zaznam[0..11] != meno {
+                    continue;
+                }
+                let je_adresar = zaznam[11] & 0x10 != 0;
+                if je_adresar == posledna {
+                    continue;
+                }
+                najdene = Some(((u16_na(zaznam, 20) << 16) | u16_na(zaznam, 26), u32_na(zaznam, 28)));
+                break 'hladaj;
+            }
+        }
+        let (prvy, velkost) = najdene.ok_or_else(|| format!("na karte chýba {cesta}"))?;
+        if !posledna {
+            adresar = prvy;
+            continue;
+        }
+        let mut obsah = Vec::with_capacity(velkost as usize);
+        if velkost > 0 {
+            for c in f.retaz(z, prvy)? {
+                obsah.extend(
+                    citaj_na(z, f.klaster(c), f.velkost_klastra() as usize).map_err(|e| e.to_string())?,
+                );
+                if obsah.len() as u64 >= velkost {
+                    break;
+                }
+            }
+        }
+        obsah.truncate(velkost as usize);
+        return Ok(obsah);
+    }
+    Err("prázdna cesta".into())
+}
+
 /// R131: rada, kam zariadenie postaviť, aby zostalo chladné (SADIČ ju ukáže po zápise, KLÍČ pri zdroji
 /// tepla). Domáci radiátor hreje hlavne stúpajúcim teplým vzduchom, zvislá doska sa chladí lepšie a kovová
 /// krabička je oproti plastovej o ~20 °C chladnejšia (meranie 21. 11. 2026).
@@ -602,6 +667,40 @@ mod skusky {
 
     fn hex(b: &[u8]) -> String {
         b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    #[test]
+    fn subor_v_podadresari_podla_mien_83() {
+        assert_eq!(meno_83("vdec"), Some(*b"VDEC       "));
+        assert_eq!(meno_83("sm1hevc.bin"), Some(*b"SM1HEVC BIN"));
+        assert_eq!(meno_83("sm1_hevc_mmu.bin"), None);
+        let mut o = skusobny_obraz(64);
+        let f = Fat32::najdi(&mut Cursor::new(&o)).unwrap();
+        // koreň (klaster 2): za SKLENIK.TXT pridať adresár VDEC (klaster 20) so súborom SM1HEVC.BIN (klaster 21)
+        let koren = f.klaster(2) as usize;
+        let volny = (0..16).map(|i| koren + 32 * i).find(|&i| o[i] == 0).unwrap();
+        let polozka = |meno: &[u8; 11], atr: u8, klaster: u32, velkost: u32| {
+            let mut z = [0u8; 32];
+            z[..11].copy_from_slice(meno);
+            z[11] = atr;
+            z[20..22].copy_from_slice(&((klaster >> 16) as u16).to_le_bytes());
+            z[26..28].copy_from_slice(&(klaster as u16).to_le_bytes());
+            z[28..32].copy_from_slice(&velkost.to_le_bytes());
+            z
+        };
+        o[volny..volny + 32].copy_from_slice(&polozka(b"VDEC       ", 0x10, 20, 0));
+        let adr = f.klaster(20) as usize;
+        o[adr..adr + 32].copy_from_slice(&polozka(b"SM1HEVC BIN", 0x20, 21, 5));
+        o[f.klaster(21) as usize..][..5].copy_from_slice(b"HEVC!");
+        for c in [20u64, 21] {
+            let i = (f.oddiel + f.rezervovane * f.bps + c * 4) as usize;
+            o[i..i + 4].copy_from_slice(&0x0FFF_FFFFu32.to_le_bytes());
+        }
+        assert_eq!(citaj_subor(&mut Cursor::new(&o), "vdec/sm1hevc.bin").unwrap(), b"HEVC!");
+        assert!(citaj_subor(&mut Cursor::new(&o), "vdec/sm1vp9.bin").is_err());
+        assert!(citaj_subor(&mut Cursor::new(&o), "sm1hevc.bin").is_err(), "súbor nie je v koreni");
+        let t = citaj_subor(&mut Cursor::new(&o), "sklenik.txt").unwrap();
+        assert!(String::from_utf8_lossy(&t).starts_with("#"));
     }
 
     #[test]
