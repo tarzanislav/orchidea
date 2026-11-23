@@ -47,13 +47,20 @@ mod chlad;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod pamat;
 
+// skúšobné video s presne známym obrazom (R165) – vlastný generátor tokov H.264 a HEVC
+#[cfg_attr(not(all(target_os = "linux", target_pointer_width = "64")), allow(dead_code))]
+mod video;
+
 // vlastný ovládač obrazovky cez DRM/KMS (R158 – chladný obraz)
 #[cfg(target_os = "linux")]
 mod kms;
 #[cfg(target_os = "linux")]
 mod linux;
+// vlastný klient dekodéra videa V4L2 (R165) – rozloženie štruktúr pre 64-bitové jadro
 #[cfg(target_os = "linux")]
 mod sys;
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+mod v4l2;
 #[cfg(target_os = "linux")]
 mod zaznam;
 

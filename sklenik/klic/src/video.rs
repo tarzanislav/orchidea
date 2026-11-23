@@ -1,0 +1,666 @@
+//! Skúšobné video s presne známym obrazom (R165) – vlastný generátor tokov H.264 a HEVC.
+//!
+//! Hardvérový dekodér sa dá overiť len tak, že sa mu dá tok, ktorého výsledok vieme **na bod presne**. Bežné
+//! video to nedovolí (kompresia so stratou – výsledok závisí od dekodéra). Preto KLÍČ skladá vlastné toky,
+//! v ktorých je každý blok **PCM** – nekomprimované vzorky priamo v toku (H.264 makrobloky I_PCM, HEVC
+//! kódovacie jednotky s pcm_flag). Dekodér ich musí vrátiť bit po bite; každá odchýlka je chyba dekodéra
+//! alebo ovládača a jej poloha (riadok, stĺpec, rovina) ukáže, kde.
+//!
+//! * **H.264** – entropické kódovanie CAVLC: I_PCM je len číslo typu makrobloku (ue 25) a zarovnanie.
+//! * **HEVC** – rez je vždy CABAC (aritmetické kódovanie): pre každú jednotku 16 × 16 sa zakóduje
+//!   `part_mode` (jeden binárny symbol s kontextom), `pcm_flag` (ukončovací symbol a vyprázdnenie kódera),
+//!   zarovnanie, vzorky a znovuspustenie kódera – presne podľa ITU-T H.265, kap. 9.3.
+//!
+//! Vzor obrazu mení každý bod inak (vodorovne, zvisle aj po snímkach), takže zámena riadkov, rovín, poradia
+//! snímok alebo posun o bod sa nedá skryť.
+//!
+//! Všetko je vlastný kód bez cudzích knižníc; generátor sa v CI overuje porovnaním s nezávislým dekodérom.
+
+/// Obraz 4:2:0 v troch rovinách (Y, Cb, Cr) bez zarovnania riadkov.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Obraz {
+    pub sirka: usize,
+    pub vyska: usize,
+    pub y: Vec<u8>,
+    pub cb: Vec<u8>,
+    pub cr: Vec<u8>,
+}
+
+/// Vzorový obraz snímky `n` – každý bod, riadok, rovina a snímka má inú hodnotu (aj nulu a 255, aby sa
+/// v toku objavili postupnosti, ktoré treba chrániť pred zámenou so štartovacím kódom 00 00 01).
+pub fn vzor(sirka: usize, vyska: usize, n: usize) -> Obraz {
+    let mut y = Vec::with_capacity(sirka * vyska);
+    for r in 0..vyska {
+        for s in 0..sirka {
+            // pomalý vodorovný a zvislý prechod + jemná šachovnica + posun po snímkach
+            let v = (s * 3 + r * 5 + n * 17 + ((s ^ r) & 4) * 9) & 0xFF;
+            y.push(if (s / 16 + r / 16 + n).is_multiple_of(7) { 0 } else { v as u8 });
+        }
+    }
+    let (cs, cv) = (sirka / 2, vyska / 2);
+    let mut cb = Vec::with_capacity(cs * cv);
+    let mut cr = Vec::with_capacity(cs * cv);
+    for r in 0..cv {
+        for s in 0..cs {
+            cb.push(((s * 7 + r * 2 + n * 29 + 40) & 0xFF) as u8);
+            cr.push(((255 + s + r * 11 + n * 13) & 0xFF) as u8);
+        }
+    }
+    Obraz { sirka, vyska, y, cb, cr }
+}
+
+/// Odchýlka bodu: (rovina, riadok, stĺpec, čakané, dekódované).
+pub type Odchylka = (&'static str, usize, usize, u8, u8);
+
+/// Prvá odchýlka dekódovanej snímky od vzoru a počet chýb.
+pub fn porovnaj(cakany: &Obraz, y: &[u8], cb: &[u8], cr: &[u8]) -> (usize, Option<Odchylka>) {
+    let mut chyb = 0;
+    let mut prva = None;
+    for (meno, ocakavane, dekodovane, sirka) in [
+        ("Y", &cakany.y, y, cakany.sirka),
+        ("Cb", &cakany.cb, cb, cakany.sirka / 2),
+        ("Cr", &cakany.cr, cr, cakany.sirka / 2),
+    ] {
+        for (i, (a, b)) in ocakavane.iter().zip(dekodovane).enumerate() {
+            if a != b {
+                chyb += 1;
+                prva.get_or_insert((meno, i / sirka, i % sirka, *a, *b));
+            }
+        }
+        chyb += ocakavane.len().saturating_sub(dekodovane.len());
+    }
+    (chyb, prva)
+}
+
+/// Zapisovač bitov (najvyšší bit bajtu prvý) s kódmi Exp-Golomb.
+#[derive(Default)]
+struct Bity {
+    data: Vec<u8>,
+    /// koľko bitov posledného bajtu je obsadených (0 = zarovnané)
+    obsadene: u32,
+}
+
+impl Bity {
+    fn bit(&mut self, b: u32) {
+        if self.obsadene == 0 {
+            self.data.push(0);
+        }
+        if b & 1 != 0 {
+            *self.data.last_mut().expect("bajt") |= 0x80 >> self.obsadene;
+        }
+        self.obsadene = (self.obsadene + 1) % 8;
+    }
+
+    fn u(&mut self, n: u32, v: u64) {
+        for i in (0..n).rev() {
+            self.bit((v >> i) as u32 & 1);
+        }
+    }
+
+    fn ue(&mut self, v: u64) {
+        let x = v + 1;
+        let n = 64 - x.leading_zeros();
+        self.u(n - 1, 0);
+        self.u(n, x);
+    }
+
+    fn se(&mut self, v: i64) {
+        self.ue(if v > 0 { (2 * v - 1) as u64 } else { (-2 * v) as u64 });
+    }
+
+    fn zarovnane(&self) -> bool {
+        self.obsadene == 0
+    }
+
+    fn nuly_do_zarovnania(&mut self) {
+        while !self.zarovnane() {
+            self.bit(0);
+        }
+    }
+
+    /// rbsp_trailing_bits: bit 1 a nuly do konca bajtu
+    fn koniec(&mut self) {
+        self.bit(1);
+        self.nuly_do_zarovnania();
+    }
+
+    fn bajty(&mut self, b: &[u8]) {
+        debug_assert!(self.zarovnane());
+        self.data.extend_from_slice(b);
+    }
+}
+
+/// Jednotka NAL so štartovacím kódom: hlavička + RBSP s ochranou proti emulácii (00 00 0x → 00 00 03 0x).
+fn nal(hlavicka: &[u8], rbsp: &[u8]) -> Vec<u8> {
+    let mut v = vec![0, 0, 0, 1];
+    v.extend_from_slice(hlavicka);
+    let mut nuly = 0;
+    for &b in rbsp {
+        if nuly >= 2 && b <= 3 {
+            v.push(3);
+            nuly = 0;
+        }
+        v.push(b);
+        nuly = if b == 0 { nuly + 1 } else { 0 };
+    }
+    v
+}
+
+fn bloky(o: &Obraz, x: usize, y: usize, velkost: usize, ciel: &mut Vec<u8>) {
+    for r in 0..velkost {
+        ciel.extend_from_slice(&o.y[(y + r) * o.sirka + x..][..velkost]);
+    }
+    let (cx, cy, cv, cs) = (x / 2, y / 2, velkost / 2, o.sirka / 2);
+    for rovina in [&o.cb, &o.cr] {
+        for r in 0..cv {
+            ciel.extend_from_slice(&rovina[(cy + r) * cs + cx..][..cv]);
+        }
+    }
+}
+
+/// Tok H.264 (Annex B) zo snímok – po jednej prístupovej jednotke na snímku (prvá má aj SPS a PPS). Každá
+/// snímka je IDR, všetky makrobloky I_PCM. Rozmery musia byť násobkom 16.
+pub fn h264_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
+    let (sirka, vyska) = (snimky[0].sirka, snimky[0].vyska);
+    assert!(sirka % 16 == 0 && vyska % 16 == 0);
+    let mut sps = Bity::default();
+    sps.u(8, 66); // Baseline
+    sps.u(8, 0xC0); // constraint_set0/1 – Constrained Baseline
+    sps.u(8, 40); // úroveň 4.0
+    sps.ue(0); // seq_parameter_set_id
+    sps.ue(0); // log2_max_frame_num_minus4
+    sps.ue(2); // pic_order_cnt_type
+    sps.ue(1); // max_num_ref_frames
+    sps.u(1, 0); // gaps_in_frame_num_value_allowed_flag
+    sps.ue((sirka / 16 - 1) as u64);
+    sps.ue((vyska / 16 - 1) as u64);
+    sps.u(1, 1); // frame_mbs_only_flag
+    sps.u(1, 1); // direct_8x8_inference_flag
+    sps.u(1, 0); // frame_cropping_flag
+    sps.u(1, 1); // vui_parameters_present_flag
+    sps.u(4, 0); // aspect_ratio, overscan, video_signal_type, chroma_loc – nie
+    sps.u(1, 1); // timing_info_present_flag
+    sps.u(32, 1); // num_units_in_tick
+    sps.u(32, 50); // time_scale → 25 snímok/s
+    sps.u(1, 1); // fixed_frame_rate_flag
+    sps.u(2, 0); // nal/vcl_hrd_parameters_present_flag
+    sps.u(1, 0); // pic_struct_present_flag
+    sps.u(1, 1); // bitstream_restriction_flag
+    sps.u(1, 1); // motion_vectors_over_pic_boundaries_flag
+    sps.ue(0); // max_bytes_per_pic_denom
+    sps.ue(0); // max_bits_per_mb_denom
+    sps.ue(15); // log2_max_mv_length_horizontal
+    sps.ue(15); // log2_max_mv_length_vertical
+    sps.ue(0); // max_num_reorder_frames – snímka von hneď
+    sps.ue(1); // max_dec_frame_buffering
+    sps.koniec();
+
+    let mut pps = Bity::default();
+    pps.ue(0); // pic_parameter_set_id
+    pps.ue(0); // seq_parameter_set_id
+    pps.u(1, 0); // entropy_coding_mode_flag – CAVLC
+    pps.u(1, 0); // bottom_field_pic_order_in_frame_present_flag
+    pps.ue(0); // num_slice_groups_minus1
+    pps.ue(0); // num_ref_idx_l0_default_active_minus1
+    pps.ue(0); // num_ref_idx_l1_default_active_minus1
+    pps.u(1, 0); // weighted_pred_flag
+    pps.u(2, 0); // weighted_bipred_idc
+    pps.se(0); // pic_init_qp_minus26
+    pps.se(0); // pic_init_qs_minus26
+    pps.se(0); // chroma_qp_index_offset
+    pps.u(1, 1); // deblocking_filter_control_present_flag
+    pps.u(1, 0); // constrained_intra_pred_flag
+    pps.u(1, 0); // redundant_pic_cnt_present_flag
+    pps.koniec();
+
+    snimky
+        .iter()
+        .enumerate()
+        .map(|(n, o)| {
+            let mut au = Vec::new();
+            if n == 0 {
+                au.extend(nal(&[0x67], &sps.data));
+                au.extend(nal(&[0x68], &pps.data));
+            }
+            let mut rez = Bity::default();
+            rez.ue(0); // first_mb_in_slice
+            rez.ue(7); // slice_type I (všetky rezy snímky)
+            rez.ue(0); // pic_parameter_set_id
+            rez.u(4, 0); // frame_num
+            rez.ue((n % 2) as u64); // idr_pic_id – susedné IDR sa líšia
+            rez.u(1, 0); // no_output_of_prior_pics_flag
+            rez.u(1, 0); // long_term_reference_flag
+            rez.se(0); // slice_qp_delta
+            rez.ue(1); // disable_deblocking_filter_idc – filter vypnutý
+            let mut vzorky = Vec::with_capacity(384);
+            for my in (0..vyska).step_by(16) {
+                for mx in (0..sirka).step_by(16) {
+                    rez.ue(25); // mb_type I_PCM
+                    rez.nuly_do_zarovnania(); // pcm_alignment_zero_bit
+                    vzorky.clear();
+                    bloky(o, mx, my, 16, &mut vzorky);
+                    rez.bajty(&vzorky);
+                }
+            }
+            rez.koniec();
+            au.extend(nal(&[0x65], &rez.data));
+            au
+        })
+        .collect()
+}
+
+/// Pravdepodobnostné kódovanie CABAC (ITU-T H.265, kap. 9.3.4.3 a 9.3.5) – len kóder, len to, čo tok PCM
+/// potrebuje: binárne symboly s kontextom a ukončovací symbol s vyprázdnením.
+struct Cabac {
+    bity: Bity,
+    low: u32,
+    range: u32,
+    prvy_bit: bool,
+    odlozene: u32,
+}
+
+/// rangeTabLps[pStateIdx][qRangeIdx] (Tabuľka 9-46).
+const RANGE_LPS: [[u8; 4]; 64] = [
+    [128, 176, 208, 240],
+    [128, 167, 197, 227],
+    [128, 158, 187, 216],
+    [123, 150, 178, 205],
+    [116, 142, 169, 195],
+    [111, 135, 160, 185],
+    [105, 128, 152, 175],
+    [100, 122, 144, 166],
+    [95, 116, 137, 158],
+    [90, 110, 130, 150],
+    [85, 104, 123, 142],
+    [81, 99, 117, 135],
+    [77, 94, 111, 128],
+    [73, 89, 105, 122],
+    [69, 85, 100, 116],
+    [66, 80, 95, 110],
+    [62, 76, 90, 104],
+    [59, 72, 86, 99],
+    [56, 69, 81, 94],
+    [53, 65, 77, 89],
+    [51, 62, 73, 85],
+    [48, 59, 69, 80],
+    [46, 56, 66, 76],
+    [43, 53, 63, 72],
+    [41, 50, 59, 69],
+    [39, 48, 56, 65],
+    [37, 45, 54, 62],
+    [35, 43, 51, 59],
+    [33, 41, 48, 56],
+    [32, 39, 46, 53],
+    [30, 37, 43, 50],
+    [29, 35, 41, 48],
+    [27, 33, 39, 45],
+    [26, 31, 37, 43],
+    [24, 30, 35, 41],
+    [23, 28, 33, 39],
+    [22, 27, 32, 37],
+    [21, 26, 30, 35],
+    [20, 24, 29, 33],
+    [19, 23, 27, 31],
+    [18, 22, 26, 30],
+    [17, 21, 25, 28],
+    [16, 20, 23, 27],
+    [15, 19, 22, 25],
+    [14, 18, 21, 24],
+    [14, 17, 20, 23],
+    [13, 16, 19, 22],
+    [12, 15, 18, 21],
+    [12, 14, 17, 20],
+    [11, 14, 16, 19],
+    [11, 13, 15, 18],
+    [10, 12, 15, 17],
+    [10, 12, 14, 16],
+    [9, 11, 13, 15],
+    [9, 11, 12, 14],
+    [8, 10, 12, 14],
+    [8, 9, 11, 13],
+    [7, 9, 11, 12],
+    [7, 9, 10, 12],
+    [7, 8, 10, 11],
+    [6, 8, 9, 11],
+    [6, 7, 9, 10],
+    [6, 7, 8, 9],
+    [2, 2, 2, 2],
+];
+
+/// transIdxLps (Tabuľka 9-47); transIdxMps je min(stav + 1, 62).
+const PRECHOD_LPS: [u8; 64] = [
+    0, 0, 1, 2, 2, 4, 4, 5, 6, 7, 8, 9, 9, 11, 11, 12, 13, 13, 15, 15, 16, 16, 18, 18, 19, 19, 21, 21, 22,
+    22, 23, 24, 24, 25, 26, 26, 27, 27, 28, 29, 29, 30, 30, 30, 31, 32, 32, 33, 33, 33, 34, 34, 35, 35, 35,
+    36, 36, 36, 37, 37, 37, 38, 38, 63,
+];
+
+/// Kontext: (stav pravdepodobnosti, hodnota pravdepodobnejšieho symbolu).
+#[derive(Clone, Copy)]
+struct Kontext {
+    stav: u8,
+    mps: u8,
+}
+
+impl Kontext {
+    /// Počiatočný stav z hodnoty initValue a QP rezu (9.3.2.2).
+    fn novy(init: u32, qp: i32) -> Kontext {
+        let m = (init >> 4) as i32 * 5 - 45;
+        let n = (((init & 15) << 3) as i32) - 16;
+        let pre = (((m * qp.clamp(0, 51)) >> 4) + n).clamp(1, 126);
+        if pre <= 63 {
+            Kontext { stav: (63 - pre) as u8, mps: 0 }
+        } else {
+            Kontext { stav: (pre - 64) as u8, mps: 1 }
+        }
+    }
+}
+
+impl Cabac {
+    fn novy(bity: Bity) -> Cabac {
+        Cabac { bity, low: 0, range: 510, prvy_bit: true, odlozene: 0 }
+    }
+
+    fn put_bit(&mut self, b: u32) {
+        if self.prvy_bit {
+            self.prvy_bit = false;
+        } else {
+            self.bity.bit(b);
+        }
+        while self.odlozene > 0 {
+            self.bity.bit(1 - b);
+            self.odlozene -= 1;
+        }
+    }
+
+    fn renorm(&mut self) {
+        while self.range < 256 {
+            if self.low < 256 {
+                self.put_bit(0);
+            } else if self.low >= 512 {
+                self.low -= 512;
+                self.put_bit(1);
+            } else {
+                self.low -= 256;
+                self.odlozene += 1;
+            }
+            self.range <<= 1;
+            self.low <<= 1;
+        }
+    }
+
+    fn symbol(&mut self, k: &mut Kontext, b: u8) {
+        let lps = RANGE_LPS[k.stav as usize][((self.range >> 6) & 3) as usize] as u32;
+        self.range -= lps;
+        if b != k.mps {
+            self.low += self.range;
+            self.range = lps;
+            if k.stav == 0 {
+                k.mps = 1 - k.mps;
+            }
+            k.stav = PRECHOD_LPS[k.stav as usize];
+        } else {
+            k.stav = (k.stav + 1).min(62);
+        }
+        self.renorm();
+    }
+
+    /// Ukončovací symbol (end_of_slice_segment_flag, pcm_flag); pri 1 sa kóder vyprázdni – posledný zapísaný
+    /// bit je 1 a čítanie dekodéra skončí presne za ním.
+    fn ukoncovaci(&mut self, b: bool) {
+        self.range -= 2;
+        if b {
+            self.low += self.range;
+            self.range = 2;
+            self.renorm();
+            self.put_bit((self.low >> 9) & 1);
+            let posledne = ((self.low >> 7) & 3) | 1;
+            self.bity.u(2, posledne as u64);
+        } else {
+            self.renorm();
+        }
+    }
+
+    /// Znovuspustenie aritmetického kódera po vzorkách PCM (kontexty ostávajú).
+    fn znova(&mut self) {
+        self.low = 0;
+        self.range = 510;
+        self.prvy_bit = true;
+        self.odlozene = 0;
+    }
+}
+
+/// profile_tier_level pre profil Main, úroveň 3.1, jedna časová vrstva.
+fn hevc_profil(b: &mut Bity) {
+    b.u(2, 0); // general_profile_space
+    b.u(1, 0); // general_tier_flag
+    b.u(5, 1); // general_profile_idc – Main
+    b.u(32, 0x6000_0000); // kompatibilita s Main a Main 10
+    b.u(1, 1); // general_progressive_source_flag
+    b.u(1, 0); // general_interlaced_source_flag
+    b.u(1, 0); // general_non_packed_constraint_flag
+    b.u(1, 1); // general_frame_only_constraint_flag
+    b.u(44, 0); // rezervované
+    b.u(8, 93); // general_level_idc – 3.1
+}
+
+/// Tok HEVC (Annex B) – po jednej prístupovej jednotke na snímku (prvá má aj VPS, SPS a PPS). Každá snímka je
+/// IDR, kódovacie jednotky 16 × 16 s pcm_flag. Rozmery musia byť násobkom 16.
+pub fn hevc_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
+    let (sirka, vyska) = (snimky[0].sirka, snimky[0].vyska);
+    assert!(sirka % 16 == 0 && vyska % 16 == 0);
+    let mut vps = Bity::default();
+    vps.u(4, 0); // vps_video_parameter_set_id
+    vps.u(1, 1); // vps_base_layer_internal_flag
+    vps.u(1, 1); // vps_base_layer_available_flag
+    vps.u(6, 0); // vps_max_layers_minus1
+    vps.u(3, 0); // vps_max_sub_layers_minus1
+    vps.u(1, 1); // vps_temporal_id_nesting_flag
+    vps.u(16, 0xFFFF);
+    hevc_profil(&mut vps);
+    vps.u(1, 1); // vps_sub_layer_ordering_info_present_flag
+    vps.ue(1); // vps_max_dec_pic_buffering_minus1
+    vps.ue(0); // vps_max_num_reorder_pics
+    vps.ue(0); // vps_max_latency_increase_plus1
+    vps.u(6, 0); // vps_max_layer_id
+    vps.ue(0); // vps_num_layer_sets_minus1
+    vps.u(1, 0); // vps_timing_info_present_flag
+    vps.u(1, 0); // vps_extension_flag
+    vps.koniec();
+
+    let mut sps = Bity::default();
+    sps.u(4, 0); // sps_video_parameter_set_id
+    sps.u(3, 0); // sps_max_sub_layers_minus1
+    sps.u(1, 1); // sps_temporal_id_nesting_flag
+    hevc_profil(&mut sps);
+    sps.ue(0); // sps_seq_parameter_set_id
+    sps.ue(1); // chroma_format_idc – 4:2:0
+    sps.ue(sirka as u64);
+    sps.ue(vyska as u64);
+    sps.u(1, 0); // conformance_window_flag
+    sps.ue(0); // bit_depth_luma_minus8
+    sps.ue(0); // bit_depth_chroma_minus8
+    sps.ue(4); // log2_max_pic_order_cnt_lsb_minus4
+    sps.u(1, 1); // sps_sub_layer_ordering_info_present_flag
+    sps.ue(1); // sps_max_dec_pic_buffering_minus1
+    sps.ue(0); // sps_max_num_reorder_pics
+    sps.ue(0); // sps_max_latency_increase_plus1
+    sps.ue(1); // log2_min_luma_coding_block_size_minus3 – 16
+    sps.ue(0); // log2_diff_max_min_luma_coding_block_size – CTB 16
+    sps.ue(0); // log2_min_luma_transform_block_size_minus2
+    sps.ue(2); // log2_diff_max_min_luma_transform_block_size
+    sps.ue(0); // max_transform_hierarchy_depth_inter
+    sps.ue(0); // max_transform_hierarchy_depth_intra
+    sps.u(1, 0); // scaling_list_enabled_flag
+    sps.u(1, 0); // amp_enabled_flag
+    sps.u(1, 0); // sample_adaptive_offset_enabled_flag
+    sps.u(1, 1); // pcm_enabled_flag
+    sps.u(4, 7); // pcm_sample_bit_depth_luma_minus1
+    sps.u(4, 7); // pcm_sample_bit_depth_chroma_minus1
+    sps.ue(1); // log2_min_pcm_luma_coding_block_size_minus3 – 16
+    sps.ue(0); // log2_diff_max_min_pcm_luma_coding_block_size
+    sps.u(1, 1); // pcm_loop_filter_disabled_flag
+    sps.ue(0); // num_short_term_ref_pic_sets
+    sps.u(1, 0); // long_term_ref_pics_present_flag
+    sps.u(1, 0); // sps_temporal_mvp_enabled_flag
+    sps.u(1, 0); // strong_intra_smoothing_enabled_flag
+    sps.u(1, 0); // vui_parameters_present_flag
+    sps.u(1, 0); // sps_extension_present_flag
+    sps.koniec();
+
+    let mut pps = Bity::default();
+    pps.ue(0); // pps_pic_parameter_set_id
+    pps.ue(0); // pps_seq_parameter_set_id
+    pps.u(1, 0); // dependent_slice_segments_enabled_flag
+    pps.u(1, 0); // output_flag_present_flag
+    pps.u(3, 0); // num_extra_slice_header_bits
+    pps.u(1, 0); // sign_data_hiding_enabled_flag
+    pps.u(1, 0); // cabac_init_present_flag
+    pps.ue(0); // num_ref_idx_l0_default_active_minus1
+    pps.ue(0); // num_ref_idx_l1_default_active_minus1
+    pps.se(0); // init_qp_minus26
+    pps.u(1, 0); // constrained_intra_pred_flag
+    pps.u(1, 0); // transform_skip_enabled_flag
+    pps.u(1, 0); // cu_qp_delta_enabled_flag
+    pps.se(0); // pps_cb_qp_offset
+    pps.se(0); // pps_cr_qp_offset
+    pps.u(1, 0); // pps_slice_chroma_qp_offsets_present_flag
+    pps.u(1, 0); // weighted_pred_flag
+    pps.u(1, 0); // weighted_bipred_flag
+    pps.u(1, 0); // transquant_bypass_enabled_flag
+    pps.u(1, 0); // tiles_enabled_flag
+    pps.u(1, 0); // entropy_coding_sync_enabled_flag
+    pps.u(1, 0); // pps_loop_filter_across_slices_enabled_flag
+    pps.u(1, 1); // deblocking_filter_control_present_flag
+    pps.u(1, 0); // deblocking_filter_override_enabled_flag
+    pps.u(1, 1); // pps_deblocking_filter_disabled_flag
+    pps.u(1, 0); // pps_scaling_list_data_present_flag
+    pps.u(1, 0); // lists_modification_present_flag
+    pps.ue(0); // log2_parallel_merge_level_minus2
+    pps.u(1, 0); // slice_segment_header_extension_present_flag
+    pps.u(1, 0); // pps_extension_present_flag
+    pps.koniec();
+
+    // part_mode, initType 0 (rez I): initValue 184; QP rezu 26
+    let qp = 26;
+    snimky
+        .iter()
+        .enumerate()
+        .map(|(n, o)| {
+            let mut au = Vec::new();
+            if n == 0 {
+                au.extend(nal(&[0x40, 0x01], &vps.data));
+                au.extend(nal(&[0x42, 0x01], &sps.data));
+                au.extend(nal(&[0x44, 0x01], &pps.data));
+            }
+            let mut rez = Bity::default();
+            rez.u(1, 1); // first_slice_segment_in_pic_flag
+            rez.u(1, 0); // no_output_of_prior_pics_flag
+            rez.ue(0); // slice_pic_parameter_set_id
+            rez.ue(2); // slice_type I
+            rez.se(0); // slice_qp_delta
+            // byte_alignment(): bit 1 a nuly
+            rez.koniec();
+            let mut c = Cabac::novy(rez);
+            let mut part_mode = Kontext::novy(184, qp);
+            let mut vzorky = Vec::with_capacity(384);
+            let (sx, sy) = (sirka / 16, vyska / 16);
+            for i in 0..sx * sy {
+                let (x, y) = (i % sx * 16, i / sx * 16);
+                c.symbol(&mut part_mode, 1); // PART_2Nx2N
+                c.ukoncovaci(true); // pcm_flag
+                c.bity.nuly_do_zarovnania(); // pcm_alignment_zero_bit
+                vzorky.clear();
+                bloky(o, x, y, 16, &mut vzorky);
+                c.bity.bajty(&vzorky);
+                c.znova();
+                c.ukoncovaci(i + 1 == sx * sy); // end_of_slice_segment_flag
+            }
+            // posledný bit vyprázdnenia je rbsp_stop_one_bit, ďalej len zarovnanie nulami
+            c.bity.nuly_do_zarovnania();
+            au.extend(nal(&[0x28, 0x01], &c.bity.data)); // IDR_N_LP
+            au
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod testy {
+    use super::*;
+
+    #[test]
+    fn exp_golomb_a_ochrana_pred_emulaciou() {
+        let mut b = Bity::default();
+        b.ue(0);
+        b.ue(1);
+        b.ue(2);
+        b.ue(25);
+        b.se(-1);
+        b.koniec();
+        // 1 010 011 000011010 011 1(stop) → 1010 0110 0001 1010 0111 + zarovnanie
+        assert_eq!(b.data, vec![0b1010_0110, 0b0001_1010, 0b0111_0000]);
+        assert_eq!(
+            nal(&[0x65], &[0, 0, 1, 0, 0, 0, 0, 0, 3]),
+            vec![0, 0, 0, 1, 0x65, 0, 0, 3, 1, 0, 0, 3, 0, 0, 3, 0, 3]
+        );
+    }
+
+    #[test]
+    fn kontext_part_mode_pre_rez_i() {
+        let k = Kontext::novy(184, 26);
+        assert_eq!((k.stav, k.mps), (0, 1));
+        // initValue 154 je neutrálny (m = 0, n = 64) – stav 0 s MPS 1 pri každom QP
+        let k = Kontext::novy(154, 26);
+        assert_eq!((k.stav, k.mps), (0, 1));
+    }
+
+    #[test]
+    fn vzor_je_rozny_pre_body_riadky_a_snimky() {
+        let a = vzor(64, 32, 0);
+        let b = vzor(64, 32, 1);
+        assert_ne!(a.y, b.y);
+        assert_ne!(a.cb, b.cb);
+        assert_ne!(a.cr, b.cr);
+        assert!(a.y.contains(&0) && a.y.iter().any(|&v| v > 200));
+        let (chyb, prva) = porovnaj(&a, &a.y, &a.cb, &a.cr);
+        assert_eq!((chyb, prva), (0, None));
+        let mut y = a.y.clone();
+        y[64 * 3 + 5] ^= 1;
+        let (chyb, prva) = porovnaj(&a, &y, &a.cb, &a.cr);
+        assert_eq!(chyb, 1);
+        assert_eq!(prva.map(|p| (p.0, p.1, p.2)), Some(("Y", 3, 5)));
+    }
+
+    #[test]
+    fn toky_maju_spravnu_stavbu() {
+        let snimky: Vec<Obraz> = (0..2).map(|n| vzor(64, 48, n)).collect();
+        let h = h264_pcm(&snimky);
+        assert_eq!(h.len(), 2);
+        assert_eq!(&h[0][..5], &[0, 0, 0, 1, 0x67]);
+        let e = hevc_pcm(&snimky);
+        assert_eq!(e.len(), 2);
+        assert_eq!(&e[0][..6], &[0, 0, 0, 1, 0x40, 0x01]);
+        // druhá snímka je len rez (bez VPS/SPS/PPS)
+        assert_eq!(&e[1][..6], &[0, 0, 0, 1, 0x28, 0x01]);
+        // PCM: aspoň vzorky všetkých bodov (1,5 B na bod)
+        assert!(e[1].len() > 64 * 48 * 3 / 2);
+    }
+
+    /// Ručné overenie nezávislým dekodérom: `cargo test -p sklenik-klic -- --ignored zapis_skusobne_toky`
+    /// zapíše toky a čakané obrazy do adresára z premennej SKLENIK_VIDEO (inak do dočasného adresára).
+    #[test]
+    #[ignore]
+    fn zapis_skusobne_toky() {
+        let dir =
+            std::env::var("SKLENIK_VIDEO").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
+        let snimky: Vec<Obraz> = (0..3).map(|n| vzor(320, 240, n)).collect();
+        std::fs::write(format!("{dir}/pcm.h264"), h264_pcm(&snimky).concat()).unwrap();
+        std::fs::write(format!("{dir}/pcm.hevc"), hevc_pcm(&snimky).concat()).unwrap();
+        let mut yuv = Vec::new();
+        for o in &snimky {
+            yuv.extend_from_slice(&o.y);
+            yuv.extend_from_slice(&o.cb);
+            yuv.extend_from_slice(&o.cr);
+        }
+        std::fs::write(format!("{dir}/pcm.yuv"), yuv).unwrap();
+    }
+}

@@ -516,6 +516,56 @@ fn rychlost_siete(mbs: u32) -> String {
     if mbs >= 1000 { "1 Gb/s".into() } else { format!("{mbs} Mb/s") }
 }
 
+/// R165: dekodér videa vo vlastnom vlákne – zoznam formátov a (s nastavením `video=ano`) skúška vlastnými
+/// tokmi H.264 a HEVC s presne známym obrazom. Každý krok sa hneď oznámi (keby dekodér zamrzol, v denníku
+/// ostane, pri ktorom formáte).
+fn spusti_skusku_videa(skusat: bool, riadky: Arc<Mutex<Vec<String>>>) {
+    std::thread::spawn(move || {
+        let pridaj = |r: String| {
+            hlas(&format!("video: {r}"));
+            if let Ok(mut v) = riadky.lock() {
+                v.push(r);
+            }
+        };
+        #[cfg(target_pointer_width = "64")]
+        {
+            use crate::{v4l2, video};
+            let Some(d) = v4l2::najdi() else {
+                pridaj("hardvérový dekodér nenájdený".into());
+                return;
+            };
+            pridaj(format!("dekodér {}", d.popis()));
+            if !skusat {
+                pridaj("skúška vlastnými tokmi vypnutá (zapne ju riadok video=ano v SKLENIK.TXT)".into());
+                return;
+            }
+            let snimky: Vec<video::Obraz> = (0..8).map(|n| video::vzor(320, 240, n)).collect();
+            for (f, meno, toky) in [
+                (v4l2::H264, "H.264", video::h264_pcm(&snimky)),
+                (v4l2::HEVC, "HEVC", video::hevc_pcm(&snimky)),
+            ] {
+                if !d.vie(f) {
+                    pridaj(format!("{meno}: dekodér tento formát nepozná"));
+                    continue;
+                }
+                pridaj(format!(
+                    "{meno}: skúška – {} snímok 320×240 (bloky PCM, presne známy obraz)",
+                    snimky.len()
+                ));
+                match v4l2::skus(&d.cesta, f, &toky, &snimky, Duration::from_secs(10)) {
+                    Ok(v) => pridaj(format!("{meno}: {}", v.popis(snimky.len()))),
+                    Err(e) => pridaj(format!("{meno}: chyba – {e}")),
+                }
+            }
+        }
+        #[cfg(not(target_pointer_width = "64"))]
+        {
+            let _ = skusat;
+            pridaj("dekodér videa: len s 64-bitovým jadrom".into());
+        }
+    });
+}
+
 /// Teplota snímača pamäte DDR (zóna „ddr-thermal“), ak ho čip má.
 fn teplota_pamate() -> Option<f64> {
     for z in fs::read_dir("/sys/class/thermal").ok()?.flatten() {
@@ -974,6 +1024,9 @@ pub fn spusti() {
     let mut kmsg = Hlasenia::otvor(&model);
     kmsg.citaj();
     let mut usb_ozivene = false;
+    // R165: hardvérový dekodér videa – výsledky skúšky (vlákno) a či už bežala
+    let video_riadky: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut video_spustene = false;
     let mut bez_teploty_hlasene = false;
     let mut teplota = hw.teplota();
     let mut posledny_krok = Instant::now();
@@ -1236,6 +1289,15 @@ pub fn spusti() {
                     posledny_supis = Instant::now() - Duration::from_secs(60);
                 }
             }
+        }
+
+        // R165: dekodér videa – zoznam formátov vždy; s nastavením video=ano aj skúška vlastnými tokmi s presne
+        // známym obrazom (H.264 a HEVC). Raz, 20 s po štarte (po načítaní nastavenia, najneskôr po minúte).
+        let hore = uptime().unwrap_or(0.0);
+        if pid1 && !skuska && !video_spustene && hore >= 20.0 && (nastavenie.is_some() || hore >= 60.0) {
+            video_spustene = true;
+            let skusat = nastavenie.as_ref().and_then(|(_, n)| n.video) == Some(true);
+            spusti_skusku_videa(skusat, video_riadky.clone());
         }
 
         // R158–R161: správca chladu – obraz, periférie a fázy tepelného pokusu
@@ -1597,6 +1659,14 @@ pub fn spusti() {
                         vytazenie_teraz.map_or("–".into(), |v| format!("{:.0} %", v * 100.0)),
                     );
                     text += &format!("  {}{NL}", rozpoznanie(&model, &poda, profil));
+                    if let Ok(v) = video_riadky.lock()
+                        && !v.is_empty()
+                    {
+                        text += &nadpis("VIDEO – HARDVÉROVÝ DEKODÉR (R165)");
+                        for r in v.iter() {
+                            text += &format!("  {r}{NL}");
+                        }
+                    }
                     if tv {
                         text += &nadpis("SPRÁVCA CHLADU (R158–R164)");
                         // R162: priemerný tok pamäte od posledného záznamu

@@ -604,3 +604,32 @@ pub fn tolerancia_casovacov(ns: u64) {
     // SAFETY: PR_SET_TIMERSLACK (29) s číselným argumentom; výsledok netreba.
     unsafe { prctl(29, ns as c_ulong) };
 }
+
+/// Čaká na udalosti `udalosti` (POLLIN 1, POLLPRI 2, POLLOUT 4) jedného deskriptora najviac `ms` milisekúnd;
+/// vráti, čo nastalo (0 = vypršal čas).
+pub fn cakaj_na(fd: c_int, udalosti: i16, ms: u64) -> io::Result<i16> {
+    let mut p = [PollFd { fd, udalosti, vratene: 0 }];
+    let ms = ms.min(i32::MAX as u64) as c_int;
+    // SAFETY: p je platné pole struct pollfd s dĺžkou 1, žije počas volania.
+    let n = unsafe { poll(p.as_mut_ptr(), 1, ms) };
+    if n < 0 {
+        let e = io::Error::last_os_error();
+        return if e.raw_os_error() == Some(4) { Ok(0) } else { Err(e) };
+    }
+    Ok(p[0].vratene)
+}
+
+/// Ako [`ioctl_struct`], ale „skús znova“ (EAGAIN) vráti volajúcemu – pre neblokujúce zariadenia (V4L2: ešte
+/// nie je hotový buffer). Opakuje sa len prerušenie signálom.
+pub fn ioctl_raz<T: Copy>(fd: c_int, poziadavka: c_ulong, s: &mut T) -> io::Result<()> {
+    loop {
+        // SAFETY: ako pri ioctl_struct – štruktúra s veľkosťou z požiadavky, ukazovatele zaručuje volajúci.
+        if unsafe { ioctl(fd, poziadavka, s as *mut T as *mut c_void) } >= 0 {
+            return Ok(());
+        }
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(4) {
+            return Err(e);
+        }
+    }
+}

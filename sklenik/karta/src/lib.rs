@@ -302,6 +302,9 @@ pub struct NastavenieZariadenia {
     pub vypni_min: Option<u32>,
     /// Tepelný pokus namiesto bežného samomerania (R160): `Some(false)` = vypnutý.
     pub pokus: Option<bool>,
+    /// Skúška hardvérového dekodéra videa pri štarte (R165) – vlastné toky s presne známym obrazom:
+    /// `Some(true)` = áno (H.264 a HEVC), inak len zoznam formátov dekodéra.
+    pub video: Option<bool>,
 }
 
 impl NastavenieZariadenia {
@@ -341,6 +344,10 @@ impl NastavenieZariadenia {
                 "pokus" => match ano_nie(v) {
                     Some(m) => n.pokus = Some(m),
                     None => upozornenia.push(format!("riadok {}: pokus má byť ano alebo nie", i + 1)),
+                },
+                "video" => match ano_nie(v) {
+                    Some(m) => n.video = Some(m),
+                    None => upozornenia.push(format!("riadok {}: video má byť ano alebo nie", i + 1)),
                 },
                 "obraz" => match v.to_lowercase().as_str() {
                     "chladny" | "chladný" => n.obraz = Some("chladny".into()),
@@ -690,6 +697,8 @@ mod skusky {
             (z.obraz.as_deref(), z.zhasni_min, z.vypni_min, z.pokus, u.len()),
             (Some("povodny"), Some(0), Some(15), Some(false), 0)
         );
+        let (z, u) = NastavenieZariadenia::z_textu("video=ano\n");
+        assert_eq!((z.video, u.len()), (Some(true), 0));
         let (z, u) = NastavenieZariadenia::z_textu("obraz=farebny\nzhasni=-1\nvypni=99999\n");
         assert_eq!((z.obraz, z.zhasni_min, z.vypni_min, u.len()), (None, None, None, 3));
     }
