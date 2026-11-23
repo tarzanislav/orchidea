@@ -130,19 +130,6 @@ jobs:
           file "$b"
           ${{ matrix.qemu }} -cpu ${{ matrix.cpu }} "$b" --skuska
           mkdir -p klic-vystup && cp "$b" klic-vystup/klic
-      - name: R165 – skúšobné video KLÍČA overené nezávislým dekodérom (FFmpeg) bit po bite
-        if: matrix.id == 'v8'
-        run: |
-          sh nastroje/balicky.sh ffmpeg
-          mkdir -p /tmp/vid
-          SKLENIK_VIDEO=/tmp/vid cargo test --locked --release -p sklenik-klic --target ${{ matrix.ciel }} -- --ignored zapis_skusobne_toky
-          for f in h264 hevc; do
-            ffmpeg -v error -i /tmp/vid/pcm.$f -f rawvideo -pix_fmt yuv420p -y /tmp/vid/dek.$f.yuv
-            cmp /tmp/vid/dek.$f.yuv /tmp/vid/pcm.yuv && echo "- ✅ skúšobný tok $f: FFmpeg dekóduje presne vzor (bit po bite)" | tee -a "$GITHUB_STEP_SUMMARY"
-          done
-          # R177: HEVC so skupinami snímok – P-snímky s preskočenými jednotkami cez referenciu, časovanie VUI
-          ffmpeg -v error -i /tmp/vid/gop.hevc -f rawvideo -pix_fmt yuv420p -y /tmp/vid/dek.gop.yuv
-          cmp /tmp/vid/dek.gop.yuv /tmp/vid/gop.yuv && echo "- ✅ skúšobný tok HEVC so skupinami (P cez referenciu): FFmpeg dekóduje presne (bit po bite)" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: klic-${{ matrix.id }}
@@ -158,41 +145,13 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: jadro-vystup
-          key: jadro-s905x3-${{ env.ODROID_JADRO }}-${{ hashFiles('sklenik/jadro.config', 'sklenik/jadro-odroid.config', 'sklenik/jadro-ovladace/*') }}
+          key: jadro-s905x3-${{ env.ODROID_JADRO }}-${{ hashFiles('sklenik/jadro.config', 'sklenik/jadro-odroid.config') }}
       - name: Jadro Linux z kernel.org + nastavenie SKLENÍKA pre Odroid C4
         if: steps.pamat.outputs.cache-hit != 'true'
         run: |
           sh nastroje/balicky.sh bc bison flex libssl-dev make gcc xz-utils
           curl -sSfL "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${ODROID_JADRO}.tar.xz" | tar xJ
           cd "linux-${ODROID_JADRO}"
-          # R166: vlastné ovládače SKLENÍKA priamo v jadre (takt obvodu obrazu VPU podľa potreby)
-          cp ../sklenik/jadro-ovladace/sklenik_vpu.c drivers/soc/amlogic/
-          echo 'obj-y += sklenik_vpu.o' >> drivers/soc/amlogic/Makefile
-          # R174: vlastný kodek HEVC v jadre meson-vdec (formát HEVC pre SM1, prívod toku podľa voľných snímok)
-          cp ../sklenik/jadro-ovladace/sklenik_hevc.c ../sklenik/jadro-ovladace/sklenik_hevc.h drivers/staging/media/meson/vdec/
-          patch -p1 --forward < ../sklenik/jadro-ovladace/sklenik-hevc.patch
-          # R167: vlastný ovládač hlbokého spánku jadier (cpuidle cez PSCI) – pri štarte vypnutý, zapína ho KLÍČ
-          cp ../sklenik/jadro-ovladace/sklenik_jadra.c drivers/cpuidle/
-          echo 'obj-$(CONFIG_ARM_PSCI_FW) += sklenik_jadra.o' >> drivers/cpuidle/Makefile
-          # R165/R174: firmvér dekodéra videa (mikrokód jeho procesora AMRISC z linux-firmware) – overený odtlačkom
-          # SHA-256; na karte ako samostatné súbory s menami 8.3 (licencia LICENSE.amlogic_vdec nedovoľuje vložiť ho
-          # do jadra), KLÍČ ich pri štarte skopíruje do /lib/firmware
-          lf="https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain"
-          lg="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main"
-          mkdir -p ../jadro-vystup/amlogic/vdec
-          stiahni() { curl -sSfL --retry 3 -o "$2" "$lf/$1" || curl -sSfL --retry 3 -o "$2" "$lg/$1"; }
-          for z in g12a_h264.bin:g12ah264.bin:ed2014edb5b759654956b829770181b46efb91c68a2e6c6510c354ffdcbe1a0a \
-                   sm1_vp9_mmu.bin:sm1vp9.bin:a999eac69ec6d87785951b11eb53bc2c8e5fc3e464a356411cb2f646c68e2b1a \
-                   gxl_mpeg12.bin:gxlmpg12.bin:4a851302785a48e84cb846e5e974a4f51a4ca87c52d961aab4307b1c91daf2b2 \
-                   sm1_hevc_mmu.bin:sm1hevc.bin:f98249d9586a66a5e747b386f9eba76a670efbbcf0d744612387febb3b2b0d2a; do
-            povodne=${z%%:*}; zvysok=${z#*:}; kratke=${zvysok%%:*}; odtlacok=${zvysok#*:}
-            stiahni "meson/vdec/$povodne" "../jadro-vystup/amlogic/vdec/$kratke"
-            echo "$odtlacok  ../jadro-vystup/amlogic/vdec/$kratke" | sha256sum -c -
-          done
-          l=../jadro-vystup/amlogic/vdec/licencia.txt
-          stiahni LICENSE.amlogic_vdec "$l" || stiahni "LICENSE.amlogic_vdec?h=main" "$l" \
-            || curl -sSfL --retry 3 -o "$l" https://scancode-licensedb.aboutcode.org/amlogic-linux-firmware.LICENSE
-          grep -q "Amlogic" "$l" && head -3 "$l"
           make -s defconfig
           # platformy iných výrobcov preč – zostane len Amlogic Meson (procesor Odroidu C4)
           for a in $(grep -oE '^config ARCH_[A-Z0-9_]+' arch/arm64/Kconfig.platforms | cut -d' ' -f2); do
@@ -203,12 +162,6 @@ jobs:
           # popisy hardvéru: Odroid C4 a referenčná doska krabičiek S905X3 (X96 Air – gigabit a 100 Mb/s) pre X96 Max Plus
           dtb="meson-sm1-odroid-c4 meson-sm1-x96-air-gbit meson-sm1-x96-air"
           make -s -j"$(nproc)" Image $(for d in $dtb; do printf 'amlogic/%s.dtb ' "$d"; done)
-          grep -q sklenik_vpu_probe System.map || { echo "ovládač sklenik_vpu chýba v jadre"; exit 1; }
-          grep -q " vdec_probe$" System.map || { echo "dekodér videa meson-vdec chýba v jadre"; exit 1; }
-          grep -q " sklenik_hevc_ops$" System.map || { echo "vlastný kodek HEVC chýba v jadre"; exit 1; }
-          grep -q " skl_nastav$" System.map || { echo "vlastný ovládač spánku jadier chýba v jadre"; exit 1; }
-          # firmvér Amlogic nesmie byť v jadre (licencia)
-          ! grep -q "^CONFIG_EXTRA_FIRMWARE=\".*meson" .config
           mkdir -p ../jadro-vystup/amlogic/dtb/amlogic
           cp arch/arm64/boot/Image ../jadro-vystup/amlogic/
           for d in $dtb; do cp "arch/arm64/boot/dts/amlogic/$d.dtb" ../jadro-vystup/amlogic/dtb/amlogic/; done
@@ -549,8 +502,6 @@ jobs:
           # (U-Boot si vyberie podľa svojho fdtfile), nastavenie zavádzača U-Boot v extlinux/
           mkdir -p boot/amlogic boot/dtb
           cp jadra/amlogic/Image jadra/amlogic/jadro-s905x3.config boot/amlogic/
-          # R174: firmvér dekodéra videa a jeho licencia (samostatné súbory, KLÍČ ich dá do /lib/firmware)
-          mkdir -p boot/amlogic/vdec && cp jadra/amlogic/vdec/* boot/amlogic/vdec/
           cp -r jadra/amlogic/dtb/amlogic boot/dtb/
           cp -r sklenik/boot/extlinux boot/
           # R96: Odroid C4 – rýchle režimy SD (UHS) preč z popisu hardvéru, aby fungoval reštart zo SD karty
@@ -576,20 +527,6 @@ jobs:
             fdtput -t s "$f" /soc/usb@ffe09000/usb@ff400000 status disabled
             fdtput -t s "$f" /soc/usb@ffe09000 dr_mode host
             echo "$f: GPU $(fdtget "$f" /soc/gpu@ffe40000 status), USB OTG $(fdtget "$f" /soc/usb@ffe09000/usb@ff400000 status), USB $(fdtget "$f" /soc/usb@ffe09000 dr_mode)"
-            # R166: vlastný ovládač taktu VPU – takty z hlavného ovládača taktov (ID podľa dt-bindings g12a-clkc.h:
-            # VPU 116, VPU_0 112, VPU_1 115, VPU_0_SEL 110, VPU_1_SEL 113, FCLK_DIV3 3, FCLK_DIV4 4, FCLK_DIV5 5)
-            ph=$(fdtget -t u "$f" /soc/bus@ff600000/bus@3c000/system-controller@0/clock-controller phandle)
-            fdtput -c "$f" /sklenik-vpu
-            fdtput -t s "$f" /sklenik-vpu compatible sklenik,vpu-takt
-            fdtput -t u "$f" /sklenik-vpu clocks $ph 116 $ph 112 $ph 115 $ph 110 $ph 113 $ph 3 $ph 4 $ph 5
-            fdtput -t s "$f" /sklenik-vpu clock-names vpu vpu_0 vpu_1 vpu_0_sel vpu_1_sel fclk_div3 fclk_div4 fclk_div5
-            echo "$f: takt VPU – $(fdtget "$f" /sklenik-vpu compatible), takty $(fdtget "$f" /sklenik-vpu clock-names)"
-            # R168: jadro sa na teplotu pýta raz za 5 s namiesto každú sekundu (menej prebudení čipu); nad hranicou
-            # pasívneho chladenia ostáva 100 ms – bezpečnosť sa nemení (čas ohrevu čipu je v minútach)
-            for z in cpu-thermal ddr-thermal; do
-              fdtput -t i "$f" "/thermal-zones/$z" polling-delay 5000
-            done
-            echo "$f: teplota každých $(fdtget "$f" /thermal-zones/cpu-thermal polling-delay) ms (CPU) a $(fdtget "$f" /thermal-zones/ddr-thermal polling-delay) ms (DDR), pri ohreve $(fdtget "$f" /thermal-zones/cpu-thermal polling-delay-passive) ms"
           done
           # X96 Max Plus – gigabitový čip siete býva iný ako v referenčnej doske (iná adresa, iný výrobca):
           # reset čipu presunutý na zbernicu MDIO (čip sa prebudí PRED hľadaním), bez pevnej adresy (jadro ho
@@ -607,7 +544,7 @@ jobs:
           echo "$f: reset MDIO $(fdtget -t x "$f" "$m" reset-gpios), čip bez adresy: $(fdtget "$f" "$c" reg 2>&1 | head -1)"
           # pôvodný zavádzač krabičky hľadá skripty a u-boot.ext v koreni karty
           cp uboot/x96/aml_autoscript uboot/x96/s905_autoscript uboot/x96/u-boot.ext boot/
-          printf 'SKLENÍK %s – univerzálna karta pre Raspberry Pi 1, 2, 3, 4, 5, Zero, Zero W, Zero 2 W, Odroid C4 a X96 Max Plus\njadro: https://github.com/raspberrypi/linux/tree/%s + sklenik/jadro.config (úplné nastavenie v jadro-*.config)\nfirmvér: https://github.com/raspberrypi/firmware/tree/%s/boot (LICENCE.broadcom)\nAmlogic S905X3 (Odroid C4, X96 Max Plus) – jadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-odroid.config (amlogic/jadro-s905x3.config)\nfirmvér dekodéra videa (amlogic/vdec/, samostatne – nie v jadre): https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/meson/vdec (licencia amlogic/vdec/licencia.txt)\nOdroid C4 – zavádzač (prvé 4 MiB karty): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+) a podpísané časti Amlogic https://github.com/LibreELEC/amlogic-boot-fip/tree/%s/odroid-c4\nX96 Max Plus – u-boot.ext: https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+, bananapi-m5_defconfig + popis X96 Air), skripty sklenik/boot/amlogic/\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
+          printf 'SKLENÍK %s – univerzálna karta pre Raspberry Pi 1, 2, 3, 4, 5, Zero, Zero W, Zero 2 W, Odroid C4 a X96 Max Plus\njadro: https://github.com/raspberrypi/linux/tree/%s + sklenik/jadro.config (úplné nastavenie v jadro-*.config)\nfirmvér: https://github.com/raspberrypi/firmware/tree/%s/boot (LICENCE.broadcom)\nAmlogic S905X3 (Odroid C4, X96 Max Plus) – jadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-odroid.config (amlogic/jadro-s905x3.config)\nOdroid C4 – zavádzač (prvé 4 MiB karty): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+) a podpísané časti Amlogic https://github.com/LibreELEC/amlogic-boot-fip/tree/%s/odroid-c4\nX96 Max Plus – u-boot.ext: https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+, bananapi-m5_defconfig + popis X96 Air), skripty sklenik/boot/amlogic/\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
             "$GITHUB_SHA" "$JADRO_TAG" "$FIRMVER_TAG" "$ODROID_JADRO" "$UBOOT_TAG" "$FIP_COMMIT" "$UBOOT_TAG" > boot/ZDROJE.txt
           ls -l boot
           du -sh boot
