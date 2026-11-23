@@ -446,6 +446,15 @@ fn hevc_profil(b: &mut Bity) {
 /// Tok HEVC (Annex B) – po jednej prístupovej jednotke na snímku (prvá má aj VPS, SPS a PPS). Každá snímka je
 /// IDR, kódovacie jednotky 16 × 16 s pcm_flag. Rozmery musia byť násobkom 16.
 pub fn hevc_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
+    hevc_gop(snimky, 1, None).0
+}
+
+/// Tok HEVC so skupinami snímok (R177): každá `gop`-tá snímka je IDR s blokmi PCM (obraz zo `snimky`), ostatné
+/// sú **P-snímky, v ktorých je každá jednotka „preskočená“** (cu_skip_flag, zlučovací kandidát s nulovým
+/// pohybom) – dekodér musí skopírovať predošlú snímku cez referenciu. Overí tak celú cestu referencií:
+/// sadu RPS, zoznam L0, kompenzáciu pohybu, predikciu vektorov a správu snímok. Vráti toky a čakané obrazy.
+/// `snimok_za_s` pridá do SPS časovanie (VUI) – dekodér podľa neho riadi takt.
+pub fn hevc_gop(snimky: &[Obraz], gop: usize, snimok_za_s: Option<u32>) -> (Vec<Vec<u8>>, Vec<Obraz>) {
     let (sirka, vyska) = (snimky[0].sirka, snimky[0].vyska);
     assert!(sirka % 16 == 0 && vyska % 16 == 0);
     let mut vps = Bity::default();
@@ -503,7 +512,21 @@ pub fn hevc_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
     sps.u(1, 0); // long_term_ref_pics_present_flag
     sps.u(1, 0); // sps_temporal_mvp_enabled_flag
     sps.u(1, 0); // strong_intra_smoothing_enabled_flag
-    sps.u(1, 0); // vui_parameters_present_flag
+    match snimok_za_s {
+        Some(f) => {
+            sps.u(1, 1); // vui_parameters_present_flag
+            sps.u(4, 0); // aspect_ratio, overscan, video_signal_type, chroma_loc – nie
+            sps.u(3, 0); // neutral_chroma_indication, field_seq, frame_field_info
+            sps.u(1, 0); // default_display_window_flag
+            sps.u(1, 1); // vui_timing_info_present_flag
+            sps.u(32, 1); // vui_num_units_in_tick
+            sps.u(32, f as u64); // vui_time_scale
+            sps.u(1, 0); // vui_poc_proportional_to_timing_flag
+            sps.u(1, 0); // vui_hrd_parameters_present_flag
+            sps.u(1, 0); // bitstream_restriction_flag
+        }
+        None => sps.u(1, 0), // vui_parameters_present_flag
+    }
     sps.u(1, 0); // sps_extension_present_flag
     sps.koniec();
 
@@ -540,30 +563,43 @@ pub fn hevc_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
     pps.u(1, 0); // pps_extension_present_flag
     pps.koniec();
 
-    // part_mode, initType 0 (rez I): initValue 184; QP rezu 26
+    // QP rezu 26; part_mode (rez I, initType 0): initValue 184; cu_skip_flag (rez P, initType 1): 197, 185, 201
     let qp = 26;
-    snimky
-        .iter()
-        .enumerate()
-        .map(|(n, o)| {
-            let mut au = Vec::new();
-            if n == 0 {
-                au.extend(nal(&[0x40, 0x01], &vps.data));
-                au.extend(nal(&[0x42, 0x01], &sps.data));
-                au.extend(nal(&[0x44, 0x01], &pps.data));
-            }
-            let mut rez = Bity::default();
-            rez.u(1, 1); // first_slice_segment_in_pic_flag
+    let (sx, sy) = (sirka / 16, vyska / 16);
+    let mut toky = Vec::with_capacity(snimky.len());
+    let mut cakane = Vec::with_capacity(snimky.len());
+    for (n, o) in snimky.iter().enumerate() {
+        let mut au = Vec::new();
+        if n == 0 {
+            au.extend(nal(&[0x40, 0x01], &vps.data));
+            au.extend(nal(&[0x42, 0x01], &sps.data));
+            au.extend(nal(&[0x44, 0x01], &pps.data));
+        }
+        let poc = n % gop.max(1);
+        let mut rez = Bity::default();
+        rez.u(1, 1); // first_slice_segment_in_pic_flag
+        if poc == 0 {
             rez.u(1, 0); // no_output_of_prior_pics_flag
             rez.ue(0); // slice_pic_parameter_set_id
             rez.ue(2); // slice_type I
-            rez.se(0); // slice_qp_delta
-            // byte_alignment(): bit 1 a nuly
-            rez.koniec();
-            let mut c = Cabac::novy(rez);
+        } else {
+            rez.ue(0); // slice_pic_parameter_set_id
+            rez.ue(1); // slice_type P
+            rez.u(8, poc as u64); // slice_pic_order_cnt_lsb
+            rez.u(1, 0); // short_term_ref_pic_set_sps_flag – sada priamo v reze:
+            rez.ue(1); // num_negative_pics
+            rez.ue(0); // num_positive_pics
+            rez.ue(0); // delta_poc_s0_minus1 – predošlá snímka
+            rez.u(1, 1); // used_by_curr_pic_s0_flag
+            rez.u(1, 0); // num_ref_idx_active_override_flag
+            rez.ue(4); // five_minus_max_num_merge_cand – jeden kandidát (merge_idx sa nekóduje)
+        }
+        rez.se(0); // slice_qp_delta
+        rez.koniec(); // byte_alignment(): bit 1 a nuly
+        let mut c = Cabac::novy(rez);
+        if poc == 0 {
             let mut part_mode = Kontext::novy(184, qp);
             let mut vzorky = Vec::with_capacity(384);
-            let (sx, sy) = (sirka / 16, vyska / 16);
             for i in 0..sx * sy {
                 let (x, y) = (i % sx * 16, i / sx * 16);
                 c.symbol(&mut part_mode, 1); // PART_2Nx2N
@@ -575,12 +611,24 @@ pub fn hevc_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
                 c.znova();
                 c.ukoncovaci(i + 1 == sx * sy); // end_of_slice_segment_flag
             }
-            // posledný bit vyprázdnenia je rbsp_stop_one_bit, ďalej len zarovnanie nulami
-            c.bity.nuly_do_zarovnania();
-            au.extend(nal(&[0x28, 0x01], &c.bity.data)); // IDR_N_LP
-            au
-        })
-        .collect()
+            cakane.push(o.clone());
+        } else {
+            let mut skip = [Kontext::novy(197, qp), Kontext::novy(185, qp), Kontext::novy(201, qp)];
+            for i in 0..sx * sy {
+                // kontext podľa susedov vľavo a hore (obaja sú preskočení, ak existujú)
+                let ctx = usize::from(i % sx > 0) + usize::from(i / sx > 0);
+                c.symbol(&mut skip[ctx], 1); // cu_skip_flag
+                c.ukoncovaci(i + 1 == sx * sy); // end_of_slice_segment_flag
+            }
+            cakane.push(cakane[n - 1].clone());
+        }
+        // posledný bit vyprázdnenia je rbsp_stop_one_bit, ďalej len zarovnanie nulami
+        c.bity.nuly_do_zarovnania();
+        let hlavicka = if poc == 0 { [0x28, 0x01] } else { [0x02, 0x01] }; // IDR_N_LP / TRAIL_R
+        au.extend(nal(&hlavicka, &c.bity.data));
+        toky.push(au);
+    }
+    (toky, cakane)
 }
 
 #[cfg(test)]
@@ -662,5 +710,16 @@ mod testy {
             yuv.extend_from_slice(&o.cr);
         }
         std::fs::write(format!("{dir}/pcm.yuv"), yuv).unwrap();
+        // R177: skupiny po 4 snímkach – IDR s PCM a tri P-snímky s preskočenými jednotkami, 25 snímok/s
+        let obrazy: Vec<Obraz> = (0..10).map(|n| vzor(320, 240, n)).collect();
+        let (toky, cakane) = hevc_gop(&obrazy, 4, Some(25));
+        std::fs::write(format!("{dir}/gop.hevc"), toky.concat()).unwrap();
+        let mut yuv = Vec::new();
+        for o in &cakane {
+            yuv.extend_from_slice(&o.y);
+            yuv.extend_from_slice(&o.cb);
+            yuv.extend_from_slice(&o.cr);
+        }
+        std::fs::write(format!("{dir}/gop.yuv"), yuv).unwrap();
     }
 }

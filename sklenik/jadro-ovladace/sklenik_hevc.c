@@ -277,6 +277,7 @@ struct skl_hevc {
 	u64 dekod_ns;
 	u32 dekod_snimok;
 	u64 perioda_ns;
+	u32 vytazenie;		/* posledné zhodnotené vyťaženie (%) */
 
 	/* štatistika (vypíše sa pri zastavení) */
 	u32 vydanych, dekodovanych, chyb_ref;
@@ -934,6 +935,7 @@ static void zhodnot_takt(struct skl_hevc *h)
 		return;
 	priemer = div_u64(h->dekod_ns, h->dekod_snimok);
 	vytazenie = div64_u64(priemer * 100, h->perioda_ns);
+	h->vytazenie = vytazenie;
 	h->dekod_ns = 0;
 	h->dekod_snimok = 0;
 
@@ -1021,8 +1023,11 @@ static bool spracuj_rez(struct skl_hevc *h)
 		h->aktualna->typ_rezu = h->typ_rezu;
 		nastav_sao_pamat(h);
 		/* takt podľa potreby – medzi snímkami */
-		if (h->takt_ziadany != h->takt_index)
+		if (h->takt_ziadany != h->takt_index) {
+			dev_info(jadro(h)->dev, "sklenik-hevc: takt jadra HEVC %u → %u MHz (vyťaženie %u %%)\n",
+				 skl_takty[h->takt_index], skl_takty[h->takt_ziadany], h->vytazenie);
 			nastav_takt(h, h->takt_ziadany);
+		}
 	}
 
 	zoznamy_referencii(h);

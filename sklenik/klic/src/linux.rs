@@ -565,10 +565,32 @@ fn spusti_skusku_videa(skusat: bool, riadky: Arc<Mutex<Vec<String>>>) {
                         "{meno} {sirka}×{vyska}: skúška – {} snímok (bloky PCM, presne známy obraz)",
                         snimky.len()
                     ));
+                    let mut jadro = kmsg_od_konca();
                     match v4l2::skus(&d.cesta, f, &toky, &snimky, Duration::from_secs(10)) {
                         Ok(v) => pridaj(format!("{meno} {sirka}×{vyska}: {}", v.popis(snimky.len()))),
                         Err(e) => pridaj(format!("{meno} {sirka}×{vyska}: chyba – {e}")),
                     }
+                    for r in jadro.as_mut().map(kmsg_nove).unwrap_or_default() {
+                        pridaj(format!("  jadro: {r}"));
+                    }
+                }
+            }
+            // R177: HEVC so skupinami snímok – P-snímky kopírujú predošlú snímku cez referenciu (RPS, zoznam L0,
+            // kompenzácia pohybu, vektory, správa snímok); časovanie 25 snímok/s – dekodér znižuje takt
+            if d.vie(v4l2::HEVC) {
+                let obrazy: Vec<video::Obraz> = (0..96).map(|n| video::vzor(320, 240, n)).collect();
+                let (toky, cakane) = video::hevc_gop(&obrazy, 8, Some(25));
+                pridaj(format!(
+                    "HEVC skupiny 320×240: skúška – {} snímok (každá 8. IDR s PCM, ostatné P cez referenciu)",
+                    cakane.len()
+                ));
+                let mut jadro = kmsg_od_konca();
+                match v4l2::skus(&d.cesta, v4l2::HEVC, &toky, &cakane, Duration::from_secs(20)) {
+                    Ok(v) => pridaj(format!("HEVC skupiny 320×240: {}", v.popis(cakane.len()))),
+                    Err(e) => pridaj(format!("HEVC skupiny 320×240: chyba – {e}")),
+                }
+                for r in jadro.as_mut().map(kmsg_nove).unwrap_or_default() {
+                    pridaj(format!("  jadro: {r}"));
                 }
             }
         }
@@ -578,6 +600,41 @@ fn spusti_skusku_videa(skusat: bool, riadky: Arc<Mutex<Vec<String>>>) {
             pridaj("dekodér videa: len s 64-bitovým jadrom".into());
         }
     });
+}
+
+/// `/dev/kmsg` od tejto chvíle (staršie hlásenia sa preskočia) – na hlásenia dekodéra počas skúšky.
+#[cfg(target_pointer_width = "64")]
+fn kmsg_od_konca() -> Option<fs::File> {
+    use std::io::Seek;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = fs::OpenOptions::new().read(true).custom_flags(0o4000).open("/dev/kmsg").ok()?;
+    f.seek(std::io::SeekFrom::End(0)).ok()?;
+    Some(f)
+}
+
+/// Nové hlásenia jadra o dekodéri (vlastný kodek HEVC, meson-vdec) od otvorenia.
+#[cfg(target_pointer_width = "64")]
+fn kmsg_nove(f: &mut fs::File) -> Vec<String> {
+    use std::io::Read;
+    let mut v = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let z = String::from_utf8_lossy(&buf[..n]);
+                let Some((_, text)) = z.split_once(';') else { continue };
+                let text = text.lines().next().unwrap_or("").trim();
+                if text.contains("sklenik-hevc") || text.contains("vdec") {
+                    v.push(text.chars().take(200).collect());
+                }
+            }
+            // EPIPE: záznam medzitým prepísaný – ďalší
+            Err(e) if e.raw_os_error() == Some(32) => continue,
+            Err(_) => break,
+        }
+    }
+    v
 }
 
 /// Teplota snímača pamäte DDR (zóna „ddr-thermal“), ak ho čip má.
