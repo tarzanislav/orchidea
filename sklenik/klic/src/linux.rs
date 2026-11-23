@@ -1697,13 +1697,9 @@ pub fn spusti() {
                     }
                 }
             }
-            // R166: takt VPU – zvýšiť pred zapnutím/zmenou obrazu, znížiť až po nej
-            let rezim_khz = displej.as_ref().and_then(|d| d.kms_nastavenie.map(|(rz, _)| rz.takt_khz));
-            // R175: zväčšovaný obraz (chladný 960×540, čierny cez malý buffer) potrebuje plný takt VPU – teraz
-            // aj po zmene (chladný obraz bez „ostrého“ sa kreslí zmenšený)
-            let zvacsuje = displej.as_ref().is_some_and(|d| d.zvacsuje(r.stav))
-                || (r.stav == StavObrazu::Zapnuty && r.obraz == Ciel::Chladny && !ostry_obraz(&nastavenie));
-            let ciel_vpu = r.vpu_mhz.unwrap_or_else(|| chlad::takt_vpu(r.stav, rezim_khz, zvacsuje));
+            // R166: takt VPU – zvýšiť pred zapnutím/zmenou obrazu, znížiť až po nej (R182: mimo pokusu len
+            // pri vypnutom obraze)
+            let ciel_vpu = r.vpu_mhz.unwrap_or_else(|| chlad::takt_vpu(r.stav));
             if let Some(t) = takt_vpu.as_mut()
                 && t.teraz.is_none_or(|x| ciel_vpu > x)
                 && t.nastav(ciel_vpu)
