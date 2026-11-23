@@ -413,9 +413,24 @@ fn meno(b: &[u8]) -> String {
 }
 
 impl Kms {
-    /// Otvorí prvú grafickú kartu s pripojeným výstupom. Chyba = KLÍČ ostane pri `/dev/fb0`.
+    /// Otvorí prvú grafickú kartu s pripojeným výstupom (card0 – card3: grafický procesor môže mať vlastnú
+    /// kartu bez výstupov). Chyba = KLÍČ ostane pri `/dev/fb0`.
     pub fn otvor() -> io::Result<Kms> {
-        let karta = fs::OpenOptions::new().read(true).write(true).open("/dev/dri/card0")?;
+        let mut chyba = io::Error::other("žiadna grafická karta");
+        for i in 0..4 {
+            match fs::OpenOptions::new().read(true).write(true).open(format!("/dev/dri/card{i}")) {
+                Ok(karta) => match Kms::otvor_kartu(karta) {
+                    Ok(k) => return Ok(k),
+                    Err(e) => chyba = e,
+                },
+                Err(e) if i == 0 => chyba = e,
+                Err(_) => break,
+            }
+        }
+        Err(chyba)
+    }
+
+    fn otvor_kartu(karta: fs::File) -> io::Result<Kms> {
         let fd = karta.as_raw_fd();
         let mut c = Schopnost { schopnost: CAP_DUMB_BUFFER, hodnota: 0 };
         sys::ioctl_struct(fd, GET_CAP, &mut c)?;
