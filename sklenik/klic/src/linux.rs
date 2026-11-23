@@ -1695,7 +1695,12 @@ pub fn spusti() {
                 r.stav = StavObrazu::Vypnuty;
             }
             // R181: CEC – otvorí sa podľa nastavenia; keď jadro adaptér ešte nemá, skúsi sa znova o 30 s
-            let cec_rezim = cec::Rezim::z_nastavenia(n.and_then(|n| n.cec.as_deref()));
+            // R183: hlavný vypínač noviniek vypne aj CEC (novinka od karty 4edb1db)
+            let cec_rezim = if n.is_some_and(|n| n.novinky == Some(false)) {
+                cec::Rezim::Nic
+            } else {
+                cec::Rezim::z_nastavenia(n.and_then(|n| n.cec.as_deref()))
+            };
             if cec_rezim == cec::Rezim::Nic {
                 if cec.take().is_some() || cec_stav != "vypnuté (cec=nie)" {
                     cec_stav = "vypnuté (cec=nie)".into();
