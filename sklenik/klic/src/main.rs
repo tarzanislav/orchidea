@@ -43,6 +43,10 @@ mod samomeranie;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod chlad;
 
+// merač pamäte a budení (R162, R163)
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod pamat;
+
 // vlastný ovládač obrazovky cez DRM/KMS (R158 – chladný obraz)
 #[cfg(target_os = "linux")]
 mod kms;

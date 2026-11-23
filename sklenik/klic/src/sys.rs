@@ -39,6 +39,7 @@ unsafe extern "C" {
         posun: i64,
     ) -> *mut c_void;
     fn munmap(adresa: *mut c_void, dlzka: usize) -> c_int;
+    fn syscall(cislo: std::ffi::c_long, ...) -> std::ffi::c_long;
 }
 
 /// `struct pollfd`
@@ -547,4 +548,33 @@ impl Drop for Mapa {
         // SAFETY: odmapuje sa presne oblasť, ktorú vrátil mmap, raz.
         unsafe { munmap(self.ptr as *mut c_void, self.dlzka) };
     }
+}
+
+/// Číslo volania perf_event_open (R162 – merač pamäte).
+#[cfg(target_arch = "aarch64")]
+const PERF_EVENT_OPEN: std::ffi::c_long = 241;
+#[cfg(target_arch = "arm")]
+const PERF_EVENT_OPEN: std::ffi::c_long = 364;
+#[cfg(not(any(target_arch = "aarch64", target_arch = "arm")))]
+const PERF_EVENT_OPEN: std::ffi::c_long = 298;
+
+/// Otvorí počítadlo jadra (perf) typu `typ` s udalosťou `config` a filtrom `config1` na procesore `cpu`
+/// (počítadlá radiča pamäte sú „uncore“ – jedno pre celý čip). Vráti deskriptor; čítanie dá 8 bajtov.
+pub fn perf_pocitadlo(typ: u32, config: u64, config1: u64, cpu: i32) -> io::Result<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    // struct perf_event_attr vo verzii 1 (72 bajtov): typ, veľkosť, config, …, config1 (posun 56), config2
+    let mut attr = [0u8; 72];
+    attr[0..4].copy_from_slice(&typ.to_ne_bytes());
+    attr[4..8].copy_from_slice(&72u32.to_ne_bytes());
+    attr[8..16].copy_from_slice(&config.to_ne_bytes());
+    attr[56..64].copy_from_slice(&config1.to_ne_bytes());
+    // SAFETY: attr je platná štruktúra s uvedenou veľkosťou; pid −1 = celý systém, bez skupiny, bez príznakov.
+    let fd = unsafe {
+        syscall(PERF_EVENT_OPEN, attr.as_mut_ptr(), -1 as c_int, cpu as c_int, -1 as c_int, 8 as c_ulong)
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: jadro vrátilo nový deskriptor, ktorý odteraz vlastní File (O_CLOEXEC = príznak 8).
+    Ok(unsafe { std::fs::File::from_raw_fd(fd as c_int) })
 }

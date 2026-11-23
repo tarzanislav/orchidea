@@ -5,6 +5,7 @@ use crate::chlad::{self, Ciel, SietPodlaPotreby, StavObrazu, Zhasinanie};
 use crate::kms;
 use crate::obrazovka::{self, Eee, FormatBodu, Jazyk, MeranieKarty, Stav};
 use crate::okolie::{self, Okolie};
+use crate::pamat;
 use crate::periferie::{Supis, Ulozisko};
 use crate::poda::Poda;
 use crate::samomeranie::{self, NL, ZNACKA_NOSICA, ZNACKA_PORADIA, nadpis};
@@ -458,6 +459,16 @@ impl Displej {
     }
 }
 
+/// Teplota snímača pamäte DDR (zóna „ddr-thermal“), ak ho čip má.
+fn teplota_pamate() -> Option<f64> {
+    for z in fs::read_dir("/sys/class/thermal").ok()?.flatten() {
+        if citaj(z.path().join("type")).is_some_and(|t| t.contains("ddr")) {
+            return citaj(z.path().join("temp"))?.parse::<f64>().ok().map(|m| m / 1000.0);
+        }
+    }
+    None
+}
+
 /// Otvorí obrazovku: na TV krabičke vlastný ovládač KMS (chladný obraz), inak a pri chybe `/dev/fb0`.
 fn otvor_displej(chlad: bool, ciel: Ciel, ostre: bool) -> Option<Displej> {
     if chlad && let Some(d) = Displej::otvor_kms(ciel, ostre) {
@@ -873,6 +884,23 @@ pub fn spusti() {
     let mut faza_teraz: Option<usize> = None;
     let mut zobrazeny_chlad: Option<obrazovka::Chlad> = None;
     let mut prekreslit = false;
+    // R162, R163: merač pamäte (počítadlá radiča DDR) a merač budení
+    let mut merac_pamate = pamat::MeracPamate::otvor();
+    hlas(&format!(
+        "merač pamäte: {}",
+        if merac_pamate.is_some() {
+            "áno – tok DDR podľa častí čipu"
+        } else {
+            "nie je (iný čip alebo jadro bez neho)"
+        }
+    ));
+    let mut pamat_vzorka: Option<(Instant, [u64; 5])> = None;
+    let mut tok_pamate: Option<pamat::Tok> = None;
+    let mut tok_zobrazeny: Option<(Instant, pamat::Tok)> = None;
+    let mut pamat_pri_zazname: Option<(Instant, [u64; 5])> = None;
+    let mut pamat_fazy: Vec<(usize, Instant, [u64; 5])> = Vec::new();
+    let mut budenia_pri_zazname: Option<(Instant, Vec<(String, u64)>)> = None;
+    let mut ochrana_pamate = false;
     let mut vytazenie = Vytazenie::nove();
     let mut kmsg = Hlasenia::otvor(&model);
     kmsg.citaj();
@@ -946,6 +974,13 @@ pub fn spusti() {
             }
             if !len_sledovanie {
                 hw.uplatni(&uroven);
+                // R162: tok pamäte za posledný krok
+                if let Some(s) = merac_pamate.as_mut().and_then(|m| m.stav()) {
+                    if let Some((t0, p)) = pamat_vzorka {
+                        tok_pamate = Some(pamat::Tok::z_rozdielu(&p, &s, t0.elapsed().as_secs_f64()));
+                    }
+                    pamat_vzorka = Some((Instant::now(), s));
+                }
                 // R159: sieť podľa potreby – prenos za posledný krok rozhodne o gigabite
                 if tv
                     && periferie_teraz == Some(true)
@@ -1117,12 +1152,39 @@ pub fn spusti() {
             let n = nastavenie.as_ref().map(|(_, n)| n);
             let zh = Zhasinanie::pre_tv(n.and_then(|n| n.zhasni_min), n.and_then(|n| n.vypni_min));
             let necinnost = posledna_aktivita.elapsed().as_secs();
-            let r = chlad::rozhodni(pokus_s, necinnost, ciel_obrazu(&nastavenie), &zh);
+            let mut r = chlad::rozhodni(pokus_s, necinnost, ciel_obrazu(&nastavenie), &zh);
+            // R164: pamäť pod 85 °C – nad ňou DDR obnovuje 2× častejšie (viac tepla → ešte viac obnovy)
+            if r.faza.is_none()
+                && let Some(d) = teplota_pamate()
+            {
+                let chran = d >= 75.0 || (ochrana_pamate && d >= 72.0);
+                if chran != ochrana_pamate {
+                    ochrana_pamate = chran;
+                    hlas(&format!(
+                        "pamäť DDR {d:.1} °C: {}",
+                        if chran {
+                            "ochrana – chladný obraz, v pokoji čierny"
+                        } else {
+                            "ochrana skončila"
+                        }
+                    ));
+                }
+                if chran {
+                    r.obraz = Ciel::Chladny;
+                    // v pokoji (minúta bez stlačenia) aj čierny obraz – pamäť sa nečíta vôbec
+                    if r.stav == StavObrazu::Zapnuty && necinnost >= 60 {
+                        r.stav = StavObrazu::Cierny;
+                    }
+                }
+            }
             match r.faza {
                 Some(f) => {
                     rusene[f] |= r.rusi;
                     if faza_teraz != Some(f) {
                         faza_teraz = Some(f);
+                        if let Some(sp) = merac_pamate.as_mut().and_then(|m| m.stav()) {
+                            pamat_fazy.push((f, Instant::now(), sp));
+                        }
                         hlas(&format!(
                             "tepelný pokus: fáza {}/{} – {}",
                             f + 1,
@@ -1196,6 +1258,15 @@ pub fn spusti() {
             let mut casti = Vec::new();
             if let Some(d) = displej.as_ref() {
                 casti.push(d.popis());
+            }
+            // tok pamäte na obrazovke najviac raz za minútu (prekreslenie by meranie samo ovplyvnilo)
+            if let Some(t) = tok_pamate
+                && tok_zobrazeny.is_none_or(|(k, _)| k.elapsed() >= Duration::from_secs(60))
+            {
+                tok_zobrazeny = Some((Instant::now(), t));
+            }
+            if let Some((_, t)) = tok_zobrazeny {
+                casti.push(t.popis());
             }
             if periferie_teraz == Some(true) {
                 if let (Some(od), Some(teraz)) = (usb_spanok_od, chlad::cas_spanku_usb(Path::new("/"))) {
@@ -1400,7 +1471,32 @@ pub fn spusti() {
                     );
                     text += &format!("  {}{NL}", rozpoznanie(&model, &poda, profil));
                     if tv {
-                        text += &nadpis("SPRÁVCA CHLADU (R158–R161)");
+                        text += &nadpis("SPRÁVCA CHLADU (R158–R164)");
+                        // R162: priemerný tok pamäte od posledného záznamu
+                        if let Some(sp) = merac_pamate.as_mut().and_then(|m| m.stav()) {
+                            if let Some((t0, p)) = pamat_pri_zazname {
+                                let t = pamat::Tok::z_rozdielu(&p, &sp, t0.elapsed().as_secs_f64());
+                                text += &format!("  {} – priemer od posledného záznamu{NL}", t.popis());
+                            }
+                            pamat_pri_zazname = Some((Instant::now(), sp));
+                        }
+                        if let Some(d) = teplota_pamate() {
+                            text += &format!(
+                                "  pamäť DDR {d:.1} °C (dvojnásobná obnova nad 85 °C) · ochrana {}{NL}",
+                                if ochrana_pamate { "zapnutá" } else { "netreba" }
+                            );
+                        }
+                        // R163: čo budí čip
+                        if let Some(teraz) = citaj("/proc/interrupts").map(|t| pamat::prerusenia(&t)) {
+                            if let Some((t0, p)) = budenia_pri_zazname.as_ref() {
+                                let v = pamat::budenia(p, &teraz, t0.elapsed().as_secs_f64(), 8);
+                                let spolu: f64 = v.iter().map(|x| x.1).sum();
+                                let zoznam: Vec<String> =
+                                    v.iter().map(|(m, r)| format!("{m} {r:.1}")).collect();
+                                text += &format!("  budenia: {spolu:.0}/s – {}{NL}", zoznam.join(" · "));
+                            }
+                            budenia_pri_zazname = Some((Instant::now(), teraz));
+                        }
                         let d = displej.as_ref();
                         text += &format!(
                             "  {} · stav: {} · vlastný ovládač KMS: {}{NL}",
@@ -1492,6 +1588,23 @@ pub fn spusti() {
                             let krivka: Vec<(u64, f64)> =
                                 m.krivka().iter().filter_map(|b| Some((b.s, b.teplota?))).collect();
                             dovetok += &chlad::vysledok_pokusu(&krivka, &rusene, NL);
+                            // R162: tok pamäte v každej fáze
+                            if let Some(koniec) = merac_pamate.as_mut().and_then(|m| m.stav()) {
+                                dovetok += &format!("  tok pamäte po fázach (MB/s):{NL}");
+                                for (i, (f, t0, p)) in pamat_fazy.iter().enumerate() {
+                                    let (t1, k) = pamat_fazy
+                                        .get(i + 1)
+                                        .map(|x| (x.1.duration_since(*t0).as_secs_f64(), x.2))
+                                        .unwrap_or((t0.elapsed().as_secs_f64(), koniec));
+                                    let tok = pamat::Tok::z_rozdielu(p, &k, t1);
+                                    dovetok += &format!(
+                                        "    {} {:<26} {}{NL}",
+                                        f + 1,
+                                        chlad::FAZY[*f].nazov,
+                                        tok.popis()
+                                    );
+                                }
+                            }
                         }
                     }
                     zaznam::Priprava {
