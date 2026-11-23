@@ -23,10 +23,10 @@ use std::time::{Duration, Instant};
 const CPU: &str = "/sys/devices/system/cpu";
 /// Súbor, z ktorého ORCHIDEA číta tepelný rozpočet (koľko vlákien smie použiť a ako rýchlo).
 const ROZPOCET: &str = "/run/sklenik/teplo";
-/// Po koľkých ms nečinnosti zaspí USB úložisko (R133).
+/// Po koľkých ms nečinnosti zaspí USB úložisko (R159).
 const USB_SPANOK_MS: u32 = 2000;
 
-/// Cieľ obrazu z nastavenia (R132): `obraz=povodny` – ako pred R132, inak chladný.
+/// Cieľ obrazu z nastavenia (R158): `obraz=povodny` – ako pred R158, inak chladný.
 fn ciel_obrazu(n: &Option<(String, NastavenieZariadenia)>) -> Ciel {
     match n.as_ref().and_then(|(_, n)| n.obraz.as_deref()) {
         Some("povodny") => Ciel::Povodny,
@@ -208,7 +208,7 @@ fn zapni_siet() -> Vec<String> {
     chyby
 }
 
-/// Kam sa kreslí: framebuffer jadra alebo vlastný ovládač KMS (R132).
+/// Kam sa kreslí: framebuffer jadra alebo vlastný ovládač KMS (R158).
 enum Vystup {
     Fb(fs::File),
     Kms(Box<kms::Kms>),
@@ -301,7 +301,7 @@ impl Displej {
         })
     }
 
-    /// R132: vlastný ovládač obrazovky cez KMS (TV krabičky). `None` = ostane sa pri `/dev/fb0`.
+    /// R158: vlastný ovládač obrazovky cez KMS (TV krabičky). `None` = ostane sa pri `/dev/fb0`.
     fn otvor_kms(ciel: Ciel, ostre: bool) -> Option<Displej> {
         let mut k = match kms::Kms::otvor() {
             Ok(k) => k,
@@ -349,7 +349,7 @@ impl Displej {
         self.kms_nastavenie = Some(nastavenie);
     }
 
-    /// R134: iný cieľ obrazu (fáza tepelného pokusu) bez znovuotvorenia karty.
+    /// R160: iný cieľ obrazu (fáza tepelného pokusu) bez znovuotvorenia karty.
     fn prestav(&mut self, ciel: Ciel, ostre: bool) -> bool {
         let Vystup::Kms(k) = &mut self.vystup else { return false };
         match nastav_kms(k, ciel, ostre) {
@@ -466,7 +466,7 @@ fn otvor_displej(chlad: bool, ciel: Ciel, ostre: bool) -> Option<Displej> {
     Displej::otvor()
 }
 
-/// Vstupné zariadenia (klávesnica, myš, diaľkový ovládač) – stlačenie prebudí obraz (R132).
+/// Vstupné zariadenia (klávesnica, myš, diaľkový ovládač) – stlačenie prebudí obraz (R158).
 struct Vstupy {
     subory: Vec<fs::File>,
 }
@@ -755,7 +755,7 @@ pub fn spusti() {
     let predpona_merania = samomeranie::predpona(&model, "", zaznam::seriove_cislo().as_deref());
     let mut vytazenie_teraz: Option<f64> = None;
     let pismo = Pismo::stonka();
-    // R132–R135: správca chladu na TV krabičkách – vlastný ovládač obrazu, USB, sieť, jadrá, tepelný pokus
+    // R158–R161: správca chladu na TV krabičkách – vlastný ovládač obrazu, USB, sieť, jadrá, tepelný pokus
     let tv = je_tv_krabicka(&model) && pid1 && !skuska;
     let mut displej = if len_sledovanie {
         None
@@ -897,7 +897,7 @@ pub fn spusti() {
             let stav_okolia = okolie.stav();
             regulator.nastav_predpoved(stav_okolia.ustalena);
             // R126: horúce okolie – šetrí sa aj nečinnosť (raz za beh; nečinný príkon sa zmení → prepočet)
-            // počas tepelného pokusu sa nemení nič okrem fáz (R134 – porovnanie musí byť čisté)
+            // počas tepelného pokusu sa nemení nič okrem fáz (R160 – porovnanie musí byť čisté)
             let pokus_bezi = pokus && faza_teraz.is_some();
             if pid1 && !skuska && !uspora && !pokus_bezi && stav_okolia.prostredie.horuce() {
                 uspora = true;
@@ -907,7 +907,7 @@ pub fn spusti() {
                     stav_okolia.okolie.map_or("?".into(), |o| format!("≈ {o:.0} °C")),
                     stav_okolia.prostredie.slovo()
                 ));
-                // TV krabička má sieť podľa potreby (R133) – rýchlosť riadi tá
+                // TV krabička má sieť podľa potreby (R159) – rýchlosť riadi tá
                 for r in supis
                     .siet
                     .iter()
@@ -944,7 +944,7 @@ pub fn spusti() {
             }
             if !len_sledovanie {
                 hw.uplatni(&uroven);
-                // R133: sieť podľa potreby – prenos za posledný krok rozhodne o gigabite
+                // R159: sieť podľa potreby – prenos za posledný krok rozhodne o gigabite
                 if tv
                     && periferie_teraz == Some(true)
                     && let Some(r) = supis.siet.iter().find(|r| !r.bezdrotove && r.spojenie == Some(true))
@@ -1057,7 +1057,7 @@ pub fn spusti() {
                 hlas(&novy.riadok());
                 supis = novy;
                 podpatie_bolo |= supis.podpatie == Some(true);
-                // nový USB kľúč tiež spí medzi zápismi (R133)
+                // nový USB kľúč tiež spí medzi zápismi (R159)
                 if tv && periferie_teraz == Some(true) {
                     usb_nastavene = chlad::nastav_spanok_usb(Path::new("/"), true, USB_SPANOK_MS);
                 }
@@ -1093,7 +1093,7 @@ pub fn spusti() {
             }
         }
 
-        // R132–R135: správca chladu – obraz, periférie a fázy tepelného pokusu
+        // R158–R161: správca chladu – obraz, periférie a fázy tepelného pokusu
         let pokus_s = if pokus { merania.as_ref().and_then(|m| m.uplynulo_s()) } else { None };
         if tv {
             let n = nastavenie.as_ref().map(|(_, n)| n);
@@ -1233,7 +1233,7 @@ pub fn spusti() {
         // R122: samomeranie začne, keď je systém pripravený – skúška pamäte a meranie karty (ktoré procesor
         // na chvíľu zaťažia) sú hotové, takže meranie teploty neovplyvnia
         let vypnute = nastavenie.as_ref().is_some_and(|(_, n)| n.meranie == Some(false));
-        // R134: na TV krabičke s vlastným ovládačom obrazu sa namiesto 30-minútového merania robí tepelný
+        // R160: na TV krabičke s vlastným ovládačom obrazu sa namiesto 30-minútového merania robí tepelný
         // pokus (6 fáz po 20 min); vypne sa nastavením `pokus=nie`
         if tv
             && !pokus
@@ -1365,7 +1365,7 @@ pub fn spusti() {
                     );
                     text += &format!("  {}{NL}", rozpoznanie(&model, &poda, profil));
                     if tv {
-                        text += &nadpis("SPRÁVCA CHLADU (R132–R135)");
+                        text += &nadpis("SPRÁVCA CHLADU (R158–R161)");
                         let d = displej.as_ref();
                         text += &format!(
                             "  {} · stav: {} · vlastný ovládač KMS: {}{NL}",
@@ -1453,7 +1453,7 @@ pub fn spusti() {
                         dovetok += &nadpis("SÚHRN MERANIA");
                         dovetok += &samomeranie::suhrn(m.krivka(), m.milniky());
                         if pokus {
-                            dovetok += &nadpis("TEPELNÝ POKUS (R134)");
+                            dovetok += &nadpis("TEPELNÝ POKUS (R160)");
                             let krivka: Vec<(u64, f64)> =
                                 m.krivka().iter().filter_map(|b| Some((b.s, b.teplota?))).collect();
                             dovetok += &chlad::vysledok_pokusu(&krivka, &rusene, NL);
@@ -1556,7 +1556,7 @@ pub fn spusti() {
         udalost = match &udalosti {
             Some(u) => {
                 let (bola, vstup) = u.cakaj_so_vstupmi(cakat.as_millis() as u64, &vstupy.fds());
-                // R132: stlačenie na ovládači, klávesnici alebo pohyb myši prebudí obraz
+                // R158: stlačenie na ovládači, klávesnici alebo pohyb myši prebudí obraz
                 if vstup {
                     posledna_aktivita = Instant::now();
                 }

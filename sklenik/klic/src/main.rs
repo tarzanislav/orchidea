@@ -39,11 +39,11 @@ mod okolie;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod samomeranie;
 
-// správca chladu TV krabičiek (R132–R135) – obraz, USB, sieť, tepelný pokus; skúša sa na každom systéme
+// správca chladu TV krabičiek (R158–R161) – obraz, USB, sieť, tepelný pokus; skúša sa na každom systéme
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod chlad;
 
-// vlastný ovládač obrazovky cez DRM/KMS (R132 – chladný obraz)
+// vlastný ovládač obrazovky cez DRM/KMS (R158 – chladný obraz)
 #[cfg(target_os = "linux")]
 mod kms;
 #[cfg(target_os = "linux")]

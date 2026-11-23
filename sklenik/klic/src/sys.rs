@@ -261,7 +261,7 @@ pub fn ethernet_bez_gigabitu(meno: &str) -> io::Result<bool> {
     ethernet_gigabit(meno, false)
 }
 
-/// Sieť podľa potreby (R133): ponuka gigabitu zapnutá alebo vypnutá. Vráti `Ok(true)`, ak sa zmenila
+/// Sieť podľa potreby (R159): ponuka gigabitu zapnutá alebo vypnutá. Vráti `Ok(true)`, ak sa zmenila
 /// (spojenie sa znova dohodne, asi 2–3 s).
 pub fn ethernet_gigabit(meno: &str, gigabit: bool) -> io::Result<bool> {
     if meno.is_empty() || meno.len() >= 16 || meno.contains('\0') {
@@ -440,7 +440,7 @@ impl Udalosti {
     }
 
     /// Čaká na udalosti jadra aj na vstupné zariadenia (`/dev/input/event*` – klávesnica, myš, diaľkový
-    /// ovládač; R132 – prebudenie obrazu). Vráti (udalosť jadra, stlačenie/pohyb na vstupe); všetko sa vyberie.
+    /// ovládač; R158 – prebudenie obrazu). Vráti (udalosť jadra, stlačenie/pohyb na vstupe); všetko sa vyberie.
     pub fn cakaj_so_vstupmi(&self, ms: u64, vstupy: &[c_int]) -> (bool, bool) {
         let mut p: Vec<PollFd> =
             self.fds.iter().chain(vstupy).map(|&fd| PollFd { fd, udalosti: POLLIN, vratene: 0 }).collect();
@@ -493,7 +493,7 @@ impl Drop for Udalosti {
     }
 }
 
-/// Volanie ioctl s jednou štruktúrou (DRM/KMS – vlastný ovládač obrazovky, R132).
+/// Volanie ioctl s jednou štruktúrou (DRM/KMS – vlastný ovládač obrazovky, R158).
 ///
 /// `T` musí byť štruktúra `#[repr(C)]` presne podľa hlavičky jadra (veľkosť je zakódovaná v `poziadavka`)
 /// a polia s ukazovateľmi (`*_ptr`) musia ukazovať na pamäť, ktorá žije počas volania. Jadro môže volanie

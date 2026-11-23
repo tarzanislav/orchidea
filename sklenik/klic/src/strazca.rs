@@ -109,7 +109,7 @@ pub struct Regulator {
     ustalena: Option<f64>,
     /// Úspora v nečinnosti pri horúcom okolí (R126): v nečinnosti najviac úsporná úroveň.
     uspora: bool,
-    /// Parkovanie jadier v pokoji (R135, TV krabičky).
+    /// Parkovanie jadier v pokoji (R161, TV krabičky).
     parkovanie: bool,
     necinny_s: f64,
     /// Úroveň pred zaparkovaním – keď príde práca, vráti sa na ňu hneď.
@@ -146,7 +146,7 @@ impl Regulator {
         }
     }
 
-    /// R135: parkovanie jadier v pokoji (TV krabičky). Nečinné, ale zapnuté jadrá stále žerú prúd únikom
+    /// R161: parkovanie jadier v pokoji (TV krabičky). Nečinné, ale zapnuté jadrá stále žerú prúd únikom
     /// (rastie s teplotou exponenciálne); vypnuté jadro odpojí firmvér (PSCI CPU_OFF) od napájania. Po 20 s
     /// nečinnosti ostane jedno jadro na najnižšom takte; keď príde práca, strážca sa **hneď** vráti na
     /// predošlú úroveň (nie po krokoch) – odozva ostáva, teplo v pokoji klesne.

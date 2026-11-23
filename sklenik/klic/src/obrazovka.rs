@@ -109,7 +109,7 @@ pub struct Stav<'a> {
     pub okolie: Option<&'a crate::okolie::StavOkolia>,
     /// Úsporný režim pre horúce okolie (R126).
     pub uspora: bool,
-    /// Správca chladu TV krabičky (R132–R135) – `None` na ostatných doskách.
+    /// Správca chladu TV krabičky (R158–R161) – `None` na ostatných doskách.
     pub chlad: Option<&'a Chlad>,
 }
 
@@ -117,7 +117,7 @@ pub struct Stav<'a> {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Chlad {
     pub text: String,
-    /// Tepelný pokus (R134): fáza a čas – zelenou.
+    /// Tepelný pokus (R160): fáza a čas – zelenou.
     pub pokus: Option<String>,
 }
 
@@ -407,7 +407,7 @@ pub fn nakresli_s_opisom(
         let casti: Vec<(&str, Farba)> = casti.iter().map(|(t, f)| (t.as_str(), *f)).collect();
         riadok(&mut p, &mut y, popisy[12], &casti);
     }
-    // R132–R135: správca chladu TV krabičky
+    // R158–R161: správca chladu TV krabičky
     if let Some(c) = s.chlad {
         let pokus = c.pokus.as_deref().map(|t| format!("· {t}")).unwrap_or_default();
         riadok(&mut p, &mut y, popisy[13], &[(&c.text, TEXT), (&pokus, ZELENA)]);
@@ -550,7 +550,7 @@ pub fn nakresli_s_opisom(
     let znak = |b: bool| if b { ("✓", ZELENA) } else { ("–", TLMENY) };
     let (k, mys, dotyk) =
         (znak(ma(DruhVstupu::Klavesnica)), znak(ma(DruhVstupu::Mys)), znak(ma(DruhVstupu::Dotyk)));
-    // diaľkový ovládač (R132) – na TV krabičke namiesto dotyku (ten tam nebýva)
+    // diaľkový ovládač (R158) – na TV krabičke namiesto dotyku (ten tam nebýva)
     let ovladac = ma(DruhVstupu::Ovladac);
     let (posledny, posledny_znak) = if ovladac {
         (j.t("  ovládač", "  ovladač", "  remote"), znak(true))

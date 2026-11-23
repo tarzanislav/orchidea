@@ -18,7 +18,7 @@ pub enum DruhVstupu {
     Dotyk,
     /// Touchpad, grafický tablet a podobne (ukazovanie mimo obrazu).
     Ukazovatko,
-    /// Diaľkový ovládač (infračervený prijímač TV krabičky, HDMI-CEC) – šípky a OK (R132).
+    /// Diaľkový ovládač (infračervený prijímač TV krabičky, HDMI-CEC) – šípky a OK (R158).
     Ovladac,
 }
 

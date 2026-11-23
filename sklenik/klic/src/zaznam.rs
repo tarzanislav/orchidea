@@ -591,7 +591,7 @@ pub struct Riadenie {
     zaciatok: Option<(Instant, u64)>,
     /// Index ďalšieho míľnika (minúty záznamov – `MILNIKY_MIN`, pri tepelnom pokuse koniec každej fázy).
     dalsi: usize,
-    /// Vlastné míľniky (R134 – tepelný pokus); prázdne = `MILNIKY_MIN`.
+    /// Vlastné míľniky (R160 – tepelný pokus); prázdne = `MILNIKY_MIN`.
     milniky: Vec<u32>,
     zaznamy: Vec<(u32, bool)>,
     krivka: Vec<samomeranie::BodKrivky>,
@@ -606,7 +606,7 @@ pub struct Riadenie {
 }
 
 impl Riadenie {
-    /// Meranie s vlastnými minútami záznamov (R134 – tepelný pokus).
+    /// Meranie s vlastnými minútami záznamov (R160 – tepelný pokus).
     pub fn s_milnikmi(milniky: Vec<u32>) -> Riadenie {
         Riadenie { milniky, ..Riadenie::default() }
     }

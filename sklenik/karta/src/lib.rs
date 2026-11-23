@@ -293,14 +293,14 @@ pub struct NastavenieZariadenia {
     pub jazyk: Option<String>,
     /// Samomeranie pri štarte (R122): `Some(false)` = vypnuté, inak zapnuté.
     pub meranie: Option<bool>,
-    /// Obraz TV krabičky (R132): `chladny` (predvolené), `ostry` (plné rozlíšenie, 16 bitov) alebo
-    /// `povodny` (1080p @ 60 Hz, 32 bitov – ako pred R132).
+    /// Obraz TV krabičky (R158): `chladny` (predvolené), `ostry` (plné rozlíšenie, 16 bitov) alebo
+    /// `povodny` (1080p @ 60 Hz, 32 bitov – ako pred R158).
     pub obraz: Option<String>,
-    /// Po koľkých minútach pokoja sa obraz začierni (0 = nikdy; R132).
+    /// Po koľkých minútach pokoja sa obraz začierni (0 = nikdy; R158).
     pub zhasni_min: Option<u32>,
-    /// Po koľkých minútach pokoja sa obraz vypne (0 = nikdy; R132).
+    /// Po koľkých minútach pokoja sa obraz vypne (0 = nikdy; R158).
     pub vypni_min: Option<u32>,
-    /// Tepelný pokus namiesto bežného samomerania (R134): `Some(false)` = vypnutý.
+    /// Tepelný pokus namiesto bežného samomerania (R160): `Some(false)` = vypnutý.
     pub pokus: Option<bool>,
 }
 
@@ -684,7 +684,7 @@ mod skusky {
         assert_eq!(z.wifi_psk, None);
         assert_eq!(u.len(), 2, "{u:?}");
         assert!(!platne_meno("-pi") && !platne_meno("pi-") && platne_meno("pi-1"));
-        // R132, R134: obraz TV krabičky, zhasínanie a tepelný pokus
+        // R158, R160: obraz TV krabičky, zhasínanie a tepelný pokus
         let (z, u) = NastavenieZariadenia::z_textu("obraz=Pôvodný\nzhasni=0\nvypni=15\npokus=nie\n");
         assert_eq!(
             (z.obraz.as_deref(), z.zhasni_min, z.vypni_min, z.pokus, u.len()),

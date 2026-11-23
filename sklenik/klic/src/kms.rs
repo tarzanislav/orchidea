@@ -1,4 +1,4 @@
-//! Vlastný ovládač obrazovky cez DRM/KMS jadra Linux – **chladný obraz** (R132).
+//! Vlastný ovládač obrazovky cez DRM/KMS jadra Linux – **chladný obraz** (R158).
 //!
 //! Meranie na X96 Max Plus (22. 11. 2026) ukázalo, že krabičku v pokoji nezohrieva procesor, ale obraz:
 //! obvod obrazu (VPU) číta obraz z pamäte DDR stále dokola, aj keď sa nemení, a vysielač HDMI beží na takte

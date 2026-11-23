@@ -518,7 +518,7 @@ jobs:
             fdtput -t s "$f" /soc/mmc@ffe03000 status disabled
             echo "$f: $(fdtget "$f" / model) – Wi-Fi $(fdtget "$f" /soc/mmc@ffe03000 status)"
           done
-          # R135: X96 Max Plus – nepoužívané časti čipu vypnuté: grafický procesor Mali (obraz skladajú roviny
+          # R161: X96 Max Plus – nepoužívané časti čipu vypnuté: grafický procesor Mali (obraz skladajú roviny
           # obvodu obrazu VPU, GPU netreba; bez napájania v popise hlásil chybu) a USB OTG dwc2 (krabička nikdy
           # nie je USB zariadením – oba porty natrvalo ako hostiteľ, bez pokusu o g_mass_storage)
           for d in meson-sm1-x96-air-gbit meson-sm1-x96-air; do

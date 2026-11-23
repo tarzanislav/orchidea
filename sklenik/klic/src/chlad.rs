@@ -1,14 +1,14 @@
-//! SPRÁVCA CHLADU pre TV krabičky (R132–R135) – čistá logika bez hardvéru, skúša sa na každom systéme.
+//! SPRÁVCA CHLADU pre TV krabičky (R158–R161) – čistá logika bez hardvéru, skúša sa na každom systéme.
 //!
 //! Meranie X96 Max Plus ukázalo, že v pokoji hreje obraz a periférie, nie procesor. Správca rozhoduje:
-//! - **obraz** (R132): chladný režim (najnižšia obnova Full HD, 16 bitov, polovičné rozlíšenie so zväčšením
+//! - **obraz** (R158): chladný režim (najnižšia obnova Full HD, 16 bitov, polovičné rozlíšenie so zväčšením
 //!   v obvode obrazu) a **zhasínanie v pokoji** – najprv čierny obraz (nič sa nečíta z pamäte, signál ostáva),
 //!   neskôr vypnutý (stojí aj vysielač HDMI); prebudí ho diaľkový ovládač, klávesnica alebo myš,
-//! - **USB úložisko spí** medzi zápismi (R133) – kľúč sa zobudí len na zápis merania,
-//! - **sieť podľa potreby** (R133): 100 Mb/s, gigabit len pri veľkom prenose – podľa výskumu
+//! - **USB úložisko spí** medzi zápismi (R159) – kľúč sa zobudí len na zápis merania,
+//! - **sieť podľa potreby** (R159): 100 Mb/s, gigabit len pri veľkom prenose – podľa výskumu
 //!   *Adaptive Link Rate* (Gunaratne, Christensen, Nordman, Suen; IEEE Trans. Computers 2008): dva prahy
 //!   s hysteréziou, aby spojenie nekmitalo,
-//! - **tepelný pokus** (R134): po fázach 20 minút porovná pôvodný stav, úsporné periférie, chladný, čierny
+//! - **tepelný pokus** (R160): po fázach 20 minút porovná pôvodný stav, úsporné periférie, chladný, čierny
 //!   a vypnutý obraz a na konci znova pôvodný stav (návrh A–B–…–A: posun teploty miestnosti sa odčíta).
 //!   Ustálenú teplotu každej fázy odhadne z krivky modelom ohrevu T(t) = T∞ + (T₀ − T∞)·e^(−t/τ)
 //!   (najmenšie štvorce, τ hľadané po mriežke) – netreba čakať hodiny, kým sa teplota ustáli.
@@ -67,7 +67,7 @@ impl Zhasinanie {
     }
 }
 
-/// Sieť podľa potreby (R133, Adaptive Link Rate).
+/// Sieť podľa potreby (R159, Adaptive Link Rate).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SietPodlaPotreby {
     pub gigabit: bool,
@@ -384,7 +384,7 @@ fn scsi_pod(adresar: &Path, hlbka: u32, v: &mut Vec<PathBuf>) {
     }
 }
 
-/// R133: USB úložisko spí medzi zápismi (uspanie jadra po `oneskorenie_ms` bez práce) alebo bdie (`spat` =
+/// R159: USB úložisko spí medzi zápismi (uspanie jadra po `oneskorenie_ms` bez práce) alebo bdie (`spat` =
 /// false – pôvodne). Nastaví zariadenie USB aj disk SCSI na ňom. Vráti mená nastavených zariadení USB.
 pub fn nastav_spanok_usb(koren: &Path, spat: bool, oneskorenie_ms: u32) -> Vec<String> {
     let mut mena = Vec::new();
