@@ -279,8 +279,15 @@ fn c(x: f64) -> String {
 }
 
 /// Výsledok pokusu do správy: krivka (s od začiatku pokusu, teplota) a rušené fázy.
+///
+/// Prvé meranie X96 (23. 11. 2026) ukázalo, že fáza 1 začína so studenou skrinkou: popri rýchlom ohreve
+/// čipu (τ ≈ 8 min) sa skrinka a podložka zohrievajú oveľa pomalšie, takže ustálená teplota fázy 1 vyjde
+/// nižšia ako v rovnakej fáze 6 (+4,4 °C pri izbe stálej 24,5–24,9 °C). Lineárna oprava „posunu okolia“ by
+/// preto skresľovala. Základom je **fáza 6** (rovnaký stav ako fáza 1, ale so zohriatou krabičkou ako
+/// ostatné fázy) a vedľa je **zmena oproti predošlej fáze** – tá je najspoľahlivejšia.
 pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], nl: &str) -> String {
-    let odhady: Vec<Option<Odhad>> = (0..FAZY.len())
+    let n = FAZY.len();
+    let odhady: Vec<Option<Odhad>> = (0..n)
         .map(|i| {
             let (od, po) = (i as u64 * FAZA_S, (i as u64 + 1) * FAZA_S);
             let body: Vec<(f64, f64)> =
@@ -288,61 +295,57 @@ pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], nl: &str) -> Stri
             odhad_ustalenej(&body)
         })
         .collect();
-    // posun okolia: rozdiel medzi prvou a poslednou (rovnakou) fázou, rozložený lineárne v čase
-    let zaklad = odhady[0].map(|o| o.ustalena);
-    let posun = match (zaklad, odhady[FAZY.len() - 1]) {
-        (Some(a), Some(z)) => Some(z.ustalena - a),
-        _ => None,
-    };
+    let zaklad = odhady[n - 1].or(odhady[0]).map(|o| o.ustalena);
+    let znamienko = |r: f64| format!("{}{} °C", if r > 0.0 { "+" } else { "" }, c(r));
     let mut t = format!(
-        "  {} fáz po {} min – rovnaké miesto, žiadna práca; ustálená teplota odhadnutá modelom ohrevu{nl}",
-        FAZY.len(),
+        "  {n} fáz po {} min – rovnaké miesto, žiadna práca; ustálená teplota odhadnutá modelom ohrevu{nl}",
         FAZA_S / 60
     );
     t += &format!(
-        "  {:<26} {:>8} {:>8} {:>12} {:>7} {:>10}{nl}",
-        "fáza", "začiatok", "koniec", "ustálila by", "τ", "oproti 1.*"
+        "  {:<26} {:>8} {:>8} {:>12} {:>7} {:>10} {:>12}{nl}",
+        "fáza", "začiatok", "koniec", "ustálila by", "τ", "krok", "oproti pôv.*"
     );
     for (i, f) in FAZY.iter().enumerate() {
         let Some(o) = odhady[i] else {
             t += &format!("  {:<26} {:>8}{nl}", format!("{} {}", i + 1, f.nazov), "nemerané");
             continue;
         };
-        let rozdiel = match (zaklad, posun) {
-            (Some(a), Some(p)) => Some(o.ustalena - (a + p * i as f64 / (FAZY.len() - 1) as f64)),
-            (Some(a), None) => Some(o.ustalena - a),
-            _ => None,
+        let krok = match (i, i.checked_sub(1).and_then(|p| odhady[p])) {
+            (0, _) => "–".to_string(),
+            (_, _) if i == n - 1 => "–".to_string(),
+            (_, Some(p)) => znamienko(o.ustalena - p.ustalena),
+            _ => "–".into(),
         };
-        let rozdiel = match rozdiel {
-            _ if i == 0 => "základ".to_string(),
-            _ if i == FAZY.len() - 1 => "kontrola".to_string(),
-            Some(r) => format!("{}{} °C", if r > 0.0 { "+" } else { "" }, c(r)),
+        let oproti = match zaklad {
+            _ if i == n - 1 => "základ".to_string(),
+            _ if i == 0 => "studený štart".to_string(),
+            Some(z) => znamienko(o.ustalena - z),
             None => "–".into(),
         };
         t += &format!(
-            "  {:<26} {:>8} {:>8} {:>12} {:>7} {:>10}{}{}{nl}",
+            "  {:<26} {:>8} {:>8} {:>12} {:>7} {:>10} {:>12}{}{}{nl}",
             format!("{} {}", i + 1, f.nazov),
             format!("{} °C", c(o.zaciatok)),
             format!("{} °C", c(o.koniec)),
             format!("{}{} °C", if o.spolahlivy { "" } else { "≈" }, c(o.ustalena)),
             if o.tau_s > 0.0 { format!("{:.0} min", o.tau_s / 60.0) } else { "–".into() },
-            rozdiel,
+            krok,
+            oproti,
             if rusene.get(i).copied().unwrap_or(false) { " · rušené (ovládač)" } else { "" },
             if o.odchylka > 0.5 { format!(" · odchýlka {} °C", c(o.odchylka)) } else { String::new() },
         );
     }
-    match posun {
-        Some(p) => {
-            t += &format!(
-                "  * opravené o posun okolia {}{} °C medzi 1. a {}. fázou (lineárne v čase){nl}",
-                if p > 0.0 { "+" } else { "" },
-                c(p),
-                FAZY.len()
-            )
-        }
-        None => t += &format!("  * bez kontrolnej fázy – posun teploty miestnosti nie je odčítaný{nl}"),
+    if let (Some(a), Some(z)) = (odhady[0], odhady[n - 1]) {
+        t += &format!(
+            "  * základ = fáza {n} (pôvodný stav so zohriatou krabičkou); fáza 1 vyšla o {} – pomalé zohrievanie skrinky{nl}",
+            znamienko(a.ustalena - z.ustalena)
+        );
+    } else {
+        t += &format!(
+            "  * bez kontrolnej fázy {n} – základom je fáza 1 (studený štart, krok je spoľahlivejší){nl}"
+        );
     }
-    t += &format!("  ≈ = fáza bola krátka na spoľahlivý odhad (teplota sa ešte výrazne menila){nl}");
+    t += &format!("  krok = zmena oproti predošlej fáze · ≈ = fáza krátka na spoľahlivý odhad{nl}");
     t
 }
 
@@ -506,27 +509,31 @@ mod skusky {
     }
 
     #[test]
-    fn vysledok_pokusu_odcita_posun_okolia() {
-        // ustálené teploty fáz 60, 58, 54, 50, 47, 61 (okolie stúplo o 1 °C), každá fáza sa blíži k cieľu
-        let ciele = [60.0, 58.0, 54.0, 50.0, 47.0, 61.0];
+    fn vysledok_pokusu_zaklad_je_kontrolna_faza() {
+        // ustálené teploty fáz 60, 58, 54, 50, 47, 62; každá fáza sa blíži k cieľu s τ = 8 min
+        let ciele = [60.0, 58.0, 54.0, 50.0, 47.0, 62.0];
         let mut krivka = Vec::new();
         let mut t0 = 35.0;
         for (i, &ciel) in ciele.iter().enumerate() {
             for k in 0..=40u64 {
-                let s = i as u64 * FAZA_S + k * 30;
                 if k == 40 && i + 1 < ciele.len() {
                     continue;
                 }
-                krivka.push((s, ciel + (t0 - ciel) * (-(k as f64 * 30.0) / 480.0).exp()));
+                krivka.push((
+                    i as u64 * FAZA_S + k * 30,
+                    ciel + (t0 - ciel) * (-(k as f64 * 30.0) / 480.0).exp(),
+                ));
             }
             t0 = ciel + (t0 - ciel) * (-(1200.0f64) / 480.0).exp();
         }
         let r = vysledok_pokusu(&krivka, &[false, false, false, true, false, false], "\n");
-        assert!(r.contains("3 chladný obraz"), "{r}");
-        // fáza 3: 54 − (60 + 1·2/5) = −6,4 °C (model odhadne ustálené teploty na ±0,1 °C)
-        assert!(r.contains("-6,4 °C") || r.contains("-6,5 °C") || r.contains("-6,3 °C"), "{r}");
-        assert!(r.contains("rušené"), "{r}");
-        assert!(r.contains("posun okolia +1,0 °C") || r.contains("posun okolia +0,9 °C"), "{r}");
+        let riadok = |z: &str| r.lines().find(|l| l.contains(z)).unwrap_or_default().to_string();
+        // fáza 3: 54 − 62 = −8 °C oproti základu, krok 54 − 58 = −4 °C
+        let f3 = riadok("3 chladný obraz");
+        assert!(f3.contains("-4,0 °C") && f3.contains("-8,0 °C"), "{r}");
+        assert!(riadok("4 čierny").contains("rušené"), "{r}");
+        assert!(riadok("6 pôvodne").contains("základ"), "{r}");
+        assert!(r.contains("fáza 1 vyšla o"), "{r}");
     }
 
     #[test]

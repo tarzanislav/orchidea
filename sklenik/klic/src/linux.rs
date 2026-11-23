@@ -869,6 +869,7 @@ pub fn spusti() {
     let mut usb_spanok_zakazany = false;
     let mut obrazovka_zmenena = false;
     let mut pokus = false;
+    let mut pokus_zastaveny = false;
     let mut faza_teraz: Option<usize> = None;
     let mut zobrazeny_chlad: Option<obrazovka::Chlad> = None;
     let mut prekreslit = false;
@@ -1096,7 +1097,22 @@ pub fn spusti() {
         }
 
         // R158–R161: správca chladu – obraz, periférie a fázy tepelného pokusu
-        let pokus_s = if pokus { merania.as_ref().and_then(|m| m.uplynulo_s()) } else { None };
+        // bezpečnosť: pokus nesmie krabičku prehriať – pôvodný stav (fázy 1 a 6) v teplej izbe hreje nad
+        // strop a strážca procesorom neochladí, čo hreje obraz a periférie (meranie 23. 11.: 71,5 °C)
+        if pokus
+            && !pokus_zastaveny
+            && faza_teraz.is_some()
+            && teplota.is_some_and(|t| t >= profil.strop + 5.0)
+        {
+            pokus_zastaveny = true;
+            hlas(&format!(
+                "tepelný pokus: zastavený pri {:.1} °C (strop {:.0} °C + 5) – ďalej chladný režim",
+                teplota.unwrap_or(0.0),
+                profil.strop
+            ));
+        }
+        let pokus_s =
+            if pokus && !pokus_zastaveny { merania.as_ref().and_then(|m| m.uplynulo_s()) } else { None };
         if tv {
             let n = nastavenie.as_ref().map(|(_, n)| n);
             let zh = Zhasinanie::pre_tv(n.and_then(|n| n.zhasni_min), n.and_then(|n| n.vypni_min));
