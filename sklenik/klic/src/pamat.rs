@@ -28,6 +28,37 @@ pub const KANALY: [(&str, u64); 4] = [
 /// Bajtov na jedno započítanie radiča.
 pub const BAJTOV_NA_ZAPOCET: u64 = 16;
 
+/// R176: merač pamäte len v krátkych oknách. Ovládač jadra ho počas merania 10× za sekundu znova spúšťa
+/// v radiči pamäte (prerušenie časovača) – pri pôvodnom obraze (≈ 500 MB/s) to spôsobovalo výpadky HDMI
+/// každých pár sekúnd (pokus 23. 11. 2026, fázy 1, 2 a 8) a zbytočne budilo čip. Preto: okno 2 s raz
+/// za minútu a nikdy pri obraze s veľkým tokom.
+pub const OKNO_S: f64 = 2.0;
+pub const OKNO_KAZDYCH_S: f64 = 60.0;
+
+/// Priemer tokov z viacerých okien.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SumaToku {
+    suma: Tok,
+    pub okien: u32,
+}
+
+impl SumaToku {
+    pub fn pridaj(&mut self, t: &Tok) {
+        self.suma.celkom += t.celkom;
+        for (s, v) in self.suma.kanaly.iter_mut().zip(t.kanaly) {
+            *s += v;
+        }
+        self.okien += 1;
+    }
+
+    pub fn priemer(&self) -> Option<Tok> {
+        (self.okien > 0).then(|| {
+            let n = self.okien as f64;
+            Tok { celkom: self.suma.celkom / n, kanaly: self.suma.kanaly.map(|v| v / n) }
+        })
+    }
+}
+
 /// Tok pamäte v MB/s: celkom a po kanáloch.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Tok {
@@ -144,6 +175,15 @@ pub fn budenia(pred: &[(String, u64)], teraz: &[(String, u64)], s: f64, n: usize
 #[cfg(test)]
 mod skusky {
     use super::*;
+
+    #[test]
+    fn priemer_okien() {
+        let mut s = SumaToku::default();
+        assert_eq!(s.priemer(), None);
+        s.pridaj(&Tok { celkom: 10.0, kanaly: [2.0, 8.0, 0.0, 0.0] });
+        s.pridaj(&Tok { celkom: 30.0, kanaly: [4.0, 26.0, 0.0, 0.0] });
+        assert_eq!(s.priemer(), Some(Tok { celkom: 20.0, kanaly: [3.0, 17.0, 0.0, 0.0] }));
+    }
 
     #[test]
     fn tok_pamate_z_pocitadiel() {

@@ -1049,20 +1049,22 @@ pub fn spusti() {
     let mut zobrazeny_chlad: Option<obrazovka::Chlad> = None;
     let mut prekreslit = false;
     // R162, R163: merač pamäte (počítadlá radiča DDR) a merač budení
-    let mut merac_pamate = pamat::MeracPamate::otvor();
+    // merač sa otvára len na krátke okná (R176) – tu sa len zistí, či ho jadro má
+    let merac_pamate_je = pamat::MeracPamate::otvor().is_some();
     hlas(&format!(
         "merač pamäte: {}",
-        if merac_pamate.is_some() {
-            "áno – tok DDR podľa častí čipu"
+        if merac_pamate_je {
+            "áno – tok DDR podľa častí čipu, okno 2 s raz za minútu (nie pri plnom obraze)"
         } else {
             "nie je (iný čip alebo jadro bez neho)"
         }
     ));
-    let mut pamat_vzorka: Option<(Instant, [u64; 5])> = None;
+    let mut okno_pamate: Option<(pamat::MeracPamate, Instant, [u64; 5])> = None;
+    let mut posledne_okno: Option<Instant> = None;
     let mut tok_pamate: Option<pamat::Tok> = None;
     let mut tok_zobrazeny: Option<(Instant, pamat::Tok)> = None;
-    let mut pamat_pri_zazname: Option<(Instant, [u64; 5])> = None;
-    let mut pamat_fazy: Vec<(usize, Instant, [u64; 5])> = Vec::new();
+    let mut pamat_pri_zazname = pamat::SumaToku::default();
+    let mut pamat_fazy: Vec<(usize, pamat::SumaToku)> = Vec::new();
     let mut budenia_pri_zazname: Option<(Instant, Vec<(String, u64)>)> = None;
     let mut ochrana_pamate = false;
     // R166: takt obvodu obrazu podľa potreby (vlastný ovládač jadra)
@@ -1146,12 +1148,40 @@ pub fn spusti() {
             }
             if !len_sledovanie {
                 hw.uplatni(&uroven);
-                // R162: tok pamäte za posledný krok
-                if let Some(s) = merac_pamate.as_mut().and_then(|m| m.stav()) {
-                    if let Some((t0, p)) = pamat_vzorka {
-                        tok_pamate = Some(pamat::Tok::z_rozdielu(&p, &s, t0.elapsed().as_secs_f64()));
+                // R162, R176: tok pamäte v krátkom okne raz za minútu – nie pri obraze s veľkým tokom (pôvodný
+                // alebo ostrý obraz na celej ploche), lebo merač by rušil HDMI
+                let smie_merat = merac_pamate_je
+                    && displej.as_ref().is_some_and(|d| {
+                        d.stav_obrazu() != StavObrazu::Zapnuty || d.zvacsuje(StavObrazu::Zapnuty)
+                    });
+                match okno_pamate.take() {
+                    Some((mut m, t0, s0)) if !smie_merat || t0.elapsed().as_secs_f64() >= pamat::OKNO_S => {
+                        if smie_merat && let Some(s1) = m.stav() {
+                            let t = pamat::Tok::z_rozdielu(&s0, &s1, t0.elapsed().as_secs_f64());
+                            tok_pamate = Some(t);
+                            pamat_pri_zazname.pridaj(&t);
+                            if let Some((_, f)) = pamat_fazy.last_mut() {
+                                f.pridaj(&t);
+                            }
+                        }
+                        drop(m);
+                        posledne_okno = Some(Instant::now());
                     }
-                    pamat_vzorka = Some((Instant::now(), s));
+                    Some(o) => okno_pamate = Some(o),
+                    None if smie_merat
+                        && posledne_okno
+                            .is_none_or(|t| t.elapsed().as_secs_f64() >= pamat::OKNO_KAZDYCH_S) =>
+                    {
+                        if let Some(mut m) = pamat::MeracPamate::otvor()
+                            && let Some(s0) = m.stav()
+                        {
+                            okno_pamate = Some((m, Instant::now(), s0));
+                        }
+                    }
+                    None => {}
+                }
+                if !smie_merat {
+                    tok_pamate = None;
                 }
                 // R159: sieť podľa potreby – prenos za posledný krok rozhodne o gigabite
                 if tv
@@ -1401,9 +1431,7 @@ pub fn spusti() {
                     rusene[f] |= r.rusi;
                     if faza_teraz != Some(f) {
                         faza_teraz = Some(f);
-                        if let Some(sp) = merac_pamate.as_mut().and_then(|m| m.stav()) {
-                            pamat_fazy.push((f, Instant::now(), sp));
-                        }
+                        pamat_fazy.push((f, pamat::SumaToku::default()));
                         hlas(&format!(
                             "tepelný pokus: fáza {}/{} – {}",
                             f + 1,
@@ -1724,12 +1752,22 @@ pub fn spusti() {
                     if tv {
                         text += &nadpis("SPRÁVCA CHLADU (R158–R164)");
                         // R162: priemerný tok pamäte od posledného záznamu
-                        if let Some(sp) = merac_pamate.as_mut().and_then(|m| m.stav()) {
-                            if let Some((t0, p)) = pamat_pri_zazname {
-                                let t = pamat::Tok::z_rozdielu(&p, &sp, t0.elapsed().as_secs_f64());
-                                text += &format!("  {} – priemer od posledného záznamu{NL}", t.popis());
+                        if merac_pamate_je {
+                            match pamat_pri_zazname.priemer() {
+                                Some(t) => {
+                                    text += &format!(
+                                        "  {} – priemer {} okien po 2 s od posledného záznamu{NL}",
+                                        t.popis(),
+                                        pamat_pri_zazname.okien
+                                    )
+                                }
+                                None => {
+                                    text += &format!(
+                                        "  pamäť: nemerala sa – plný obraz (merač by rušil HDMI, R176){NL}"
+                                    )
+                                }
                             }
-                            pamat_pri_zazname = Some((Instant::now(), sp));
+                            pamat_pri_zazname = pamat::SumaToku::default();
                         }
                         if let Some(t) = takty_merane() {
                             text += &format!(
@@ -1851,19 +1889,16 @@ pub fn spusti() {
                                 m.krivka().iter().filter_map(|b| Some((b.s, b.teplota?))).collect();
                             dovetok += &chlad::vysledok_pokusu(&krivka, &rusene, NL);
                             // R162: tok pamäte v každej fáze
-                            if let Some(koniec) = merac_pamate.as_mut().and_then(|m| m.stav()) {
-                                dovetok += &format!("  tok pamäte po fázach (MB/s):{NL}");
-                                for (i, (f, t0, p)) in pamat_fazy.iter().enumerate() {
-                                    let (t1, k) = pamat_fazy
-                                        .get(i + 1)
-                                        .map(|x| (x.1.duration_since(*t0).as_secs_f64(), x.2))
-                                        .unwrap_or((t0.elapsed().as_secs_f64(), koniec));
-                                    let tok = pamat::Tok::z_rozdielu(p, &k, t1);
+                            if merac_pamate_je {
+                                dovetok += &format!("  tok pamäte po fázach (MB/s, okná 2 s):{NL}");
+                                for (f, suma) in &pamat_fazy {
                                     dovetok += &format!(
                                         "    {} {:<26} {}{NL}",
                                         f + 1,
                                         chlad::FAZY[*f].nazov,
-                                        tok.popis()
+                                        suma.priemer()
+                                            .map_or("nemerané – plný obraz (R176)".to_string(), |t| t
+                                                .popis())
                                     );
                                 }
                             }
