@@ -2871,11 +2871,33 @@ fn varovanie_jadra(zaznam: &str) -> Option<String> {
     Some(format!("[{:>8.3} s] {druh}: {text}", cas_us as f64 / 1e6))
 }
 
+/// `/dev/kmsg` zapisuje bajty mimo ASCII ako `\xNN` – späť na UTF-8 (diakritika v hláseniach KLÍČA).
+fn bez_escape(t: &str) -> String {
+    let b = t.as_bytes();
+    let mut v = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\'
+            && i + 3 < b.len()
+            && b[i + 1] == b'x'
+            && let Ok(x) = u8::from_str_radix(&t[i + 2..i + 4], 16)
+        {
+            v.push(x);
+            i += 4;
+        } else {
+            v.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&v).into_owned()
+}
+
 /// R183: hlásenie jadra o obraze, HDMI, CEC, VPU alebo dekodéri (každá úroveň) a každé hlásenie KLÍČA.
 fn hlasenie_obrazu(zaznam: &str) -> Option<String> {
     let (hlavicka, text) = zaznam.split_once(';')?;
     let cas_us = hlavicka.split(',').nth(2).and_then(|c| c.parse::<u64>().ok()).unwrap_or(0);
-    let text = text.lines().next()?.trim();
+    let text = bez_escape(text.lines().next()?.trim());
+    let text = text.as_str();
     let male = text.to_lowercase();
     let o_obraze = ["drm", "hdmi", "cec", "vpu", "fbcon", "fb0", "vdec", "dw-hdmi", "canvas", "edid"]
         .iter()
@@ -2928,6 +2950,13 @@ fn dolezite_hlasenie(zaznam: &str, najvyssia_uroven: u32) -> Option<String> {
 #[cfg(test)]
 mod skusky {
     use super::*;
+
+    #[test]
+    fn hlasenia_klica_s_diakritikou() {
+        assert_eq!(bez_escape("KL\\xc3\\x8d\\xc4\\x8c: perif\\xc3\\xa9rie"), "KLÍČ: periférie");
+        assert!(hlasenie_obrazu("6,10,3039000,-;KL\\xc3\\x8d\\xc4\\x8c: takt").is_some());
+        assert!(hlasenie_obrazu("6,11,3039000,-;usb 1-2: new device").is_none());
+    }
 
     #[test]
     fn kontrolky_klavesnice() {
