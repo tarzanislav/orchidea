@@ -59,6 +59,30 @@ fn hlas(sprava: &str) {
     }
 }
 
+/// R183: je novinka zapnutá podľa SKLENIK.TXT? (bez nastavenia áno)
+fn novinka(n: &Option<(String, NastavenieZariadenia)>, kluc: &str) -> bool {
+    n.as_ref().is_none_or(|(_, n)| n.novinka(kluc))
+}
+
+/// R183: vypnuté novinky pre záznam.
+fn vypnute_novinky(n: &Option<(String, NastavenieZariadenia)>) -> String {
+    let v: Vec<&str> = sklenik_karta::NOVINKY.iter().map(|(k, _)| *k).filter(|k| !novinka(n, k)).collect();
+    if v.is_empty() { "všetky zapnuté".into() } else { format!("vypnuté: {}", v.join(", ")) }
+}
+
+/// R183: dekodér videa vypnutý – ovládač meson-vdec sa odpojí od zariadenia (ako by v jadre nebol).
+fn odpoj_dekoder() -> Vec<String> {
+    let d = Path::new("/sys/bus/platform/drivers/meson-vdec");
+    let mut v = Vec::new();
+    for z in fs::read_dir(d).into_iter().flatten().flatten() {
+        let meno = z.file_name().to_string_lossy().to_string();
+        if meno.contains('.') && fs::write(d.join("unbind"), &meno).is_ok() {
+            v.push(meno);
+        }
+    }
+    v
+}
+
 fn citaj(cesta: impl AsRef<Path>) -> Option<String> {
     fs::read_to_string(cesta).ok().map(|s| s.trim().trim_end_matches('\0').to_string())
 }
@@ -1104,9 +1128,24 @@ pub fn spusti() {
     let mut supis = Supis::nacitaj(Path::new("/"));
     let mut podpatie_bolo = supis.podpatie == Some(true);
     let mut nastavenie = nacitaj_nastavenie(&supis);
+    // R183: prepínače noviniek musia platiť od štartu – TV krabička chvíľu počká na USB kľúč s nastavením
+    if pid1 && !skuska && je_tv_krabicka(&model) && nastavenie.is_none() {
+        let t = Instant::now();
+        while nastavenie.is_none() && t.elapsed() < Duration::from_secs(8) {
+            std::thread::sleep(Duration::from_millis(250));
+            supis = Supis::nacitaj(Path::new("/"));
+            nastavenie = nacitaj_nastavenie(&supis);
+        }
+        hlas(&format!(
+            "nastavenie {} po {:.1} s čakania na kľúč",
+            if nastavenie.is_some() { "nájdené" } else { "nenájdené" },
+            t.elapsed().as_secs_f64()
+        ));
+    }
     let nastav_zariadenie = |n: &Option<(String, NastavenieZariadenia)>| {
-        if let Some((cesta, _)) = n
+        if let Some((cesta, nz)) = n
             && pid1
+            && nz.novinka("dekoder")
         {
             nahraj_firmver_videa(cesta);
         }
@@ -1134,8 +1173,22 @@ pub fn spusti() {
     // R158–R161: správca chladu na TV krabičkách – vlastný ovládač obrazu, USB, sieť, jadrá, tepelný pokus
     let tv = je_tv_krabicka(&model) && pid1 && !skuska;
     // R169: časovače KLÍČA smú meškať až 50 ms – jadro ich zlúči s inými budeniami
-    if tv {
+    if tv && novinka(&nastavenie, "casovace") {
         sys::tolerancia_casovacov(50_000_000);
+    }
+    // R183: vypnuté novinky, ktoré pôsobia už pri štarte
+    if pid1 && !skuska {
+        if !novinka(&nastavenie, "merac_taktov") && sys::odpoj("/sys/kernel/debug").is_ok() {
+            hlas("prepínače: merač taktov vypnutý – debugfs odpojený");
+        }
+        if !novinka(&nastavenie, "dekoder") {
+            let d = odpoj_dekoder();
+            hlas(&format!(
+                "prepínače: dekodér videa vypnutý – odpojené: {}",
+                if d.is_empty() { "nič".into() } else { d.join(", ") }
+            ));
+        }
+        hlas(&format!("prepínače (R183): {}", vypnute_novinky(&nastavenie)));
     }
     let mut displej = if len_sledovanie {
         None
@@ -1262,7 +1315,10 @@ pub fn spusti() {
     let mut prekreslit = false;
     // R162, R163: merač pamäte (počítadlá radiča DDR) a merač budení
     // merač sa otvára len na krátke okná (R176) – tu sa len zistí, či ho jadro má
-    let merac_pamate_je = pamat::MeracPamate::otvor().is_some();
+    // R183: merač pamäte sa pri štarte neotvára (otvorenie a zatvorenie zapne a vypne monitor radiča pamäte
+    // DDR, ktorý ovplyvňuje čítanie obrazu); stačí, že ho jadro má – otvorí sa len v oknách tepelného pokusu
+    let merac_pamate_je = novinka(&nastavenie, "merac_pamate")
+        && Path::new("/sys/bus/event_source/devices/meson_ddr_bw").exists();
     hlas(&format!(
         "merač pamäte: {}",
         if merac_pamate_je {
@@ -1288,7 +1344,7 @@ pub fn spusti() {
     // televízor išiel spať – obraz krabičky sa vypne, kým sa niekto neozve
     let mut tv_spi = false;
     // R166: takt obvodu obrazu podľa potreby (vlastný ovládač jadra)
-    let mut takt_vpu = if tv { TaktVpu::otvor() } else { None };
+    let mut takt_vpu = if tv && novinka(&nastavenie, "takt_obrazu") { TaktVpu::otvor() } else { None };
     if let Some(t) = &takt_vpu {
         hlas(&format!("takt VPU: {} MHz – riadi ho KLÍČ (R166)", t.teraz.unwrap_or(0)));
     }
@@ -1409,6 +1465,7 @@ pub fn spusti() {
                 // R159: sieť podľa potreby – prenos za posledný krok rozhodne o gigabite
                 if tv
                     && periferie_teraz == Some(true)
+                    && novinka(&nastavenie, "siet")
                     && let Some(r) = supis.siet.iter().find(|r| !r.bezdrotove && r.spojenie == Some(true))
                 {
                     let cesta = format!("/sys/class/net/{}/statistics", r.meno);
@@ -1436,7 +1493,7 @@ pub fn spusti() {
                     }
                 }
                 // R170: čip siete bez kábla spí; raz za 30 s sa na chvíľu zobudí a hľadá kábel
-                if tv && periferie_teraz == Some(true) {
+                if tv && periferie_teraz == Some(true) && novinka(&nastavenie, "siet") {
                     for r in supis.siet.iter().filter(|r| !r.bezdrotove && !siet_chyby.contains(&r.meno)) {
                         let k = kable.entry(r.meno.clone()).or_insert_with(chlad::Kabel::novy);
                         let spojenie =
@@ -1598,7 +1655,13 @@ pub fn spusti() {
         // R165: dekodér videa – zoznam formátov vždy; s nastavením video=ano aj skúška vlastnými tokmi s presne
         // známym obrazom (H.264 a HEVC). Raz, 20 s po štarte (po načítaní nastavenia, najneskôr po minúte).
         let hore = uptime().unwrap_or(0.0);
-        if pid1 && !skuska && !video_spustene && hore >= 20.0 && (nastavenie.is_some() || hore >= 60.0) {
+        if pid1
+            && !skuska
+            && !video_spustene
+            && novinka(&nastavenie, "dekoder")
+            && hore >= 20.0
+            && (nastavenie.is_some() || hore >= 60.0)
+        {
             video_spustene = true;
             let skusat = nastavenie.as_ref().and_then(|(_, n)| n.video) == Some(true);
             let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
@@ -1784,7 +1847,8 @@ pub fn spusti() {
             }
             // R178: nepoužité radiče kariet (eMMC Androidu, Wi-Fi bez ovládača) – odpojené pri úsporných
             // perifériách; až minútu po štarte, keď dobehne meranie úložiska
-            let chce_odpojit = pid1 && !skuska && r.periferie && r.radice && hore >= 60.0;
+            let chce_odpojit =
+                pid1 && !skuska && r.periferie && r.radice && hore >= 60.0 && novinka(&nastavenie, "radice");
             if chce_odpojit && radice_stav != Some(true) {
                 let chranene: Vec<String> = nastavenie.as_ref().map(|(c, _)| c.clone()).into_iter().collect();
                 for rd in radice::nepouzite_radice(Path::new("/"), &chranene) {
@@ -1808,7 +1872,12 @@ pub fn spusti() {
             }
             // R167: hlboký spánok jadier – vlastný ovládač jadra; len pri bežiacom strážnom časovači, s poistkou
             // na karte a nie počas tepelného pokusu (fázy sa porovnávajú s predošlými pokusmi)
-            let chce_spanok = pid1 && !skuska && r.jadra_spia && strazny.is_some() && hore >= 120.0;
+            let chce_spanok = pid1
+                && !skuska
+                && r.jadra_spia
+                && strazny.is_some()
+                && hore >= 120.0
+                && novinka(&nastavenie, "spanok_jadier");
             let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
             if spanok_jadier.krok(chce_spanok, spustaci.as_deref()) {
                 okolie.prekalibruj();
@@ -2058,7 +2127,9 @@ pub fn spusti() {
                             }
                             pamat_pri_zazname = pamat::SumaToku::default();
                         }
-                        if let Some(t) = takty_merane() {
+                        if novinka(&nastavenie, "merac_taktov")
+                            && let Some(t) = takty_merane()
+                        {
                             text += &format!(
                                 "  takty (merané v čipe): {t} · takt VPU riadi KLÍČ: {}{NL}",
                                 takt_vpu
@@ -2134,6 +2205,7 @@ pub fn spusti() {
                             },
                             spanok_jadier.popis()
                         );
+                        text += &format!("  prepínače (R183): {}{NL}", vypnute_novinky(&nastavenie));
                         text += &format!(
                             "  CEC (R181): {}{NL}",
                             cec.as_ref().map_or_else(|| cec_stav.clone(), |c| c.popis())
@@ -2179,6 +2251,15 @@ pub fn spusti() {
                         dovetok += &format!("  žiadne{NL}");
                     }
                     for v in varovania {
+                        dovetok += &format!("  {v}{NL}");
+                    }
+                    // R183: čo sa dialo s obrazom a HDMI a čo robil KLÍČ – na hľadanie chyby
+                    dovetok += &nadpis(if minuta == 0 {
+                        "OBRAZ, HDMI A KLÍČ OD ŠTARTU (R183)"
+                    } else {
+                        "OBRAZ, HDMI A KLÍČ – NOVÉ (R183)"
+                    });
+                    for v in kmsg.obraz_nenahlasene() {
                         dovetok += &format!("  {v}{NL}");
                     }
                     if posledna {
@@ -2626,6 +2707,9 @@ struct Hlasenia {
     vsetky: Vec<String>,
     /// Koľko z `vsetky` už bolo v správe samomerania.
     nahlasene: usize,
+    /// R183: hlásenia o obraze, HDMI a CEC (všetky úrovne) a hlásenia KLÍČA – najviac 160 (prvých 80 a najnovšie).
+    obraz: Vec<String>,
+    obraz_nahlasene: usize,
     /// Najvyššia (najmenej závažná) úroveň, ktorá sa ešte ukáže: na RPi len chyby (ovládač USB RPi 1–3
     /// pri každom štarte píše neškodné varovanie), inde aj varovania.
     uroven: u32,
@@ -2641,6 +2725,8 @@ impl Hlasenia {
             zoznam: Vec::new(),
             vsetky: Vec::new(),
             nahlasene: 0,
+            obraz: Vec::new(),
+            obraz_nahlasene: 0,
             uroven: if model.contains("Raspberry Pi") { 3 } else { 4 },
         }
     }
@@ -2654,6 +2740,15 @@ impl Hlasenia {
                 Ok(0) => break,
                 Ok(n) => {
                     let zaznam = String::from_utf8_lossy(&buf[..n]);
+                    if let Some(h) = hlasenie_obrazu(&zaznam) {
+                        if self.obraz.len() >= 160 {
+                            self.obraz.remove(80);
+                            if self.obraz_nahlasene > 80 {
+                                self.obraz_nahlasene -= 1;
+                            }
+                        }
+                        self.obraz.push(h);
+                    }
                     if let Some(h) = varovanie_jadra(&zaznam) {
                         if self.vsetky.len() >= 120 {
                             self.vsetky.remove(60);
@@ -2681,6 +2776,13 @@ impl Hlasenia {
 
     fn posledne(&self, n: usize) -> Vec<String> {
         self.zoznam[self.zoznam.len().saturating_sub(n)..].to_vec()
+    }
+
+    /// R183: hlásenia o obraze a KLÍČA, ktoré ešte neboli v správe samomerania.
+    fn obraz_nenahlasene(&mut self) -> Vec<String> {
+        let v = self.obraz[self.obraz_nahlasene.min(self.obraz.len())..].to_vec();
+        self.obraz_nahlasene = self.obraz.len();
+        v
     }
 
     /// Varovania a chyby, ktoré ešte neboli v správe samomerania (R122).
@@ -2762,6 +2864,22 @@ fn varovanie_jadra(zaznam: &str) -> Option<String> {
     };
     let text: String = text.chars().take(200).collect();
     Some(format!("[{:>8.3} s] {druh}: {text}", cas_us as f64 / 1e6))
+}
+
+/// R183: hlásenie jadra o obraze, HDMI, CEC, VPU alebo dekodéri (každá úroveň) a každé hlásenie KLÍČA.
+fn hlasenie_obrazu(zaznam: &str) -> Option<String> {
+    let (hlavicka, text) = zaznam.split_once(';')?;
+    let cas_us = hlavicka.split(',').nth(2).and_then(|c| c.parse::<u64>().ok()).unwrap_or(0);
+    let text = text.lines().next()?.trim();
+    let male = text.to_lowercase();
+    let o_obraze = ["drm", "hdmi", "cec", "vpu", "fbcon", "fb0", "vdec", "dw-hdmi", "canvas", "edid"]
+        .iter()
+        .any(|k| male.contains(k));
+    if !(o_obraze || text.starts_with("KLÍČ")) {
+        return None;
+    }
+    let text: String = text.chars().take(200).collect();
+    Some(format!("[{:>8.3} s] {text}", cas_us as f64 / 1e6))
 }
 
 /// Záznam `/dev/kmsg` (`úroveň,poradie,čas,príznaky;text`) – vráti text, ak je to varovanie alebo chyba

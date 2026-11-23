@@ -345,6 +345,7 @@ impl Nastavenie {
         if let Some(m) = self.meranie {
             t += &format!("meranie={}\n", if m { "ano" } else { "nie" });
         }
+        t += &blok_prepinacov();
         t
     }
 }
@@ -373,6 +374,49 @@ pub struct NastavenieZariadenia {
     /// Ovládanie televízora cez HDMI CEC (R181): `ano` (predvolené – zapína aj uspáva TV), `zapni` (len
     /// zapína), `nie`.
     pub cec: Option<String>,
+    /// R183 – prepínače noviniek na hľadanie chyby: `novinky=nie` vypne všetky naraz, inak každá zvlášť.
+    pub novinky: Option<bool>,
+    /// Novinky vypnuté jednotlivo (kľúče z [`NOVINKY`]).
+    pub vypnute: Vec<String>,
+}
+
+/// R183 – blok prepínačov do SKLENIK.TXT (píše ho SADIČ a doplní ho aj KLÍČ, ak chýba): všetko zapnuté,
+/// vlastník len prepína `ano` na `nie`.
+pub fn blok_prepinacov() -> String {
+    let mut t = String::from(
+        "\n# --- PREPÍNAČE (ano = zapnuté, nie = vypnuté) ---\n\
+         # tepelný pokus 2 h 15 min a skúška dekodéra videa pri štarte\n\
+         pokus=nie\n\
+         video=nie\n\
+         # ovládanie televízora cez HDMI: ano = zapína aj uspáva TV, zapni = len zapína, nie = vôbec\n\
+         cec=ano\n\
+         # hľadanie chyby: novinky=nie vypne všetky novinky naraz, inak každá zvlášť\n\
+         novinky=ano\n",
+    );
+    for (k, popis) in NOVINKY {
+        t += &format!("# {popis}\n{k}=ano\n");
+    }
+    t
+}
+
+/// R183 – novinky od karty 4edb1db (posledná overená na televízore), ktoré sa dajú vypnúť v SKLENIK.TXT:
+/// (kľúč, čo robí).
+pub const NOVINKY: [(&str, &str); 8] = [
+    ("merac_pamate", "merač toku pamäte DDR (R162, R176)"),
+    ("takt_obrazu", "takt obvodu obrazu VPU (R166, R182)"),
+    ("merac_taktov", "merač taktov čipu a debugfs (R166)"),
+    ("casovace", "zlúčené časovače KLÍČA (R169)"),
+    ("siet", "sieť podľa potreby a spánok čipu siete (R159, R170)"),
+    ("dekoder", "dekodér videa – firmvér, skúšky, ovládač (R165, R174)"),
+    ("spanok_jadier", "hlboký spánok jadier (R167)"),
+    ("radice", "odpojenie eMMC a Wi-Fi (R178)"),
+];
+
+impl NastavenieZariadenia {
+    /// Je novinka zapnutá? (R183)
+    pub fn novinka(&self, kluc: &str) -> bool {
+        self.novinky != Some(false) && !self.vypnute.iter().any(|v| v == kluc)
+    }
 }
 
 impl NastavenieZariadenia {
@@ -422,6 +466,19 @@ impl NastavenieZariadenia {
                     "zapni" | "zapnut" | "zapnúť" => n.cec = Some("zapni".into()),
                     "ano" | "áno" | "1" | "yes" | "on" => n.cec = Some("ano".into()),
                     _ => upozornenia.push(format!("riadok {}: cec má byť ano, zapni alebo nie", i + 1)),
+                },
+                "novinky" => match ano_nie(v) {
+                    Some(m) => n.novinky = Some(m),
+                    None => upozornenia.push(format!("riadok {}: novinky má byť ano alebo nie", i + 1)),
+                },
+                k if NOVINKY.iter().any(|(kluc, _)| *kluc == k) => match ano_nie(v) {
+                    Some(true) => n.vypnute.retain(|x| x != k),
+                    Some(false) => {
+                        if !n.vypnute.iter().any(|x| x == k) {
+                            n.vypnute.push(k.to_string())
+                        }
+                    }
+                    None => upozornenia.push(format!("riadok {}: {k} má byť ano alebo nie", i + 1)),
                 },
                 "obraz" => match v.to_lowercase().as_str() {
                     "chladny" | "chladný" => n.obraz = Some("chladny".into()),
@@ -807,6 +864,16 @@ mod skusky {
         );
         let (z, u) = NastavenieZariadenia::z_textu("video=ano\n");
         assert_eq!((z.video, u.len()), (Some(true), 0));
+        let (z, u) = NastavenieZariadenia::z_textu(&blok_prepinacov());
+        assert_eq!(
+            (z.pokus, z.video, z.cec.as_deref(), z.novinky, u.len()),
+            (Some(false), Some(false), Some("ano"), Some(true), 0)
+        );
+        assert!(NOVINKY.iter().all(|(k, _)| z.novinka(k)));
+        let (z, u) = NastavenieZariadenia::z_textu("novinky=ano\ntakt_obrazu=nie\nsiet=nie\n");
+        assert!(u.is_empty() && !z.novinka("takt_obrazu") && !z.novinka("siet") && z.novinka("dekoder"));
+        let (z, _) = NastavenieZariadenia::z_textu("novinky=nie\ndekoder=ano\n");
+        assert!(!z.novinka("dekoder"), "novinky=nie vypne všetky");
         let (z, u) = NastavenieZariadenia::z_textu("cec=zapni\n");
         assert_eq!((z.cec.as_deref(), u.len()), (Some("zapni"), 0));
         let (z, u) = NastavenieZariadenia::z_textu("cec=mozno\n");
