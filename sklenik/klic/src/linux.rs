@@ -528,7 +528,11 @@ fn rychlost_siete(mbs: u32) -> String {
 /// R165: dekodér videa vo vlastnom vlákne – zoznam formátov a (s nastavením `video=ano`) skúška vlastnými
 /// tokmi H.264 a HEVC s presne známym obrazom. Každý krok sa hneď oznámi (keby dekodér zamrzol, v denníku
 /// ostane, pri ktorom formáte).
-fn spusti_skusku_videa(skusat: bool, riadky: Arc<Mutex<Vec<String>>>) {
+/// Poistka skúšky videa na karte: vznikne pred skúškou, zmizne po nej. Ak ju KLÍČ pri štarte nájde, predošlá
+/// skúška nedobehla (krabička zamrzla alebo sa reštartovala) – skúška sa vynechá, aby sa štart nezacyklil.
+const POISTKA_VIDEA: &str = "VIDEO-BEZI.TXT";
+
+fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex<Vec<String>>>) {
     std::thread::spawn(move || {
         let pridaj = |r: String| {
             hlas(&format!("video: {r}"));
@@ -547,6 +551,29 @@ fn spusti_skusku_videa(skusat: bool, riadky: Arc<Mutex<Vec<String>>>) {
             if !skusat {
                 pridaj("skúška vlastnými tokmi vypnutá (zapne ju riadok video=ano v SKLENIK.TXT)".into());
                 return;
+            }
+            let nosic = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next();
+            match nosic.as_ref().map(|n| {
+                zaznam::poistka(
+                    n,
+                    POISTKA_VIDEA,
+                    Some(
+                        "Skúška dekodéra videa práve beží. Ak tento súbor zostal na karte, skúška nedobehla\r\n\
+                         (krabička zamrzla alebo sa reštartovala) a KLÍČ ju pri ďalšom štarte vynechá.\r\n\
+                         Znova ju zapneš zmazaním tohto súboru.\r\n",
+                    ),
+                )
+            }) {
+                Some(Ok(true)) => {
+                    pridaj(format!(
+                        "predošlá skúška NEDOBEHLA (zamrznutie alebo reštart) – skúška vynechaná; znova ju zapne \
+                         zmazanie MERANIA/{POISTKA_VIDEA} na karte"
+                    ));
+                    return;
+                }
+                Some(Ok(false)) => {}
+                Some(Err(e)) => pridaj(format!("poistka na karte sa nezapísala ({e}) – skúška beží bez nej")),
+                None => pridaj("karta s FAT nenájdená – skúška beží bez poistky".into()),
             }
             // 320×240 a 720×576 (šírka nie je násobkom 32 – overí aj zarovnanie riadkov NV12)
             for (sirka, vyska) in [(320, 240), (720, 576)] {
@@ -593,10 +620,16 @@ fn spusti_skusku_videa(skusat: bool, riadky: Arc<Mutex<Vec<String>>>) {
                     pridaj(format!("  jadro: {r}"));
                 }
             }
+            if let Some(n) = nosic.as_ref() {
+                match zaznam::poistka(n, POISTKA_VIDEA, None) {
+                    Ok(_) => pridaj("skúška dobehla – poistka z karty zmazaná".into()),
+                    Err(e) => pridaj(format!("poistku sa nepodarilo zmazať ({e})")),
+                }
+            }
         }
         #[cfg(not(target_pointer_width = "64"))]
         {
-            let _ = skusat;
+            let _ = (skusat, spustaci);
             pridaj("dekodér videa: len s 64-bitovým jadrom".into());
         }
     });
@@ -1434,7 +1467,8 @@ pub fn spusti() {
         if pid1 && !skuska && !video_spustene && hore >= 20.0 && (nastavenie.is_some() || hore >= 60.0) {
             video_spustene = true;
             let skusat = nastavenie.as_ref().and_then(|(_, n)| n.video) == Some(true);
-            spusti_skusku_videa(skusat, video_riadky.clone());
+            let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
+            spusti_skusku_videa(skusat, spustaci, video_riadky.clone());
         }
 
         // R158–R161: správca chladu – obraz, periférie a fázy tepelného pokusu

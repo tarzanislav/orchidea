@@ -219,6 +219,41 @@ fn zapis_na(
     vysledok.map_err(|e| format!("zápis: {e}"))
 }
 
+/// Poistka na nosiči: súbor `meno` v priečinku `MERANIA`. `nastav` = `Some(obsah)` ho vytvorí, `None` zmaže;
+/// vráti, či tam bol predtým. Vlastný bod pripojenia – zápis záznamu môže bežať súčasne (jadro zdieľa ten istý
+/// súborový systém, odpojenie jedného bodu druhý neruší).
+pub fn poistka(n: &Nosic, meno: &str, nastav: Option<&str>) -> Result<bool, String> {
+    const BOD: &str = "/run/karta-poistka";
+    let _ = fs::create_dir_all(BOD);
+    sys::pripoj_s_volbami(
+        &format!("/dev/{}", n.oddiel),
+        BOD,
+        "vfat",
+        sys::MS_NOSUID | sys::MS_NODEV | sys::MS_NOEXEC | sys::MS_NOATIME,
+        "flush",
+    )
+    .map_err(|e| format!("pripojenie: {e}"))?;
+    let vysledok = (|| -> std::io::Result<bool> {
+        let priecinok = Path::new(BOD).join(PRIECINOK);
+        let cesta = priecinok.join(meno);
+        let bola = cesta.exists();
+        match nastav {
+            Some(obsah) => {
+                fs::create_dir_all(&priecinok)?;
+                let mut f = fs::File::create(&cesta)?;
+                f.write_all(obsah.as_bytes())?;
+                f.sync_all()?;
+            }
+            None if bola => fs::remove_file(&cesta)?,
+            None => {}
+        }
+        Ok(bola)
+    })();
+    let _ = sys::odpoj(BOD);
+    sys::zapis_vyrovnavacie();
+    vysledok.map_err(|e| format!("poistka: {e}"))
+}
+
 /// Sériové číslo dosky (RPi: popis hardvéru; Amlogic/Allwinner: SoC; inak /proc/cpuinfo).
 pub fn seriove_cislo() -> Option<String> {
     citaj("/proc/device-tree/serial-number")
