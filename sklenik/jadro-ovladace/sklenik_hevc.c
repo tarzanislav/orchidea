@@ -1266,13 +1266,32 @@ static int skl_stop(struct amvdec_session *sess)
 	return 0;
 }
 
-/* koniec toku: jednotka NAL EOS – mikrokód po nej ohlási koniec a ovládač vydá všetko */
-static const u8 skl_eos[] = { 0x00, 0x00, 0x00, 0x01, 0x48, 0x01, 0x00, 0x00, 0x00, 0x01, 0x48, 0x01 };
-
-static const u8 *skl_eos_sequence(u32 *dlzka)
+/*
+ * Vyprázdnenie (koniec toku, zastavenie): mikrokód v režime jedného toku neohlási dokončenie poslednej snímky,
+ * preto sa počká, kým parser prejde poslednú jednotku CTB (HEVC_PARSER_LCU_START), a ešte chvíľu na zápis
+ * SAO – potom ide von všetko, čo čaká. Skúška 23. 11. 2026: bez toho chýbala posledná snímka (7/8).
+ */
+static void skl_drain(struct amvdec_session *sess)
 {
-	*dlzka = ARRAY_SIZE(skl_eos);
-	return skl_eos;
+	struct skl_hevc *h = sess->priv;
+	int i;
+
+	if (!h)
+		return;
+	mutex_lock(&h->zamok);
+	if (h->aktualna && h->lcu_x && h->lcu_y) {
+		u32 posledna = h->lcu_x * h->lcu_y - 1;
+
+		for (i = 0; i < 100; i++) {
+			if ((citaj(h, HEVC_PARSER_LCU_START) & 0xffffff) >= posledna)
+				break;
+			usleep_range(1000, 2000);
+		}
+		usleep_range(2000, 3000);
+	}
+	dokonci_aktualnu(h);
+	vydavaj(h, true);
+	mutex_unlock(&h->zamok);
 }
 
 struct amvdec_codec_ops sklenik_hevc_ops = {
@@ -1282,5 +1301,5 @@ struct amvdec_codec_ops sklenik_hevc_ops = {
 	.threaded_isr = skl_threaded_isr,
 	.num_pending_bufs = skl_cakajuce,
 	.resume = skl_resume,
-	.eos_sequence = skl_eos_sequence,
+	.drain = skl_drain,
 };
