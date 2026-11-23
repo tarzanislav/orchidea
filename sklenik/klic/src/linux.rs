@@ -866,6 +866,7 @@ pub fn spusti() {
     let mut rusene = [false; chlad::FAZY.len()];
     let mut usb_spanok_od: Option<(u64, u64)> = None;
     let mut usb_nastavene: Vec<String> = Vec::new();
+    let mut usb_spanok_zakazany = false;
     let mut obrazovka_zmenena = false;
     let mut pokus = false;
     let mut faza_teraz: Option<usize> = None;
@@ -1059,7 +1060,8 @@ pub fn spusti() {
                 podpatie_bolo |= supis.podpatie == Some(true);
                 // nový USB kľúč tiež spí medzi zápismi (R159)
                 if tv && periferie_teraz == Some(true) {
-                    usb_nastavene = chlad::nastav_spanok_usb(Path::new("/"), true, USB_SPANOK_MS);
+                    usb_nastavene =
+                        chlad::nastav_spanok_usb(Path::new("/"), !usb_spanok_zakazany, USB_SPANOK_MS);
                 }
                 eee.obnov(&supis);
                 // karta sa môže objaviť až chvíľu po štarte
@@ -1138,7 +1140,8 @@ pub fn spusti() {
             }
             if periferie_teraz != Some(r.periferie) {
                 let p = r.periferie;
-                usb_nastavene = chlad::nastav_spanok_usb(Path::new("/"), p, USB_SPANOK_MS);
+                usb_nastavene =
+                    chlad::nastav_spanok_usb(Path::new("/"), p && !usb_spanok_zakazany, USB_SPANOK_MS);
                 regulator.nastav_parkovanie(p);
                 alr = SietPodlaPotreby::nova();
                 alr_vzorka = None;
@@ -1148,7 +1151,8 @@ pub fn spusti() {
                         siete.push(rz.meno.clone());
                     }
                 }
-                usb_spanok_od = if p { chlad::cas_spanku_usb(Path::new("/")) } else { None };
+                usb_spanok_od =
+                    if p && !usb_spanok_zakazany { chlad::cas_spanku_usb(Path::new("/")) } else { None };
                 hlas(&format!(
                     "periférie {}: USB úložisko {} ({}) · jadrá v pokoji {} · sieť {}{}",
                     if p { "úsporné" } else { "pôvodné" },
@@ -1249,6 +1253,14 @@ pub fn spusti() {
         if let Some(m) = merania_teraz {
             if let Some(sprava) = m.dokonci() {
                 hlas(&format!("samomeranie: {sprava}"));
+                // R159: zápis zlyhal pri spiacom USB kľúči – kľúč sa po prebudení možno nespamätal; do konca
+                // behu už nespí (overiť a ustúpiť, nie riskovať merania)
+                if sprava.contains("nepodarilo") && periferie_teraz == Some(true) && !usb_spanok_zakazany {
+                    usb_spanok_zakazany = true;
+                    usb_spanok_od = None;
+                    usb_nastavene = chlad::nastav_spanok_usb(Path::new("/"), false, USB_SPANOK_MS);
+                    hlas("USB úložisko: zápis zlyhal počas úspory – do konca behu bdie");
+                }
             }
             let up = uptime().unwrap_or(0.0);
             if ((!pamat_bezi && !meranie_bezi && (skuska || up >= 10.0)) || up >= 120.0) && m.zacni(up as u64)
