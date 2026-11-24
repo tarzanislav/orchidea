@@ -730,3 +730,29 @@ fn v4l2_matica_v_rastri_a_posun_dat() {
 
 /// Hodnota predvolenej vnútrosnímkovej matice 8×8 (tab. 7-6) na polohe x = 0, y = 7.
 const PREDVOLENA_INTRA_RASTER_7_0: u8 = 24;
+
+/// Koniec toku (EOB, 7.4.3.6): vydajú sa všetky obrazy a CRA za ním je prvým obrazom nového toku – NoRaslOutputFlag
+/// = 1, RASL sa preskočí (8.1.3).
+#[test]
+fn sprava_obrazov_koniec_toku() {
+    let sps = sps_dpb();
+    let mut m = SpravaObrazov::nova();
+    let mut poc = std::collections::HashMap::new();
+    let mut vystup = Vec::new();
+    for (t, tr, lsb, d) in [(typ::IDR_W_RADL, TypRezu::I, 0, &[][..]), (1, TypRezu::P, 4, &[-4][..])] {
+        let z = m.zacni_obraz(&hlavicka(t, tr, lsb, d, &[]), &sps).unwrap();
+        poc.insert(z.id, z.poc);
+        vystup.extend(vystupy(&z.udalosti, &poc));
+        vystup.extend(vystupy(&m.ukonci_obraz(&sps), &poc));
+    }
+    assert!(vystup.is_empty(), "preusporiadanie 2 – zatiaľ nič");
+    vystup.extend(vystupy(&m.koniec_toku(), &poc));
+    assert_eq!(vystup, vec![0, 4]);
+    assert!(m.obrazy().is_empty());
+    let z = m.zacni_obraz(&hlavicka(typ::CRA_NUT, TypRezu::I, 8, &[-4], &[]), &sps).unwrap();
+    assert!(z.irap_bez_rasl && !z.bez_vystupu_predoslych);
+    assert_eq!(z.poc, 8);
+    m.ukonci_obraz(&sps);
+    let z = m.zacni_obraz(&hlavicka(typ::RASL_N, TypRezu::B, 2, &[-2], &[2]), &sps).unwrap();
+    assert!(z.preskocit);
+}

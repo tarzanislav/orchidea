@@ -506,7 +506,11 @@ impl PripravaV4l2 {
                 self.ukonci(&mut udalosti);
                 self.sprava.koniec_sekvencie();
             }
-            typ::AUD | typ::EOB => self.ukonci(&mut udalosti),
+            typ::EOB => {
+                self.ukonci(&mut udalosti);
+                udalosti.extend(self.sprava.koniec_toku().into_iter().map(UdalostV4l2::from));
+            }
+            typ::AUD => self.ukonci(&mut udalosti),
             t if t <= 9 || (16..=21).contains(&t) => {
                 // RBSP stačí po koniec hlavičky (aj s tisíckami vstupných bodov je kratšia ako 64 KiB)
                 let r = rbsp(&telo[..telo.len().min(1 << 16)]);

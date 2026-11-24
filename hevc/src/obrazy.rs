@@ -147,6 +147,16 @@ impl SpravaObrazov {
         self.po_konci_sekvencie = true;
     }
 
+    /// Jednotka konca toku (end_of_bitstream_rbsp, 7.4.3.6): skončil sa celý tok – vydajú sa všetky zostávajúce
+    /// obrazy a ďalší obraz je prvým obrazom nového toku (8.1.3: IRAP s NoRaslOutputFlag = 1, POC bez MSB,
+    /// obrazy RASL sa nedekódujú).
+    pub fn koniec_toku(&mut self) -> Vec<Udalost> {
+        let u = self.vyprazdni();
+        self.zaciatok_toku = true;
+        self.po_konci_sekvencie = false;
+        u
+    }
+
     fn nove_id(&mut self) -> u32 {
         let id = self.dalsie_id;
         self.dalsie_id = self.dalsie_id.wrapping_add(1);
