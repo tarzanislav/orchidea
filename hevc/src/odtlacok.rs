@@ -47,21 +47,33 @@ impl Md5 {
     }
 
     fn spracuj_blok(&mut self, blok: &[u8; 64]) {
-        let m: [u32; 16] =
-            std::array::from_fn(|i| u32::from_le_bytes(blok[4 * i..4 * i + 4].try_into().unwrap()));
+        let mut m = [0u32; 16];
+        for (mi, kus) in m.iter_mut().zip(blok.chunks_exact(4)) {
+            *mi = u32::from_le_bytes([kus[0], kus[1], kus[2], kus[3]]);
+        }
         let [mut a, mut b, mut c, mut d] = self.stav;
-        for (i, (&k, &posun)) in self.k.iter().zip(POSUNY.iter()).enumerate() {
-            let (f, g) = match i / 16 {
-                0 => ((b & c) | (!b & d), i),
-                1 => ((d & b) | (!d & c), (5 * i + 1) % 16),
-                2 => (b ^ c ^ d, (3 * i + 5) % 16),
-                _ => (c ^ (b | !d), (7 * i) % 16),
-            };
-            let f = f.wrapping_add(a).wrapping_add(k).wrapping_add(m[g]);
-            a = d;
-            d = c;
-            c = b;
-            b = b.wrapping_add(f.rotate_left(posun));
+        let k = &self.k;
+        // štyri kolá po 16 krokoch (RFC 1321, kap. 3.4) – bez vetvenia vnútri kola
+        macro_rules! krok {
+            ($f:expr, $i:expr, $g:expr) => {{
+                let f = $f.wrapping_add(a).wrapping_add(k[$i]).wrapping_add(m[$g]);
+                a = d;
+                d = c;
+                c = b;
+                b = b.wrapping_add(f.rotate_left(POSUNY[$i]));
+            }};
+        }
+        for i in 0..16 {
+            krok!((b & c) | (!b & d), i, i);
+        }
+        for i in 16..32 {
+            krok!((d & b) | (!d & c), i, (5 * i + 1) % 16);
+        }
+        for i in 32..48 {
+            krok!(b ^ c ^ d, i, (3 * i + 5) % 16);
+        }
+        for i in 48..64 {
+            krok!(c ^ (b | !d), i, (7 * i) % 16);
         }
         for (s, v) in self.stav.iter_mut().zip([a, b, c, d]) {
             *s = s.wrapping_add(v);
@@ -129,6 +141,38 @@ pub fn md5_roviny16(data: &[u16], sirka: usize, vyska: usize, krok: usize) -> [u
     m.vysledok()
 }
 
+/// CRC jednej roviny (D.3.19, picture_crc): polynóm 0x1021, počiatočná hodnota 0xFFFF, bity od najvyššieho,
+/// na konci 16 nulových bitov. Pri bitovej hĺbke ≤ 8 jeden bajt na vzorku.
+pub fn crc_roviny(data: &[u8], sirka: usize, vyska: usize, krok: usize) -> u16 {
+    let mut crc: u32 = 0xFFFF;
+    for y in 0..vyska {
+        for &bajt in &data[y * krok..y * krok + sirka] {
+            for i in (0..8).rev() {
+                let msb = (crc >> 15) & 1;
+                let bit = (bajt as u32 >> i) & 1;
+                crc = (((crc << 1) + bit) & 0xFFFF) ^ (msb * 0x1021);
+            }
+        }
+    }
+    for _ in 0..16 {
+        let msb = (crc >> 15) & 1;
+        crc = ((crc << 1) & 0xFFFF) ^ (msb * 0x1021);
+    }
+    crc as u16
+}
+
+/// Kontrolný súčet jednej roviny (D.3.19, picture_checksum): súčet vzoriek XOR maska z polohy, modulo 2³².
+pub fn kontrolny_sucet_roviny(data: &[u8], sirka: usize, vyska: usize, krok: usize) -> u32 {
+    let mut sucet: u32 = 0;
+    for y in 0..vyska {
+        for (x, &v) in data[y * krok..y * krok + sirka].iter().enumerate() {
+            let maska = ((x & 0xFF) ^ (y & 0xFF) ^ (x >> 8) ^ (y >> 8)) as u32;
+            sucet = sucet.wrapping_add((v as u32 & 0xFF) ^ maska);
+        }
+    }
+    sucet
+}
+
 /// Odtlačok ako šestnástkový text.
 pub fn hex(o: &[u8; 16]) -> String {
     o.iter().map(|b| format!("{b:02x}")).collect()
@@ -163,6 +207,10 @@ mod testy {
             m.pridaj(k);
         }
         assert_eq!(hex(&m.vysledok()), md5(&data));
+        // posun so začiatkom 0xFFFF a doplnením 16 nulových bitov je katalógový CRC-16/AUG-CCITT (priama
+        // počiatočná hodnota 0x1D0F) – kontrolná hodnota pre „123456789“ je 0xE5CC
+        assert_eq!(crc_roviny(b"123456789", 9, 1, 9), 0xE5CC);
+        assert_eq!(kontrolny_sucet_roviny(&[10, 20, 30, 40], 2, 2, 2), 10 + (20 ^ 1) + (30 ^ 1) + 40);
         assert_eq!(md5_roviny(&[1, 2, 9, 3, 4, 9], 2, 2, 3), {
             let mut m = Md5::novy();
             m.pridaj(&[1, 2, 3, 4]);

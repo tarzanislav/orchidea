@@ -68,6 +68,12 @@ impl Obraz {
         }
     }
 
+    /// Prázdny obraz bez pamäte (zástupca pri presune rovín).
+    pub fn prazdny() -> Obraz {
+        let r = || Rovina { data: Vec::new(), sirka: 0, vyska: 0, krok: 0 };
+        Obraz { roviny: [r(), r(), r()], bitova_hlbka: 8 }
+    }
+
     pub fn sirka(&self) -> usize {
         self.roviny[0].sirka
     }

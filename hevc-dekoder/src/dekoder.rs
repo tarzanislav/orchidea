@@ -11,7 +11,7 @@ use crate::syntax::{DekoderRezu, DekodovanyObraz, ReferencieRezu, StavObrazu};
 use crate::transformacia::FaktorySkalovania;
 use orchidea_hevc::nal::typ;
 use orchidea_hevc::obrazy::Udalost;
-use orchidea_hevc::odtlacok::md5_roviny;
+use orchidea_hevc::odtlacok::{crc_roviny, kontrolny_sucet_roviny, md5_roviny};
 use orchidea_hevc::sei::{self, OdtlacokObrazu};
 use orchidea_hevc::{HlavickaNal, HlavickaRezu, Pps, Sady, SpravaObrazov, Sps, rbsp};
 use orchidea_jadro::{Chyba, Vysledok};
@@ -33,6 +33,8 @@ pub struct Statistika {
     pub chyby: Vec<String>,
     /// preskočené obrazy RASL po náhodnom prístupe
     pub preskocene: usize,
+    /// opis rezov prvých obrazov s nezhodou (ladenie na diaľku – záznam CI)
+    pub opis_nezhody: Vec<String>,
 }
 
 struct Aktualny {
@@ -45,6 +47,8 @@ struct Aktualny {
     faktory: Option<Arc<FaktorySkalovania>>,
     odtlacky: Vec<OdtlacokObrazu>,
     poradie: usize,
+    /// stručný opis segmentov rezov (pre ladenie)
+    opis: Vec<String>,
 }
 
 /// Softvérový dekodér HEVC.
@@ -60,6 +64,11 @@ pub struct Dekoder {
     vystup: Vec<Arc<DekodovanyObraz>>,
     geometria: Option<(Pps, Sps, Arc<Geometria>)>,
     faktory: Option<(Pps, Sps, Arc<FaktorySkalovania>)>,
+    /// voľná pamäť obrazov a stavu na opätovné použitie (chladný systém – žiadne alokácie na obraz)
+    volne_obrazy: Vec<Obraz>,
+    rezerva_stavu: Option<StavObrazu>,
+    /// overovať odtlačky MD5 zo SEI (skúšky); pri prehrávaní sa vypne a ušetrí sa práca
+    pub overovat_odtlacky: bool,
     pub statistika: Statistika,
 }
 
@@ -119,7 +128,29 @@ impl Dekoder {
             vystup: Vec::new(),
             geometria: None,
             faktory: None,
+            volne_obrazy: Vec::new(),
+            rezerva_stavu: None,
+            overovat_odtlacky: true,
             statistika: Statistika::default(),
+        }
+    }
+
+    /// Dekodér na prehrávanie: bez overovania odtlačkov MD5.
+    pub fn na_prehravanie() -> Dekoder {
+        Dekoder { overovat_odtlacky: false, ..Self::novy() }
+    }
+
+    /// Obraz z voľnej pamäte (obsah sa celý prepíše dekódovaním), alebo nový.
+    fn vezmi_obraz(&mut self, sirka: usize, vyska: usize) -> Obraz {
+        match self.volne_obrazy.iter().position(|o| o.sirka() == sirka && o.vyska() == vyska) {
+            Some(i) => self.volne_obrazy.swap_remove(i),
+            None => Obraz::novy(sirka, vyska),
+        }
+    }
+
+    fn vrat_obraz(&mut self, o: Obraz) {
+        if self.volne_obrazy.len() < 4 && o.sirka() > 0 {
+            self.volne_obrazy.push(o);
         }
     }
 
@@ -205,7 +236,17 @@ impl Dekoder {
             }
             let geometria = self.geometria_pre(&sps, &pps);
             let faktory = self.faktory_pre(&sps, &pps);
-            let mut stav = StavObrazu::novy(&geometria, z.poc);
+            let mut stav = match self.rezerva_stavu.take() {
+                Some(mut s) => {
+                    if s.obnov(&geometria, z.poc) {
+                        s
+                    } else {
+                        StavObrazu::novy(&geometria, z.poc)
+                    }
+                }
+                None => StavObrazu::novy(&geometria, z.poc),
+            };
+            stav.obraz = self.vezmi_obraz(geometria.sirka, geometria.vyska);
             stav.info.cb_qp_offset = pps.cb_qp_offset;
             stav.info.cr_qp_offset = pps.cr_qp_offset;
             stav.info.cez_dlazdice = pps.dlazdice.as_ref().is_none_or(|d| d.filter_cez_dlazdice);
@@ -221,6 +262,7 @@ impl Dekoder {
                 faktory,
                 odtlacky: std::mem::take(&mut self.cakajuce_odtlacky),
                 poradie,
+                opis: Vec::new(),
             });
         }
         if self.preskakuje {
@@ -250,6 +292,26 @@ impl Dekoder {
         } else {
             None
         };
+        if a.opis.len() < 12 {
+            a.opis.push(format!(
+                "{:?}{} nal {} adr {} qp {} ref {:?} tmvp {} sao {}{} dbk {}{} cez {} body {} vahy {} merge {}",
+                rez.typ,
+                if rez.zavisly { "z" } else { "" },
+                rez.nal.typ,
+                rez.adresa,
+                rez.qp,
+                rez.aktivne,
+                rez.tmvp as u8,
+                rez.sao_jas as u8,
+                rez.sao_farba as u8,
+                rez.odblokovanie_vypnute as u8,
+                if rez.beta_div2 != 0 || rez.tc_div2 != 0 { format!("({},{})", rez.beta_div2, rez.tc_div2) } else { String::new() },
+                rez.filter_cez_rezy as u8,
+                rez.vstupne_body.len(),
+                rez.vahy.is_some() as u8,
+                rez.max_zlucenie,
+            ));
+        }
         let rez_index = a.stav.info.rezy.len() as u16;
         a.stav.info.rezy.push(RezFiltra {
             adresa: rez.adresa_rezu,
@@ -319,7 +381,11 @@ impl Dekoder {
                     }
                 }
                 Udalost::Uvolni(id) => {
-                    self.dpb.remove(&id);
+                    if let Some(o) = self.dpb.remove(&id)
+                        && let Ok(o) = Arc::try_unwrap(o)
+                    {
+                        self.vrat_obraz(o.obraz);
+                    }
                 }
             }
         }
@@ -333,29 +399,61 @@ impl Dekoder {
             return;
         }
         let Some(a) = self.aktualny.take() else { return };
-        let Aktualny { id, poc, mut stav, sps, odtlacky, poradie, .. } = a;
+        let Aktualny { id, poc, mut stav, sps, pps, odtlacky, poradie, opis, .. } = a;
         odblokovanie::odblokuj(&mut stav.obraz, &stav.mapy, &stav.info);
         let obraz = if stav.sao.iter().any(|s| s.typ != [0; 3]) {
-            let mut vystup = Obraz::novy(stav.obraz.sirka(), stav.obraz.vyska());
+            let mut vystup = self.vezmi_obraz(stav.obraz.sirka(), stav.obraz.vyska());
             sao::sao(&stav.obraz, &mut vystup, &stav.sao, &stav.mapy, &stav.info);
+            let odblokovany = std::mem::replace(&mut stav.obraz, Obraz::prazdny());
+            self.vrat_obraz(odblokovany);
             vystup
         } else {
-            stav.obraz
+            std::mem::replace(&mut stav.obraz, Obraz::prazdny())
         };
-        // odtlačok
-        match odtlacky.iter().find(|o| matches!(o, OdtlacokObrazu::Md5(_))) {
-            Some(OdtlacokObrazu::Md5(m)) => {
+        let kol = std::mem::take(&mut stav.kol);
+        self.rezerva_stavu = Some(stav);
+        // odtlačok obrazu (D.3.19): MD5, CRC alebo kontrolný súčet každej zložky
+        let odtlacok = if self.overovat_odtlacky { odtlacky.first() } else { None };
+        match odtlacok {
+            Some(o) => {
+                let r = &obraz.roviny;
                 let zhoda = (0..3).all(|c| {
-                    let r = &obraz.roviny[c];
-                    m.get(c).is_some_and(|ocak| md5_roviny(&r.data, r.sirka, r.vyska, r.krok) == *ocak)
+                    let (d, w, h, k) = (&r[c].data, r[c].sirka, r[c].vyska, r[c].krok);
+                    match o {
+                        OdtlacokObrazu::Md5(m) => m.get(c).is_some_and(|x| md5_roviny(d, w, h, k) == *x),
+                        OdtlacokObrazu::Crc(m) => m.get(c).is_some_and(|x| crc_roviny(d, w, h, k) == *x),
+                        OdtlacokObrazu::Kontrolny(m) => {
+                            m.get(c).is_some_and(|x| kontrolny_sucet_roviny(d, w, h, k) == *x)
+                        }
+                    }
                 });
                 if zhoda {
                     self.statistika.zhoda += 1;
                 } else {
                     self.statistika.nezhoda.push((poradie, poc));
+                    if self.statistika.opis_nezhody.len() < 2 {
+                        self.statistika.opis_nezhody.push(format!(
+                            "obraz {poradie} POC {poc} {}×{} CTB {} PPS {} (dlaždice {:?}, wpp {}, závislé {}, pcm {:?}, \
+                             tskip {}, bypass {}, cip {}, sdh {}, matice {}): {}",
+                            sps.sirka,
+                            sps.vyska,
+                            1 << sps.log2_ctb,
+                            pps.id,
+                            pps.dlazdice.as_ref().map(|d| (d.stlpcov, d.riadkov, d.sirky.is_none(), d.filter_cez_dlazdice)),
+                            pps.wpp as u8,
+                            pps.zavisle_rezy as u8,
+                            sps.pcm.map(|p| (p.log2_min, p.log2_max, p.bez_filtra)),
+                            pps.transform_skip as u8,
+                            pps.transquant_bypass as u8,
+                            pps.obmedzena_intra as u8,
+                            pps.skryvanie_znamienok as u8,
+                            sps.matice.is_some() as u8,
+                            opis.join(" | ")
+                        ));
+                    }
                 }
             }
-            _ => self.statistika.bez_odtlacku += 1,
+            None => self.statistika.bez_odtlacku += 1,
         }
         let (sx, sy) = sps.delenie_farby();
         let okno = [
@@ -364,7 +462,7 @@ impl Dekoder {
             (sps.okno[2] * sy) as usize,
             (sps.okno[3] * sy) as usize,
         ];
-        let d = DekodovanyObraz { id, poc, obraz, kol: stav.kol, okno };
+        let d = DekodovanyObraz { id, poc, obraz, kol, okno };
         self.dpb.insert(id, Arc::new(d));
         let u = self.sprava.ukonci_obraz(&sps);
         self.udalosti(&u, (0, 0));

@@ -57,6 +57,37 @@ pub struct StavObrazu {
 }
 
 impl StavObrazu {
+    /// Pripraví stav na nový obraz s rovnakými rozmermi a CTB bez novej alokácie: vymažú sa len mapy, ktoré
+    /// dekódovanie nevyplní celé (hrany, nenulové koeficienty, pohyb pre TMVP, rezy CTB, SAO). Vráti `false`, ak
+    /// sa rozmery líšia (treba nový stav).
+    pub fn obnov(&mut self, g: &Geometria, poc: i32) -> bool {
+        let n_ctb = g.sirka_ctb * g.vyska_ctb;
+        if self.info.sirka != g.sirka || self.info.vyska != g.vyska || self.adresa_rezu.len() != n_ctb {
+            return false;
+        }
+        self.mapy.hrana_v.fill(0);
+        self.mapy.hrana_h.fill(0);
+        self.mapy.nenulove.fill(false);
+        self.adresa_rezu.fill(u32::MAX);
+        self.sao.fill(SaoCtb::default());
+        self.info.log2_ctb = g.log2_ctb;
+        self.info.sirka_ctb = g.sirka_ctb;
+        self.info.vyska_ctb = g.vyska_ctb;
+        self.info.ctb_dlazdica.clone_from(&g.dlazdica_rs);
+        self.info.ctb_ts.clone_from(&g.rs_na_ts);
+        self.info.rezy.clear();
+        let (s16, v16) = (g.sirka.div_ceil(16), g.vyska.div_ceil(16));
+        self.kol.sirka16 = s16;
+        self.kol.vyska16 = v16;
+        self.kol.poc = poc;
+        self.kol.bloky.clear();
+        self.kol.bloky.resize(s16 * v16, PohybKol::default());
+        self.ulozene_wpp = None;
+        self.ulozene_ds = None;
+        self.qp_posledny = 26;
+        true
+    }
+
     pub fn novy(g: &Geometria, poc: i32) -> StavObrazu {
         let mapy = MapyFiltra::nove(g.sirka, g.vyska);
         let n4 = mapy.sirka4 * mapy.vyska4;
