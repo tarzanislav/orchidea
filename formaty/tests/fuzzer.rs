@@ -212,7 +212,11 @@ fn fuzzer_exr() {
 
 #[test]
 fn fuzzer_jxl() {
-    let zaklady: Vec<Vec<u8>> = subory::SUBORY.iter().map(|s| s.1.to_vec()).collect();
+    let zaklady: Vec<Vec<u8>> = subory::SUBORY
+        .iter()
+        .map(|s| s.1.to_vec())
+        .chain(subory::STRATOVE.iter().map(|s| s.1.to_vec()))
+        .collect();
     let l = limity();
     // JPEG XL je najpomalší (dekóduje aj „prázdne“ obrazy bez údajov) – tretina pokusov
     fuzz_n(

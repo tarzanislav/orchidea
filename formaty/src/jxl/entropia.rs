@@ -520,6 +520,11 @@ impl Histogramy {
         Ok(Histogramy { lz77, mapa, nastavenia, kody })
     }
 
+    /// Prečíta samostatnú mapu kontextov na `n` zhlukov (napr. kontexty blokov VarDCT).
+    pub fn citaj_mapu(c: &mut Citac, n: usize) -> Vysledok<Vec<u8>> {
+        mapa_kontextov(c, n, 0)
+    }
+
     /// Začne čítať tok znakov (ANS potrebuje úvodný 32-bitový stav).
     pub fn citac(&self, c: &mut Citac) -> TokZnakov {
         let stav = match self.kody {

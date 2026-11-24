@@ -7,3 +7,5 @@ Zapísané v `zdroje.json`. Naše dekodéry ich musia prečítať rovnako ako re
 | Súbory | Vytvoril | Licencia nástroja |
 |---|---|---|
 | `bezstratovy_*.jxl` | libjxl 0.13 (cez imagecodecs), bezstratový režim, úsilie 1, 2, 7, 9 | BSD-3-Clause |
+| `stratovy_*.jxl` | libjxl 0.13 (cez imagecodecs), stratový režim VarDCT, vzdialenosť 1, 1,5, 2, 5, 12 | BSD-3-Clause |
+| `stratovy_*.png` | výstup dekodéra libjxl pre `stratovy_*.jxl` (referencia, odchýlka najviac 1) | BSD-3-Clause |

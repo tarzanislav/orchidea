@@ -2,11 +2,12 @@
 //! po skupinách; VarDCT v module `vardct`.
 
 use super::bity::{Citac, D, ceil_log2, chyba};
-use super::entropia::Histogramy;
+use super::entropia::{Histogramy, TokZnakov};
 use super::hlavicky::{HlavickaSnimky, Metadata, PRIZNAK_KRIVKY, PRIZNAK_SUM, PRIZNAK_ZAPLATY};
 use super::modular::{self, Kanal, Obrazok, StromAKody, Transformacia};
 use super::vardct;
-use orchidea_jadro::{Chyba, Vysledok};
+use crate::obraz::Limity;
+use orchidea_jadro::Vysledok;
 
 /// Rozmery snímky a skupín.
 #[derive(Debug, Clone, Copy)]
@@ -34,40 +35,78 @@ impl Rozmery {
 pub(super) enum Vysledok3 {
     /// Celé vzorky Modular (farebné kanály, potom dodatočné).
     Cele(Vec<Kanal>),
-    /// Plávajúce farebné roviny (lineárne RGB alebo pôvodné hodnoty) a celé dodatočné kanály.
+    /// Plávajúce farebné roviny v lineárnom RGB (z XYB) a celé dodatočné kanály.
     Plavajuce([Vec<f32>; 3], Vec<Kanal>),
+    /// Roviny X, Y, B pred prevodom farieb (LF snímka pre nasledujúcu snímku).
+    Xyb([Vec<f32>; 3]),
+    /// Plávajúce farebné roviny (1 alebo 3) v prenosovej funkcii súboru, rozsah 0–1, a dodatočné kanály.
+    Kodovane(Vec<Vec<f32>>, Vec<Kanal>),
 }
 
 pub(super) struct Snimka {
     pub hlavicka: HlavickaSnimky,
-    pub rozmery: Rozmery,
     pub vysledok: Vysledok3,
 }
 
-/// Permutácia z Lehmerovho kódu (TOC alebo poradie koeficientov).
-pub(super) fn permutacia(c: &mut Citac, h: &Histogramy, n: usize, preskoc: usize) -> Vysledok<Vec<usize>> {
-    let mut t = h.citac(c);
-    let ctx = |x: u32| ceil_log2(x + 1).min(7) as usize;
+/// Permutácia z Lehmerovho kódu (TOC alebo poradie koeficientov) čítaná zo zdieľaného toku `t`.
+pub(super) fn permutacia(
+    c: &mut Citac,
+    h: &Histogramy,
+    t: &mut TokZnakov,
+    n: usize,
+    preskoc: usize,
+) -> Vysledok<Vec<usize>> {
+    let ctx = |x: u32| ceil_log2(x.saturating_add(1)).min(7) as usize;
     let koniec = t.citaj(h, c, ctx(n as u32))? as usize;
-    if koniec > n - preskoc {
+    if preskoc > n || koniec > n - preskoc {
         return Err(chyba("neplatná dĺžka permutácie"));
     }
-    let mut lehmer = vec![0usize; n];
+    let m = n - preskoc;
+    let mut lehmer = Vec::with_capacity(koniec);
     let mut predosly = 0u32;
-    for (i, l) in lehmer.iter_mut().enumerate().skip(preskoc).take(koniec) {
+    for i in 0..koniec {
         let v = t.citaj(h, c, ctx(predosly))?;
-        if v as usize >= n - i {
+        if v as usize >= m - i {
             return Err(chyba("neplatný Lehmerov kód"));
         }
-        *l = v as usize;
+        lehmer.push(v as usize);
         predosly = v;
     }
-    t.koniec(h)?;
-    let mut zostava: Vec<usize> = (0..n).collect();
-    let mut p = Vec::with_capacity(n);
-    for &l in &lehmer {
-        p.push(zostava.remove(l));
+    // výber k-teho zostávajúceho prvku Fenwickovým stromom (O(n log n) aj pre 65 536 prvkov)
+    let mut strom = vec![0u32; m + 1];
+    for i in 1..=m {
+        strom[i] += 1;
+        let j = i + (i & i.wrapping_neg());
+        if j <= m {
+            strom[j] += strom[i];
+        }
     }
+    let mut najvyssi = 1usize;
+    while najvyssi * 2 <= m {
+        najvyssi *= 2;
+    }
+    let mut pouzite = vec![false; m];
+    let mut p: Vec<usize> = (0..preskoc).collect();
+    p.reserve(m);
+    for &l in &lehmer {
+        let (mut poz, mut zostava) = (0usize, l as u32 + 1);
+        let mut krok = najvyssi;
+        while krok > 0 {
+            if poz + krok <= m && strom[poz + krok] < zostava {
+                poz += krok;
+                zostava -= strom[poz];
+            }
+            krok >>= 1;
+        }
+        let mut i = poz + 1;
+        while i <= m {
+            strom[i] -= 1;
+            i += i & i.wrapping_neg();
+        }
+        pouzite[poz] = true;
+        p.push(preskoc + poz);
+    }
+    p.extend((0..m).filter(|&i| !pouzite[i]).map(|i| preskoc + i));
     Ok(p)
 }
 
@@ -77,16 +116,21 @@ pub(super) fn dekoduj(
     m: &Metadata,
     sirka: u32,
     vyska: u32,
+    lf_snimky: &[Option<[Vec<f32>; 3]>],
+    limity: &Limity,
 ) -> Vysledok<(Snimka, usize)> {
     let h = super::hlavicky::hlavicka_snimky(c, m, sirka, vyska)?;
+    // rozmery snímky (aj výrez) pred akoukoľvek alokáciou; vzorky i32/f32 vo viacerých kópiách
+    let kanalov = 3 + m.dodatocne.len() as u64;
+    limity.over(h.sirka as u64, h.vyska as u64, kanalov * 4 * 3)?;
     if h.priznaky & (PRIZNAK_ZAPLATY | PRIZNAK_KRIVKY | PRIZNAK_SUM) != 0 && h.modular {
         return Err(chyba("záplaty, krivky a šum v režime Modular zatiaľ nie sú podporené"));
     }
-    if h.zvacsenie != 1 {
-        return Err(chyba("zväčšenie snímky zatiaľ nie je podporené"));
+    if h.zvacsenie_dodatocnych.iter().any(|&z| z != h.zvacsenie) {
+        return Err(chyba("iné zväčšenie dodatočných kanálov ako farby zatiaľ nie je podporené"));
     }
-    let mut w = h.sirka as usize;
-    let mut hh = h.vyska as usize;
+    let mut w = (h.sirka as usize).div_ceil(h.zvacsenie as usize);
+    let mut hh = (h.vyska as usize).div_ceil(h.zvacsenie as usize);
     if h.lf_uroven > 0 {
         let d = 1usize << (3 * h.lf_uroven);
         w = w.div_ceil(d);
@@ -107,7 +151,10 @@ pub(super) fn dekoduj(
     let poctov = if jedna { 1 } else { 1 + roz.lf_skupin() + 1 + roz.skupin() * prechodov };
     let perm = if c.bool() {
         let hp = Histogramy::citaj(c, 8)?;
-        Some(permutacia(c, &hp, poctov, 0)?)
+        let mut t = hp.citac(c);
+        let p = permutacia(c, &hp, &mut t, poctov, 0)?;
+        t.koniec(&hp)?;
+        Some(p)
     } else {
         None
     };
@@ -137,6 +184,8 @@ pub(super) fn dekoduj(
         .collect();
     let mut citace: Vec<Citac> = sekcie.iter().map(|s| Citac::novy(s)).collect();
     let mut stav = Stav::novy(&h, m, roz)?;
+    // LF snímka úrovne n slúži snímke úrovne n − 1 (bežná snímka má úroveň 0)
+    stav.lf_snimka = lf_snimky.get(h.lf_uroven as usize + 1).and_then(|x| x.as_ref());
     // LfGlobal
     let idx = |i: usize| if jedna { 0 } else { i };
     stav.lf_global(&mut citace[idx(0)])?;
@@ -145,20 +194,29 @@ pub(super) fn dekoduj(
     }
     stav.hf_global(&mut citace[idx(1 + roz.lf_skupin())])?;
     for prechod in 0..prechodov {
+        let zac = 2 + roz.lf_skupin() + prechod * roz.skupin();
+        if let Some(v) = stav.vardct.as_mut() {
+            // koeficienty VarDCT všetkých skupín naraz (paralelne), potom údaje Modular skupín
+            let c: Vec<&mut Citac> = if jedna {
+                vec![&mut citace[0]]
+            } else {
+                citace[zac..zac + roz.skupin()].iter_mut().collect()
+            };
+            v.prechod(prechod, c)?;
+        }
         for g in 0..roz.skupin() {
-            let i = 2 + roz.lf_skupin() + prechod * roz.skupin() + g;
-            stav.skupina(&mut citace[idx(i)], prechod, g)?;
+            stav.skupina(&mut citace[idx(zac + g)], prechod, g)?;
         }
     }
     for cit in &citace {
         cit.over()?;
     }
     let vysledok = stav.dokonci()?;
-    Ok((Snimka { hlavicka: h, rozmery: roz, vysledok }, koniec))
+    Ok((Snimka { hlavicka: h, vysledok }, koniec))
 }
 
 /// Stav dekódovania jednej snímky.
-struct Stav<'m> {
+struct Stav<'m, 'l> {
     h: HlavickaSnimky,
     m: &'m Metadata,
     roz: Rozmery,
@@ -168,10 +226,12 @@ struct Stav<'m> {
     transformacie: Vec<Transformacia>,
     farebnych: usize,
     vardct: Option<vardct::Stav>,
+    lf_dekv: [f32; 3],
+    lf_snimka: Option<&'l [Vec<f32>; 3]>,
 }
 
-impl<'m> Stav<'m> {
-    fn novy(h: &HlavickaSnimky, m: &'m Metadata, roz: Rozmery) -> Vysledok<Stav<'m>> {
+impl<'m, 'l> Stav<'m, 'l> {
+    fn novy(h: &HlavickaSnimky, m: &'m Metadata, roz: Rozmery) -> Vysledok<Stav<'m, 'l>> {
         let sivy = m.farba.priestor == 1 && !m.xyb;
         let farebnych = if h.modular { if sivy { 1 } else { 3 } } else { 0 };
         let mut kanaly = Vec::new();
@@ -194,6 +254,8 @@ impl<'m> Stav<'m> {
             transformacie: Vec::new(),
             farebnych,
             vardct: None,
+            lf_dekv: [1.0 / 4096.0, 1.0 / 512.0, 1.0 / 256.0],
+            lf_snimka: None,
         })
     }
 
@@ -214,8 +276,10 @@ impl<'m> Stav<'m> {
                 *x = c.f16()? / 128.0;
             }
         }
+        self.lf_dekv = lf_dekv;
         if !self.h.modular {
-            self.vardct = Some(vardct::Stav::lf_global(c, &self.h, self.m, self.roz, lf_dekv)?);
+            self.vardct =
+                Some(vardct::Stav::lf_global(c, &self.h, self.m, self.roz, lf_dekv, self.lf_snimka)?);
         }
         if c.bool() {
             let pixelov: usize = self.obraz.kanaly.iter().map(|k| k.w * k.h).sum();
@@ -253,9 +317,6 @@ impl<'m> Stav<'m> {
     }
 
     fn skupina(&mut self, c: &mut Citac, prechod: usize, g: usize) -> Vysledok<()> {
-        if let Some(v) = self.vardct.as_mut() {
-            v.skupina(c, prechod, g)?;
-        }
         let (min, max) = rozsah_posunov(&self.h, prechod);
         let d = self.roz.skupina;
         let (x0, y0) = ((g % self.roz.skup_x) * d, (g / self.roz.skup_x) * d);
@@ -327,22 +388,88 @@ impl<'m> Stav<'m> {
         if self.obraz.meta != 0 {
             return Err(chyba("po transformáciách ostali meta kanály"));
         }
+        let (w, hh) = (self.roz.w, self.roz.h);
+        let zvacsenie = self.h.zvacsenie as usize;
+        let (cw, ch) = (self.h.sirka as usize, self.h.vyska as usize);
+        let lf_snimka = self.h.typ == 1;
         if let Some(v) = self.vardct.take() {
-            let farba = v.dokonci(&self.h, self.m)?;
-            return Ok(Vysledok3::Plavajuce(farba, self.obraz.kanaly));
+            let farba = v.dokonci(&self.h, self.m, !lf_snimka)?;
+            if lf_snimka {
+                return Ok(Vysledok3::Xyb(farba));
+            }
+            let dodatocne = zvacsi_dodatocne(self.obraz.kanaly, zvacsenie, self.m, cw, ch);
+            return Ok(Vysledok3::Plavajuce(farba, dodatocne));
         }
         if self.obraz.kanaly.len() < self.farebnych {
             return Err(chyba("chýbajú farebné kanály"));
         }
         if self.m.xyb {
-            // stratový Modular v XYB: kanály sú Y, X, B−Y vynásobené dekvantizáciou LF
-            return Err(Chyba::NezhodaTypov {
-                popis: "JPEG XL: Modular v XYB zatiaľ nie je podporený".into(),
-                navrh: None,
-            });
+            // stratový Modular v XYB: kanály Y, X, B−Y vynásobené dekvantizáciou LF
+            if self.farebnych != 3 {
+                return Err(chyba("Modular v XYB potrebuje tri kanály"));
+            }
+            let mut k = std::mem::take(&mut self.obraz.kanaly);
+            let dodatocne = k.split_off(3);
+            let [y, x, b] = [&k[0].data, &k[1].data, &k[2].data];
+            let d = self.lf_dekv;
+            let mut roviny: [Vec<f32>; 3] = [
+                x.iter().map(|&v| v as f32 * d[0]).collect(),
+                y.iter().map(|&v| v as f32 * d[1]).collect(),
+                b.iter().zip(y).map(|(&b, &y)| b.saturating_add(y) as f32 * d[2]).collect(),
+            ];
+            let sigma = vardct::Sigma::Stala(self.h.filtre.epf_sigma_modular);
+            vardct::obnov(&mut roviny, w, hh, &self.h, self.m, sigma)?;
+            if lf_snimka {
+                return Ok(Vysledok3::Xyb(roviny));
+            }
+            let dodatocne = zvacsi_dodatocne(dodatocne, zvacsenie, self.m, cw, ch);
+            return Ok(Vysledok3::Plavajuce(vardct::xyb_na_rgb(roviny, self.m), dodatocne));
+        }
+        let f = &self.h.filtre;
+        if f.gabor || f.epf_iteracie > 0 || zvacsenie > 1 {
+            // filtre a zväčšenie pracujú s plávajúcimi hodnotami (sivá sa na ne zdvojí na tri kanály)
+            let mut k = std::mem::take(&mut self.obraz.kanaly);
+            let dodatocne = k.split_off(self.farebnych);
+            let hb = self.m.hlbka;
+            let na_f = |v: &[i32]| -> Vec<f32> {
+                if hb.plavajuca {
+                    v.iter().map(|&x| super::cele_na_plavajuce(x, &hb)).collect()
+                } else {
+                    let max = ((1u64 << hb.bitov.min(31)) - 1) as f32;
+                    v.iter().map(|&x| x as f32 / max).collect()
+                }
+            };
+            let mut roviny: [Vec<f32>; 3] = if self.farebnych == 1 {
+                let r = na_f(&k[0].data);
+                [r.clone(), r.clone(), r]
+            } else {
+                [na_f(&k[0].data), na_f(&k[1].data), na_f(&k[2].data)]
+            };
+            let sigma = vardct::Sigma::Stala(f.epf_sigma_modular);
+            vardct::obnov(&mut roviny, w, hh, &self.h, self.m, sigma)?;
+            let farba: Vec<Vec<f32>> = roviny.into_iter().take(self.farebnych).collect();
+            let dodatocne = zvacsi_dodatocne(dodatocne, zvacsenie, self.m, cw, ch);
+            return Ok(Vysledok3::Kodovane(farba, dodatocne));
         }
         Ok(Vysledok3::Cele(self.obraz.kanaly))
     }
+}
+
+/// Zväčší celé dodatočné kanály tým istým jadrom ako farbu (hodnoty sa zaokrúhlia späť na celé čísla).
+fn zvacsi_dodatocne(kanaly: Vec<Kanal>, k: usize, m: &Metadata, cw: usize, ch: usize) -> Vec<Kanal> {
+    if k <= 1 {
+        return kanaly;
+    }
+    kanaly
+        .into_iter()
+        .map(|kn| {
+            let f: Vec<f32> = kn.data.iter().map(|&x| x as f32).collect();
+            let v = vardct::zvacsi_rovinu(&f, kn.w, kn.h, k, m, cw, ch);
+            let mut n = Kanal::novy(cw, ch, 0, 0);
+            n.data = v.iter().map(|&x| x.round() as i32).collect();
+            n
+        })
+        .collect()
 }
 
 /// Rozsah posunov (zmenšení) kanálov dekódovaných v prechode `p`.

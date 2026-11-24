@@ -5,15 +5,17 @@
 //! (stratové obrázky). Entropické kódovanie ANS aj prefixové kódy s LZ77. Výstup v pôvodnom farebnom
 //! priestore súboru (pri XYB prevod do RGB s prenosovou funkciou z hlavičky).
 //!
-//! Zatiaľ nie: animácie (číta sa prvá snímka), vrstvy s prekrytím, záplaty, krivky, šum, zväčšenie snímky,
-//! zabalený profil ICC, stratový Modular v XYB – oznámi sa to chybou.
+//! Zatiaľ nie: animácie (číta sa prvá snímka), vrstvy s prekrytím, záplaty, krivky, šum, prekódovaný JPEG,
+//! stratový Modular v XYB – oznámi sa to chybou. Obraz v XYB s vloženým profilom ICC sa zatiaľ vydá v sRGB.
 
 mod bity;
 mod entropia;
 mod hlavicky;
+mod icc;
 mod modular;
 mod snimka;
 mod vardct;
+mod zvacsenie;
 
 use crate::obraz::{Cicp, Limity, Model, Obraz, Vzorky};
 use bity::{Citac, chyba};
@@ -107,24 +109,46 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
     let m = hlavicky::metadata(&mut c)?;
     let kanalov = 3 + m.dodatocne.len() as u64;
     limity.over(w as u64, h as u64, kanalov * 8)?;
-    if m.farba.chce_icc {
-        return Err(chyba("zabalený profil ICC zatiaľ nie je podporený"));
-    }
-    if m.nahlad.is_some() {
-        return Err(chyba("náhľad v súbore zatiaľ nie je podporený"));
-    }
+    let icc = if m.farba.chce_icc { Some(icc::citaj(&mut c, limity.metadat)?) } else { None };
     c.zarovnaj();
-    // prvá snímka; referenčné snímky, LF snímky a vrstvy s prekrytím zatiaľ nie
-    let posun = (c.precitane() / 8) as usize;
-    let mut cs = Citac::novy(&tok[posun..]);
-    let (s, _koniec) = snimka::dekoduj(&mut cs, &tok[posun..], &m, w, h)?;
-    if s.hlavicka.typ != 0 && s.hlavicka.typ != 3 {
-        return Err(chyba("referenčné a LF snímky zatiaľ nie sú podporené"));
+    c.over()?;
+    let mut posun = (c.precitane() / 8) as usize;
+    if let Some((nw, nh)) = m.nahlad {
+        // náhľad sa dekóduje len na preskočenie
+        let mut cs = Citac::novy(&tok[posun..]);
+        let (_, koniec) = snimka::dekoduj(&mut cs, &tok[posun..], &m, nw, nh, &[], limity)?;
+        posun += koniec;
     }
+    // prvá zobrazená snímka; pred ňou môžu byť LF snímky (progresívny obraz) a referenčné snímky
+    let mut lf_snimky: [Option<[Vec<f32>; 3]>; 4] = [None, None, None, None];
+    let s = loop {
+        if posun >= tok.len() {
+            return Err(chyba("súbor nemá zobrazenú snímku"));
+        }
+        let mut cs = Citac::novy(&tok[posun..]);
+        let (s, koniec) = snimka::dekoduj(&mut cs, &tok[posun..], &m, w, h, &lf_snimky, limity)?;
+        posun += koniec;
+        match (s.hlavicka.typ, s.vysledok) {
+            (1, Vysledok3::Xyb(r)) => lf_snimky[s.hlavicka.lf_uroven as usize] = Some(r),
+            (1, _) => return Err(chyba("LF snímka bez XYB zatiaľ nie je podporená")),
+            (2, _) => {} // referenčná snímka sa zatiaľ nepoužíva (záplaty nie sú podporené)
+            (_, v) => break snimka::Snimka { hlavicka: s.hlavicka, vysledok: v },
+        }
+    };
     if !s.hlavicka.posledna && m.animacia.is_none() {
         return Err(chyba("vrstvy s prekrytím zatiaľ nie sú podporené"));
     }
+    let xyb = matches!(s.vysledok, Vysledok3::Plavajuce(..));
     let mut o = vystup(s, &m, w as usize, h as usize)?;
+    if let Some(p) = icc {
+        if xyb {
+            // pixely sú prevedené do sRGB; prevod do vloženého profilu príde s balíkom farba
+            o.farba.cicp = Some(Cicp { zakladne: 1, prenos: 13, matica: 0, plny_rozsah: true });
+            o.farba.srgb = Some(0);
+        } else {
+            o.farba.icc = Some(p);
+        }
+    }
     o.metadata.natocenie = m.natocenie as u8;
     o.metadata.exif = obsah.exif;
     o.metadata.xmp = obsah.xmp;
@@ -150,7 +174,11 @@ fn bt709_z_lin(v: f32) -> f32 {
 }
 
 fn vystup(s: snimka::Snimka, m: &hlavicky::Metadata, w: usize, h: usize) -> Vysledok<Obraz> {
-    if s.rozmery.w != w || s.rozmery.h != h || s.hlavicka.x0 != 0 || s.hlavicka.y0 != 0 {
+    if s.hlavicka.sirka as usize != w
+        || s.hlavicka.vyska as usize != h
+        || s.hlavicka.x0 != 0
+        || s.hlavicka.y0 != 0
+    {
         return Err(chyba("snímka s orezaním zatiaľ nie je podporená"));
     }
     let sivy = m.farba.priestor == 1;
@@ -161,6 +189,7 @@ fn vystup(s: snimka::Snimka, m: &hlavicky::Metadata, w: usize, h: usize) -> Vysl
     let hlbka = m.hlbka;
     let px = w * h;
     let mut o = match s.vysledok {
+        Vysledok3::Xyb(_) => return Err(chyba("zobrazená snímka nemá prevod farieb")),
         Vysledok3::Cele(kanaly) => {
             let alfa = alfa_i.map(|i| &kanaly[farebnych + i]);
             let zdroj: Vec<&Vec<i32>> =
@@ -197,6 +226,30 @@ fn vystup(s: snimka::Snimka, m: &hlavicky::Metadata, w: usize, h: usize) -> Vysl
                 Obraz::novy(w, h, model, alfa_i.is_some(), Vzorky::U16(v))?
             }
         }
+        Vysledok3::Kodovane(roviny, kanaly) => {
+            let alfa = alfa_i.map(|i| (&kanaly[i].data, m.dodatocne[i].hlbka));
+            let mut f = vec![0f32; px * k];
+            for i in 0..px {
+                for (c, r) in roviny.iter().enumerate().take(farebnych) {
+                    f[i * k + c] = r[i];
+                }
+                if let Some((a, hb)) = &alfa {
+                    f[i * k + farebnych] = if hb.plavajuca {
+                        cele_na_plavajuce(a[i], hb)
+                    } else {
+                        a[i] as f32 / ((1u64 << hb.bitov) - 1) as f32
+                    };
+                }
+            }
+            let vzorky = if hlbka.plavajuca {
+                Vzorky::F32(f)
+            } else if hlbka.bitov <= 8 {
+                Vzorky::U8(f.iter().map(|&x| (x.clamp(0.0, 1.0) * 255.0).round() as u8).collect())
+            } else {
+                Vzorky::U16(f.iter().map(|&x| (x.clamp(0.0, 1.0) * 65_535.0).round() as u16).collect())
+            };
+            Obraz::novy(w, h, model, alfa_i.is_some(), vzorky)?
+        }
         Vysledok3::Plavajuce(roviny, kanaly) => {
             // lineárne RGB → prenosová funkcia súboru
             let prenos = |x: f32| -> f32 {
@@ -205,6 +258,21 @@ fn vystup(s: snimka::Snimka, m: &hlavicky::Metadata, w: usize, h: usize) -> Vysl
                     (None, 8) => x,
                     (None, 1) => bt709_z_lin(x),
                     _ => srgb_z_lin(x),
+                }
+            };
+            // pre celé vzorky stačí tabuľka s lineárnou interpoláciou (chyba < 1e-7)
+            const N: usize = 65_536;
+            let tabulka: Option<Vec<f32>> =
+                (!hlbka.plavajuca).then(|| (0..=N).map(|i| prenos(i as f32 / N as f32)).collect());
+            let prenos = |x: f32| -> f32 {
+                match &tabulka {
+                    Some(t) => {
+                        let p = x.clamp(0.0, 1.0) * N as f32;
+                        let i = (p as usize).min(N - 1);
+                        let z = p - i as f32;
+                        t[i] + (t[i + 1] - t[i]) * z
+                    }
+                    None => prenos(x),
                 }
             };
             let alfa = alfa_i.map(|i| (&kanaly[i].data, m.dodatocne[i].hlbka));

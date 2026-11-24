@@ -224,12 +224,20 @@
       "posudenie_charty": "slobodné knižnice bez vojenského účelu; použité len ako rozhodcovia správnosti, žiadny ich kód nie je v ORCHIDEI"
     },
     {
-      "meno": "skúšobné súbory JPEG XL z libjxl (formaty/tests/data/*.jxl)",
+      "meno": "skúšobné súbory JPEG XL z libjxl (formaty/tests/data/*.jxl a výstupy libjxl v *.png)",
       "trieda": "B",
       "licencia": "BSD-3-Clause (libjxl, nástroj, ktorý ich vytvoril)",
-      "kde": "len skúšky – dáta v repozitári (spolu ≈ 8 kB), nie kód a nie súčasť programu",
-      "ucel": "skúška zhody nášho dekodéra JPEG XL s referenčným (kontrolné súčty vzoriek) a semienka fuzzera",
+      "kde": "len skúšky – dáta v repozitári (spolu ≈ 35 kB), nie kód a nie súčasť programu",
+      "ucel": "skúška zhody nášho dekodéra JPEG XL s referenčným (bezstratové: kontrolné súčty vzoriek, stratové: výstup libjxl v PNG) a semienka fuzzera",
       "posudenie_charty": "obrázky bez obsahu (vzorky a šum); vznikli slobodným nástrojom bez vojenského účelu"
+    },
+    {
+      "meno": "súbory konformity JPEG XL (repozitár libjxl/conformance)",
+      "trieda": "B",
+      "licencia": "BSD-3-Clause (projekt libjxl)",
+      "kde": "len CI – stiahnu sa do dočasného priečinka behu (formaty/nastroje/over_formaty.py), nie sú v repozitári",
+      "ucel": "nezávislá skúška dekodéra JPEG XL na oficiálnych súboroch normy (porovnanie s libjxl)",
+      "posudenie_charty": "testovacie obrázky normy; slobodný projekt bez vojenského účelu"
     },
     {
       "meno": "HEVC (H.265) – norma ITU-T H.265 | ISO/IEC 23008-2 a patenty na formát (výnimka vlastníka R214)",

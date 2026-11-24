@@ -1,5 +1,6 @@
-//! Skúšobné súbory cudzích kodérov (`tests/data`): naše čítanie musí dať presne to isté, čo referenčná knižnica –
-//! kontrolný súčet CRC-32 vzoriek (little-endian) je spočítaný z jej výstupu.
+//! Skúšobné súbory cudzích kodérov (`tests/data`): bezstratové naše čítanie musí dať presne to isté, čo
+//! referenčná knižnica – kontrolný súčet CRC-32 vzoriek (little-endian) je spočítaný z jej výstupu. Stratové
+//! súbory sa porovnávajú s výstupom referenčnej knižnice uloženým v PNG (odchýlka najviac 1 – zaokrúhlenie).
 //!
 //! Súbory sú vložené do programu skúšok (`include_bytes!`), takže skúšky bežia rovnako vo WebAssembly,
 //! na Androide aj na doske bez prístupu k zdrojovým súborom.
@@ -40,5 +41,39 @@ fn rovnako_ako_referencna_kniznica() {
         let o = orchidea_formaty::citaj(data, &Limity::default()).unwrap_or_else(|e| panic!("{meno}: {e}"));
         assert_eq!((o.sirka, o.vyska, o.kanaly()), (w, h, k), "{meno}");
         assert_eq!(crc32(&bajty(&o.vzorky)), crc, "{meno}: vzorky sa líšia od referenčnej knižnice");
+    }
+}
+
+macro_rules! stratovy {
+    ($m:literal) => {
+        (
+            $m,
+            include_bytes!(concat!("data/", $m, ".jxl")).as_slice(),
+            include_bytes!(concat!("data/", $m, ".png")).as_slice(),
+        )
+    };
+}
+
+/// Stratový súbor JPEG XL (VarDCT) a výstup libjxl v PNG.
+pub const STRATOVE: [(&str, &[u8], &[u8]); 5] = [
+    stratovy!("stratovy_d1"),
+    stratovy!("stratovy_d2"),
+    stratovy!("stratovy_d5"),
+    stratovy!("stratovy_d12"),
+    stratovy!("stratovy_rgba"),
+];
+
+#[test]
+fn stratove_ako_referencna_kniznica() {
+    for (meno, jxl, png) in STRATOVE {
+        let o = orchidea_formaty::citaj(jxl, &Limity::default()).unwrap_or_else(|e| panic!("{meno}: {e}"));
+        let r =
+            orchidea_formaty::citaj(png, &Limity::default()).unwrap_or_else(|e| panic!("{meno}.png: {e}"));
+        assert_eq!((o.sirka, o.vyska, o.kanaly()), (r.sirka, r.vyska, r.kanaly()), "{meno}");
+        let (Vzorky::U8(a), Vzorky::U8(b)) = (&o.vzorky, &r.vzorky) else {
+            panic!("{meno}: čakané 8-bitové vzorky")
+        };
+        let max = a.iter().zip(b).map(|(&x, &y)| x.abs_diff(y)).max().unwrap_or(0);
+        assert!(max <= 1, "{meno}: odchýlka {max} od libjxl");
     }
 }

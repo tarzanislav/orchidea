@@ -419,8 +419,12 @@ jobs:
         run: python3 -m pip install --user --break-system-packages numpy Pillow imagecodecs tifffile OpenEXR
       - name: Zostavenie
         run: cargo build --locked --release -p orchidea-formaty --example formaty
+      - name: Súbory konformity JPEG XL (libjxl/conformance, len na čítanie)
+        run: GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 https://github.com/libjxl/conformance "$RUNNER_TEMP/konformita"
       - name: Porovnanie s referenčnými knižnicami v oboch smeroch
         shell: bash
+        env:
+          ORCHIDEA_JXL_KONFORMITA: ${{ runner.temp }}/konformita
         run: |
           echo "### Obrazové formáty – nezávislé overenie" >> "$GITHUB_STEP_SUMMARY"
           kod=0

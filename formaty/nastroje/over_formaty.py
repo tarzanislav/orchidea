@@ -487,6 +487,69 @@ def over_jxl(rng):
         except Exception as e:  # noqa: BLE001
             zapis_vysledok("JPEG XL bezstratovo", nazov, False, str(e)[:160])
 
+    # stratové (VarDCT): odchýlka od libjxl najviac 1/255 rozsahu (zaokrúhlenie), priemer pod 0,35/255
+    def obraz(h, w):
+        yy, xx = np.mgrid[0:h, 0:w]
+        a = np.stack([(np.sin(xx / 9) + np.cos(yy / 7)) * 50 + 128, np.sin((xx + yy) / 15) * 80 + 120,
+                      ((xx // 16 + yy // 16) % 2) * 120 + 60], -1) + rng.normal(0, 6, (h, w, 3))
+        a[h // 3:h // 2, w // 4:w // 2] = [250, 30, 40]
+        return np.clip(a, 0, 255).astype(np.uint8)
+    stredny = obraz(203, 317)
+    stratove = [("vzdialenosť 1", stredny, {"distance": 1.0}), ("vzdialenosť 0,5", stredny, {"distance": 0.5}),
+                ("vzdialenosť 2 (EPF 2 kroky)", stredny, {"distance": 2.0}),
+                ("vzdialenosť 5 (EPF 3 kroky)", stredny, {"distance": 5.0}),
+                ("vzdialenosť 12 (zväčšenie 2×)", stredny, {"distance": 12.0}),
+                ("vzdialenosť 25", obraz(301, 433), {"distance": 25.0}),
+                ("sivý", stredny[..., 1].copy(), {"distance": 1.0}),
+                ("RGBA", np.dstack([stredny, (stredny[..., 0] > 100).astype(np.uint8) * 255]), {"distance": 1.5}),
+                ("16 b", stredny.astype(np.uint16) * 257, {"distance": 1.0}),
+                ("nepárne rozmery 37×53", obraz(37, 53), {"distance": 1.5}),
+                ("1×1", obraz(1, 1), {"distance": 1.0}),
+                ("viac skupín 600×700", obraz(600, 700), {"distance": 1.0}),
+                ("viac LF skupín 2100×260", obraz(260, 2100), {"distance": 2.0})]
+    for e in (3, 7, 9):
+        stratove.append((f"úsilie {e}", stredny, {"distance": 1.0, "effort": e}))
+    for nazov, data, kw in stratove:
+        cesta = os.path.join(PRAC, f"jxl_{len(RIADKY)}.jxl")
+        try:
+            d = imagecodecs.jpegxl_encode(data, **kw)
+            open(cesta, "wb").write(d)
+            ref = imagecodecs.jpegxl_decode(d)
+            ref = ref.reshape(data.shape if data.ndim == 3 else data.shape + (1,))
+            nas = nase(cesta)
+            mx = 65535.0 if data.dtype == np.uint16 else 255.0
+            dd = np.abs(nas.astype(np.float64) - ref.astype(np.float64)) / mx * 255
+            ok = nas.shape == ref.shape and dd.max() <= 1.0 and (dd.size < 3000 or dd.mean() < 0.35)
+            zapis_vysledok("JPEG XL stratovo", nazov, ok,
+                           f"max {dd.max():.2f}/255, priemer {dd.mean():.3f}/255 ({len(d)} B)")
+        except Exception as e:  # noqa: BLE001
+            zapis_vysledok("JPEG XL stratovo", nazov, False, str(e)[:160])
+
+    # súbory konformity libjxl (ak je k dispozícii ich priečinok): podporované prípady voči libjxl
+    konf = os.environ.get("ORCHIDEA_JXL_KONFORMITA")
+    if konf:
+        import json
+        for meno in ["alpha_nonpremultiplied", "alpha_triangles", "animation_icos4d", "bicycles",
+                     "grayscale_public_university", "lossless_pfm", "lz77_flower", "opsin_inverse", "upsampling"]:
+            cesta = os.path.join(konf, "testcases", meno, "input.jxl")
+            try:
+                d = open(cesta, "rb").read()
+                ref = imagecodecs.jpegxl_decode(d)
+                if ref.ndim == 4:
+                    ref = ref[0]
+                nas = nase(cesta)
+                ref = ref.reshape(nas.shape)
+                bps = json.load(open(os.path.join(konf, "testcases", meno, "test.json")))["bits_per_sample"][0]
+                ref = ref.astype(np.float64)
+                if nas.dtype == np.uint16 and bps < 16:
+                    ref = np.round(ref * 65535 / ((1 << bps) - 1))
+                mx = {np.dtype("uint8"): 255.0, np.dtype("uint16"): 65535.0}.get(nas.dtype, 1.0)
+                dd = np.abs(nas.astype(np.float64) - ref) / mx * 255
+                ok = dd.max() <= 1.0
+                zapis_vysledok("JPEG XL konformita", meno, ok, f"max {dd.max():.2f}/255 voči libjxl")
+            except Exception as e:  # noqa: BLE001
+                zapis_vysledok("JPEG XL konformita", meno, False, str(e)[:160])
+
 
 def main():
     rng = np.random.default_rng(2026)

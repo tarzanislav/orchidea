@@ -326,7 +326,7 @@ fn filtre(c: &mut Citac, modular: bool) -> Vysledok<Filtre> {
     let mut f = Filtre {
         gabor: true,
         gabor_vahy: [(0.115_169_525, 0.061_248_592); 3],
-        epf_iteracie: 1,
+        epf_iteracie: 2,
         epf_ostrost: [0.0, 1.0 / 7.0, 2.0 / 7.0, 3.0 / 7.0, 4.0 / 7.0, 5.0 / 7.0, 6.0 / 7.0, 1.0],
         epf_kanaly: [40.0, 5.0, 3.5],
         epf_kvant_nas: 0.46,
@@ -398,6 +398,8 @@ pub(super) struct HlavickaSnimky {
     pub ycbcr: bool,
     pub jpeg_podvzorkovanie: [u32; 3],
     pub zvacsenie: u32,
+    /// Zväčšenie dodatočných kanálov.
+    pub zvacsenie_dodatocnych: Vec<u32>,
     pub posun_skupiny: u32,
     pub x_qm: u32,
     pub b_qm: u32,
@@ -432,6 +434,7 @@ pub(super) fn hlavicka_snimky(
         ycbcr: false,
         jpeg_podvzorkovanie: [0; 3],
         zvacsenie: 1,
+        zvacsenie_dodatocnych: vec![1; m.dodatocne.len()],
         posun_skupiny: 1,
         x_qm: 3,
         b_qm: 2,
@@ -462,8 +465,8 @@ pub(super) fn hlavicka_snimky(
             }
         }
         h.zvacsenie = c.u32([D::V(1), D::V(2), D::V(4), D::V(8)]);
-        for _ in &m.dodatocne {
-            c.u32([D::V(1), D::V(2), D::V(4), D::V(8)]);
+        for z in h.zvacsenie_dodatocnych.iter_mut() {
+            *z = c.u32([D::V(1), D::V(2), D::V(4), D::V(8)]);
         }
     }
     if h.modular {
