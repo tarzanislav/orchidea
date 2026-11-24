@@ -529,8 +529,24 @@ jobs:
           rustup toolchain install && rustup show
           rustup target add wasm32-wasip1 wasm32-unknown-unknown
       - name: Wasmtime (nezávislý spúšťač skúšok)
+        # inštalačný skript občas nezistí poslednú verziu (obmedzenie rozhrania GitHubu bez prihlásenia) –
+        # verzia sa zistí s tokenom behu, archív sa stiahne s opakovaním a spúšťač sa overí
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -sSf https://wasmtime.dev/install.sh | bash
+          for pokus in 1 2 3 4 5; do
+            if tag=$(gh api repos/bytecodealliance/wasmtime/releases/latest --jq .tag_name) \
+              && curl -sSfL --retry 3 -o wasmtime.tar.xz \
+                "https://github.com/bytecodealliance/wasmtime/releases/download/$tag/wasmtime-$tag-x86_64-linux.tar.xz" \
+              && tar -xJf wasmtime.tar.xz; then
+              break
+            fi
+            echo "wasmtime: pokus $pokus zlyhal, čakám…"; sleep $((pokus * 15))
+          done
+          mkdir -p "$HOME/.wasmtime/bin"
+          cp wasmtime-*-x86_64-linux/wasmtime "$HOME/.wasmtime/bin/"
+          "$HOME/.wasmtime/bin/wasmtime" --version
           echo "$HOME/.wasmtime/bin" >> "$GITHUB_PATH"
       - name: Skúšky vo WebAssembly
         env:
