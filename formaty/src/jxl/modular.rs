@@ -63,7 +63,7 @@ impl ParametreWp {
 #[derive(Debug, Clone)]
 pub(super) enum Transformacia {
     Rct { zac: usize, typ: u32 },
-    Paleta { zac: usize, pocet: usize, farieb: usize, delt: usize, prediktor: u32 },
+    Paleta { zac: usize, pocet: usize, farieb: usize, delt: usize, prediktor: u32, wp: ParametreWp },
     Squeeze { kroky: Vec<KrokSqueeze> },
 }
 
@@ -178,7 +178,7 @@ fn citaj_hlavicku(c: &mut Citac) -> Vysledok<Hlavicka> {
                 if prediktor > 13 {
                     return Err(chyba("neplatný prediktor palety"));
                 }
-                transformacie.push(Transformacia::Paleta { zac, pocet, farieb, delt, prediktor });
+                transformacie.push(Transformacia::Paleta { zac, pocet, farieb, delt, prediktor, wp });
             }
             2 => {
                 let k = c.u32([D::V(0), D::B(4, 1), D::B(6, 9), D::B(8, 41)]);
@@ -271,7 +271,8 @@ fn meta_uprava(o: &mut Obrazok, t: &mut Transformacia) -> Vysledok<()> {
             if *farieb + *delt > 1 << 20 {
                 return Err(Chyba::Limit("JPEG XL: priveľká paleta".into()));
             }
-            o.kanaly.insert(0, Kanal::novy(*farieb + *delt, n, -1, -1));
+            // kanál palety má šírku počtu farieb (rozdiely sú jej prvé položky)
+            o.kanaly.insert(0, Kanal::novy(*farieb, n, -1, -1));
         }
         Transformacia::Squeeze { kroky } => {
             if kroky.is_empty() {
@@ -568,8 +569,9 @@ fn dekoduj_kanal(
                 2 => top,
                 3 => (left + top) / 2,
                 4 => {
+                    // výber: bližší z W a N k gradientu, pri zhode N
                     let pg = top + left - topleft;
-                    if (pg - top).abs() < (pg - left).abs() { top } else { left }
+                    if (pg - left).abs() < (pg - top).abs() { left } else { top }
                 }
                 5 => gradient(left, top, topleft),
                 6 => wp_pred,
@@ -603,8 +605,8 @@ pub(super) fn spat(o: &mut Obrazok, transformacie: &[Transformacia]) -> Vysledok
     for t in transformacie.iter().rev() {
         match t {
             Transformacia::Rct { zac, typ } => spat_rct(o, *zac, *typ)?,
-            Transformacia::Paleta { zac, pocet, farieb, delt, prediktor } => {
-                spat_paleta(o, *zac, *pocet, *farieb, *delt, *prediktor)?
+            Transformacia::Paleta { zac, pocet, farieb, delt, prediktor, wp } => {
+                spat_paleta(o, *zac, *pocet, *farieb, *delt, *prediktor, *wp)?
             }
             Transformacia::Squeeze { kroky } => {
                 for k in kroky.iter().rev() {
@@ -676,6 +678,63 @@ fn spat_rct(o: &mut Obrazok, zac: usize, typ: u32) -> Vysledok<()> {
     Ok(())
 }
 
+/// Rozdiely implicitnej palety rozdielov (norma, 72 trojíc).
+#[rustfmt::skip]
+const PALETA_ROZDIELOV: [[i16; 3]; 72] = [
+    [0, 0, 0], [4, 4, 4], [11, 0, 0], [0, 0, -13], [0, -12, 0], [-10, -10, -10],
+    [-18, -18, -18], [-27, -27, -27], [-18, -18, 0], [0, 0, -32], [-32, 0, 0], [-37, -37, -37],
+    [0, -32, -32], [24, 24, 45], [50, 50, 50], [-45, -24, -24], [-24, -45, -45], [0, -24, -24],
+    [-34, -34, 0], [-24, 0, -24], [-45, -45, -24], [64, 64, 64], [-32, 0, -32], [0, -32, 0],
+    [-32, 0, 32], [-24, -45, -24], [45, 24, 45], [24, -24, -45], [-45, -24, 24], [80, 80, 80],
+    [64, 0, 0], [0, 0, -64], [0, -64, -64], [-24, -24, 45], [96, 96, 96], [64, 64, 0],
+    [45, -24, -24], [34, -34, 0], [112, 112, 112], [24, -45, -45], [45, 45, -24], [0, -32, 32],
+    [24, -24, 45], [0, 96, 96], [45, -24, 24], [24, -45, -24], [-24, -45, 24], [0, -64, 0],
+    [96, 0, 0], [128, 128, 128], [64, 0, 64], [144, 144, 144], [96, 96, 0], [-36, -36, 36],
+    [45, -24, -45], [45, -45, -24], [0, 0, -96], [0, 128, 128], [0, 96, 0], [45, 24, -45],
+    [-128, 0, 0], [24, -45, 24], [-45, 24, -45], [64, 0, -64], [64, -64, -64], [96, 0, 96],
+    [45, -45, 24], [24, 45, -45], [64, 64, -64], [128, 128, 0], [0, 0, -128], [-24, 45, -45],
+];
+
+/// Predikcia hodnoty v kanáli `d` (šírka `w`) prediktorom `p` z už známych susedov.
+fn predikcia(p: u32, d: &[i32], w: usize, x: usize, y: usize, wp: Option<&mut Wp>) -> i64 {
+    let i = y * w + x;
+    let left = if x > 0 {
+        d[i - 1] as i64
+    } else if y > 0 {
+        d[i - w] as i64
+    } else {
+        0
+    };
+    let top = if y > 0 { d[i - w] as i64 } else { left };
+    let topleft = if x > 0 && y > 0 { d[i - w - 1] as i64 } else { left };
+    let topright = if x + 1 < w && y > 0 { d[i - w + 1] as i64 } else { top };
+    let leftleft = if x > 1 { d[i - 2] as i64 } else { left };
+    let toptop = if y > 1 { d[i - 2 * w] as i64 } else { top };
+    match p {
+        0 => 0,
+        1 => left,
+        2 => top,
+        3 => (left + top) / 2,
+        4 => {
+            let pg = top + left - topleft;
+            if (pg - left).abs() < (pg - top).abs() { left } else { top }
+        }
+        5 => gradient(left, top, topleft),
+        6 => wp.map_or(0, |wp| wp.predikuj(x, y, top, left, topright, topleft, toptop).0),
+        7 => topright,
+        8 => topleft,
+        9 => leftleft,
+        10 => (left + topleft) / 2,
+        11 => (top + topleft) / 2,
+        12 => (top + topright) / 2,
+        _ => {
+            let toprightright = if x + 2 < w && y > 0 { d[i - w + 2] as i64 } else { topright };
+            (6 * top - 2 * toptop + 7 * left + leftleft + toprightright + 3 * topright + 8) / 16
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn spat_paleta(
     o: &mut Obrazok,
     zac: usize,
@@ -683,46 +742,81 @@ fn spat_paleta(
     farieb: usize,
     delt: usize,
     prediktor: u32,
+    wp_p: ParametreWp,
 ) -> Vysledok<()> {
     if o.meta < 1 || zac + 1 >= o.kanaly.len() {
         return Err(chyba("paleta: chýba kanál"));
-    }
-    if delt > 0 || prediktor != 0 {
-        return Err(chyba("paleta s rozdielmi (delta) zatiaľ nie je podporená"));
     }
     let c0 = zac + 1;
     let index = std::mem::take(&mut o.kanaly[c0].data);
     let (w, h, hs, vs) = (o.kanaly[c0].w, o.kanaly[c0].h, o.kanaly[c0].hshift, o.kanaly[c0].vshift);
     let paleta = &o.kanaly[0];
-    let velkost = farieb + delt;
-    let bitov = o.bitov.min(24) as u64;
-    let hodnota = |idx: i32, c: usize| -> Vysledok<i32> {
-        if idx < 0 {
-            return Err(chyba("paleta s implicitnými rozdielmi zatiaľ nie je podporená"));
+    if paleta.data.len() < farieb * pocet {
+        return Err(chyba("paleta: neúplné farby"));
+    }
+    let bitov = o.bitov.min(24);
+    let max = (1i64 << bitov) - 1;
+    let hodnota = |idx: i32, c: usize| -> i32 {
+        if idx >= 0 && (idx as usize) < farieb {
+            return paleta.data[c * paleta.w + idx as usize];
         }
-        let idx = idx as usize;
-        if idx < velkost {
-            return Ok(paleta.data[c * paleta.w + idx]);
+        if idx >= 0 {
+            // implicitné farby: 4 × 4 × 4 a 5 × 5 × 5 rovnomerne v rozsahu
+            let i = idx as i64 - farieb as i64;
+            if i < 64 {
+                return (((i >> (2 * c).min(62)) % 4) * max / 4 + (1i64 << bitov.saturating_sub(3))) as i32;
+            }
+            let mut i = i - 64;
+            for _ in 0..c {
+                i /= 5;
+            }
+            return ((i % 5) * max / 4) as i32;
         }
         if c >= 3 {
-            return Ok(0);
+            return 0;
         }
-        let mierka = |v: u64, men: u64| (v * ((1u64 << bitov) - 1) / men) as i32;
-        if idx < velkost + 64 {
-            let i = (idx - velkost) >> (2 * c);
-            return Ok(mierka(i as u64 % 4, 4) + (1 << (bitov as i32 - 3).max(0)));
+        // záporný index: pevná paleta rozdielov
+        let i = ((-(idx as i64 + 1)) % 143) as usize;
+        let mut v = PALETA_ROZDIELOV[(i + 1) >> 1][c] as i32;
+        if i & 1 == 0 {
+            v = -v;
         }
-        let mut i = idx - velkost - 64;
-        for _ in 0..c {
-            i /= 5;
+        if bitov > 8 {
+            v <<= bitov - 8;
         }
-        Ok(mierka(i as u64 % 5, 4))
+        v
     };
     let mut nove = Vec::with_capacity(pocet);
     for c in 0..pocet {
-        let mut d = vec![0i32; w * h];
-        for (x, &idx) in d.iter_mut().zip(&index) {
-            *x = hodnota(idx, c)?;
+        let mut d: Vec<i32> = index.iter().map(|&i| hodnota(i, c)).collect();
+        // položky menšie ako počet rozdielov (aj záporné) sú rozdiely k predikcii
+        if index.iter().any(|&i| (i as i64) < delt as i64) {
+            let mut wp = (prediktor == 6).then(|| Wp::novy(wp_p, w));
+            for y in 0..h {
+                for x in 0..w {
+                    let p = y * w + x;
+                    if (index[p] as i64) < delt as i64 {
+                        let pr = predikcia(prediktor, &d, w, x, y, wp.as_mut());
+                        d[p] = (d[p] as i64).wrapping_add(pr) as i32;
+                    } else if let Some(wp) = wp.as_mut() {
+                        let left = if x > 0 {
+                            d[p - 1] as i64
+                        } else if y > 0 {
+                            d[p - w] as i64
+                        } else {
+                            0
+                        };
+                        let top = if y > 0 { d[p - w] as i64 } else { left };
+                        let topleft = if x > 0 && y > 0 { d[p - w - 1] as i64 } else { left };
+                        let topright = if x + 1 < w && y > 0 { d[p - w + 1] as i64 } else { top };
+                        let toptop = if y > 1 { d[p - 2 * w] as i64 } else { top };
+                        wp.predikuj(x, y, top, left, topright, topleft, toptop);
+                    }
+                    if let Some(wp) = wp.as_mut() {
+                        wp.aktualizuj(d[p] as i64, x, y);
+                    }
+                }
+            }
         }
         nove.push(Kanal { w, h, hshift: hs, vshift: vs, data: d });
     }

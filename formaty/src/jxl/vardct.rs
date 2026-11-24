@@ -1000,8 +1000,20 @@ struct KoefSkupiny {
 
 pub(super) struct Stav {
     roz: Rozmery,
+    /// Bloky 8×8 obrazu (bez zarovnania pre podvzorkovanie) – rozmery LF v Modular.
     w8: usize,
     h8: usize,
+    /// Mriežka blokov (pri podvzorkovaní farby zarovnaná na párny počet).
+    bw8: usize,
+    bh8: usize,
+    /// Posuny kanálov X (Cb), Y, B (Cr) pri podvzorkovaní farby (vodorovne, zvisle).
+    sh: [(usize, usize); 3],
+    podvzorkovane: bool,
+    /// Rozmery mriežky blokov každého kanála a rozmery jeho roviny v pixeloch.
+    kw8: [usize; 3],
+    kh8: [usize; 3],
+    pw: [usize; 3],
+    ph: [usize; 3],
     globalna_mierka: u32,
     kvant_lf: u32,
     lf_m: [f32; 3],
@@ -1045,15 +1057,29 @@ impl Stav {
         lf: [f32; 3],
         lf_snimka: Option<&[Vec<f32>; 3]>,
     ) -> Vysledok<Stav> {
-        if h.ycbcr && h.jpeg_podvzorkovanie.iter().any(|&x| x != 0) {
-            return Err(chyba("VarDCT s podvzorkovaním farby (prekódovaný JPEG) zatiaľ nie je podporené"));
-        }
         let lf_zo_snimky = h.priznaky & 32 != 0;
+        let pv = h.jpeg_podvzorkovanie;
+        let podvzorkovane = h.ycbcr && pv.iter().any(|&x| x != 0);
+        if pv.iter().any(|&x| x > 3) {
+            return Err(chyba("neplatné podvzorkovanie farby"));
+        }
+        let hs = pv.iter().any(|&x| x == 1 || x == 2);
+        let vs = pv.iter().any(|&x| x == 1 || x == 3);
+        let sh: [(usize, usize); 3] = if podvzorkovane {
+            pv.map(|u| match u {
+                0 => (hs as usize, vs as usize),
+                1 => (0, 0),
+                2 => (0, vs as usize),
+                _ => (hs as usize, 0),
+            })
+        } else {
+            [(0, 0); 3]
+        };
+        if podvzorkovane && (lf_zo_snimky || h.filtre.gabor || h.filtre.epf_iteracie > 0) {
+            return Err(chyba("podvzorkovanie farby s LF snímkou alebo filtrami zatiaľ nie je podporené"));
+        }
         if lf_zo_snimky && lf_snimka.is_none() {
             return Err(chyba("snímka odkazuje na chýbajúcu LF snímku"));
-        }
-        if !m.xyb {
-            return Err(chyba("VarDCT bez XYB zatiaľ nie je podporené"));
         }
         let globalna_mierka = c.u32([D::B(11, 1), D::B(11, 2049), D::B(12, 4097), D::B(16, 8193)]);
         let kvant_lf = c.u32([D::V(16), D::B(5, 1), D::B(8, 1), D::B(16, 1)]);
@@ -1104,11 +1130,25 @@ impl Stav {
         c.over()?;
         let w8 = r.w.div_ceil(8);
         let h8 = r.h.div_ceil(8);
+        let bw8 = if podvzorkovane && hs { w8.div_ceil(2) * 2 } else { w8 };
+        let bh8 = if podvzorkovane && vs { h8.div_ceil(2) * 2 } else { h8 };
+        let kw8 = sh.map(|(a, _)| bw8.div_ceil(1 << a));
+        let kh8 = sh.map(|(_, b)| bh8.div_ceil(1 << b));
+        let pw = sh.map(|(a, _)| r.w.div_ceil(1 << a));
+        let ph = sh.map(|(_, b)| r.h.div_ceil(1 << b));
         let ff = faktor as f32;
         Ok(Stav {
             roz: r,
             w8,
             h8,
+            bw8,
+            bh8,
+            sh,
+            podvzorkovane,
+            kw8,
+            kh8,
+            pw,
+            ph,
             globalna_mierka,
             kvant_lf,
             lf_m: [lf[0] * 128.0, lf[1] * 128.0, lf[2] * 128.0],
@@ -1118,20 +1158,20 @@ impl Stav {
             cfl_b: zb,
             cfl_x_lf: zx + (xlf as i32 - 128) as f32 / ff,
             cfl_b_lf: zb + (blf as i32 - 128) as f32 / ff,
-            lf: [vec![0.0; w8 * h8], vec![0.0; w8 * h8], vec![0.0; w8 * h8]],
-            lf_kvant: [vec![0; w8 * h8], vec![0; w8 * h8], vec![0; w8 * h8]],
-            bloky: vec![Blok::Prazdny; w8 * h8],
+            lf: [0, 1, 2].map(|c| vec![0.0; kw8[c] * kh8[c]]),
+            lf_kvant: [0, 1, 2].map(|c| vec![0; kw8[c] * kh8[c]]),
+            bloky: vec![Blok::Prazdny; bw8 * bh8],
             x_z_y: vec![0; r.w.div_ceil(64) * r.h.div_ceil(64)],
             b_z_y: vec![0; r.w.div_ceil(64) * r.h.div_ceil(64)],
             w64: r.w.div_ceil(64),
-            sigma: vec![0.0; w8 * h8],
+            sigma: vec![0.0; bw8 * bh8],
             epf: (h.filtre.epf_iteracie > 0)
                 .then(|| (h.filtre.epf_kvant_nas * 65536.0 / globalna_mierka as f32, h.filtre.epf_ostrost)),
             matice: Vec::new(),
             presety: 1,
             prechody: Vec::new(),
             koef: (0..r.skupin()).map(|_| None).collect(),
-            xyb: [vec![0.0; r.w * r.h], vec![0.0; r.w * r.h], vec![0.0; r.w * r.h]],
+            xyb: [0, 1, 2].map(|c| vec![0.0; pw[c] * ph[c]]),
             hlbka: m.hlbka.bitov,
             bez_vyhladenia: h.priznaky & PRIZNAK_BEZ_VYHLADENIA_LF != 0,
             x_qm: h.x_qm,
@@ -1165,8 +1205,30 @@ impl Stav {
         }
         let presnost = c.u(2);
         let (x0, y0, w, h) = self.lf_obdlznik(g);
-        let mut o =
-            Obrazok { kanaly: (0..3).map(|_| Kanal::novy(w, h, 0, 0)).collect(), meta: 0, bitov: self.hlbka };
+        // modulárne kanály sú v poradí Y, X, B; podvzorkované majú menšie rozmery
+        let poradie = [1usize, 0, 2];
+        // pri podvzorkovaní majú aj nepodvzorkované kanály rozmer zarovnaný na párny počet
+        let (ph, pv) = (
+            self.bw8 != self.w8 || self.podvzorkovane && self.sh.iter().any(|s| s.0 == 1),
+            self.bh8 != self.h8 || self.podvzorkovane && self.sh.iter().any(|s| s.1 == 1),
+        );
+        let rozmer = |cc: usize| {
+            let (a, b) = self.sh[cc];
+            let kw = if ph { w.div_ceil(2) << (1 - a) } else { w };
+            let kh = if pv { h.div_ceil(2) << (1 - b) } else { h };
+            (kw, kh, a as i32, b as i32)
+        };
+        let mut o = Obrazok {
+            kanaly: poradie
+                .iter()
+                .map(|&cc| {
+                    let (kw, kh, a, b) = rozmer(cc);
+                    Kanal::novy(kw, kh, a, b)
+                })
+                .collect(),
+            meta: 0,
+            bitov: self.hlbka,
+        };
         let t = modular::dekoduj(c, &mut o, 1 + g as u32, strom, usize::MAX)?;
         modular::spat(&mut o, &t)?;
         for k in o.kanaly.iter_mut() {
@@ -1175,17 +1237,19 @@ impl Stav {
             }
         }
         let mierka_inv = self.globalna_mierka as f64 * self.kvant_lf as f64;
-        // modulárne kanály sú v poradí Y, X, B
-        for (mc, cc) in [(0usize, 1usize), (1, 0), (2, 2)] {
+        for (mc, &cc) in poradie.iter().enumerate() {
             let m = (self.lf_m[cc] as f64 * (1u64 << (9 - presnost)) as f64 / mierka_inv) as f32;
             let k = &o.kanaly[mc];
-            if k.w != w || k.h != h {
+            let (kw, kh, a, b) = rozmer(cc);
+            if k.w != kw || k.h != kh {
                 return Err(chyba("LF kanál má zlé rozmery"));
             }
-            for y in 0..h {
-                for x in 0..w {
-                    let q = k.data[y * w + x];
-                    let i = (y0 + y) * self.w8 + x0 + x;
+            let (cx0, cy0) = (x0 >> a, y0 >> b);
+            let sirka = self.kw8[cc];
+            for y in 0..kh.min(self.kh8[cc] - cy0) {
+                for x in 0..kw.min(sirka - cx0) {
+                    let q = k.data[y * kw + x];
+                    let i = (cy0 + y) * sirka + cx0 + x;
                     self.lf_kvant[cc][i] = q;
                     self.lf[cc][i] = q as f32 * m;
                 }
@@ -1196,8 +1260,12 @@ impl Stav {
 
     pub fn hf_metadata(&mut self, c: &mut Citac, g: usize, strom: Option<&StromAKody>) -> Vysledok<()> {
         let (x0, y0, bw, bh) = self.lf_obdlznik(g);
+        // korelácia farieb po 64 pixeloch skutočnej šírky; mriežka blokov zarovnaná pre podvzorkovanie
+        let (cw, ch) =
+            ((self.roz.w - x0 * 8).min(bw * 8).div_ceil(64), (self.roz.h - y0 * 8).min(bh * 8).div_ceil(64));
+        let bw = if self.bw8 != self.w8 { bw.div_ceil(2) * 2 } else { bw };
+        let bh = if self.bh8 != self.h8 { bh.div_ceil(2) * 2 } else { bh };
         let blokov = 1 + c.u(ceil_log2((bw * bh) as u32)) as usize;
-        let (cw, ch) = (bw.div_ceil(8), bh.div_ceil(8));
         let mut o = Obrazok {
             kanaly: vec![
                 Kanal::novy(cw, ch, 0, 0),
@@ -1234,7 +1302,7 @@ impl Stav {
         for y in 0..bh {
             let mut x = 0;
             while x < bw {
-                let i = (y0 + y) * self.w8 + x0 + x;
+                let i = (y0 + y) * self.bw8 + x0 + x;
                 if self.bloky[i] != Blok::Prazdny {
                     x += 1;
                     continue;
@@ -1249,12 +1317,15 @@ impl Stav {
                     return Err(chyba("nekladný násobok kvantizácie"));
                 }
                 let (dw, dh) = typ.bloky();
+                if self.podvzorkovane && typ != Typ::Dct8 {
+                    return Err(chyba("pri podvzorkovaní farby sú podporené len bloky DCT 8×8"));
+                }
                 if (x0 + x) % 32 + dw > 32 || (y0 + y) % 32 + dh > 32 || x + dw > bw || y + dh > bh {
                     return Err(chyba("blok presahuje skupinu"));
                 }
                 for dy in 0..dh {
                     for dx in 0..dw {
-                        let j = (y0 + y + dy) * self.w8 + x0 + x + dx;
+                        let j = (y0 + y + dy) * self.bw8 + x0 + x + dx;
                         if self.bloky[j] != Blok::Prazdny {
                             return Err(chyba("bloky sa prekrývajú"));
                         }
@@ -1321,16 +1392,16 @@ impl Stav {
 
     /// Korelácia farieb a adaptívne vyhladenie LF obrazu (po prečítaní všetkých LF skupín).
     fn dokonci_lf(&mut self) {
-        if self.lf_zo_snimky {
+        if self.lf_zo_snimky || self.podvzorkovane {
             return;
         }
-        let n = self.w8 * self.h8;
+        let n = self.kw8[0] * self.kh8[0];
         for i in 0..n {
             let y = self.lf[1][i];
             self.lf[0][i] += self.cfl_x_lf * y;
             self.lf[2][i] += self.cfl_b_lf * y;
         }
-        if self.bez_vyhladenia || self.w8 <= 2 || self.h8 <= 2 {
+        if self.bez_vyhladenia || self.kw8[0] <= 2 || self.kh8[0] <= 2 {
             return;
         }
         let mierka_inv = self.globalna_mierka as f64 * self.kvant_lf as f64;
@@ -1338,7 +1409,7 @@ impl Stav {
         const VLASTNY: f32 = 0.052262735;
         const STRANA: f32 = 0.2034514;
         const DIAG: f32 = 0.03348292;
-        let (w, h) = (self.w8, self.h8);
+        let (w, h) = (self.kw8[0], self.kh8[0]);
         let povodne = self.lf.clone();
         for y in 1..h - 1 {
             for x in 1..w - 1 {
@@ -1365,10 +1436,22 @@ impl Stav {
 
     /// Prázdne koeficienty skupiny `g`.
     fn nove_koef(&self, g: usize) -> KoefSkupiny {
+        KoefSkupiny {
+            k: [0, 1, 2].map(|c| {
+                let (_, _, bw, bh) = self.skupina_kanala(g, c);
+                vec![0; bw * 8 * bh * 8]
+            }),
+        }
+    }
+
+    /// Skupina `g` v blokoch kanála `c`: (x0, y0, šírka, výška).
+    fn skupina_kanala(&self, g: usize, c: usize) -> (usize, usize, usize, usize) {
+        let (a, b) = self.sh[c];
         let bx0 = (g % self.roz.skup_x) * 32;
         let by0 = (g / self.roz.skup_x) * 32;
-        let n = 32.min(self.w8 - bx0) * 8 * 32.min(self.h8 - by0) * 8;
-        KoefSkupiny { k: [vec![0; n], vec![0; n], vec![0; n]] }
+        let bw = 32.min(self.bw8 - bx0);
+        let bh = 32.min(self.bh8 - by0);
+        (bx0 >> a, by0 >> b, bw.div_ceil(1 << a), bh.div_ceil(1 << b))
     }
 
     /// Dekóduje koeficienty HF prechodu `prechod` vo všetkých skupinách (paralelne po riadkoch skupín);
@@ -1384,7 +1467,8 @@ impl Stav {
         if citace.len() != self.roz.skupin() || prechod >= self.prechody.len() {
             return Err(chyba("nesprávny počet skupín prechodu"));
         }
-        let riadok = w * 256;
+        let _ = w;
+        let riadok = [0, 1, 2].map(|c| self.pw[c] * (256 >> self.sh[c].1));
         let mut xyb = std::mem::take(&mut self.xyb);
         let mut koef = std::mem::take(&mut self.koef);
         let mut ulohy = Vec::with_capacity(self.roz.skup_y);
@@ -1392,7 +1476,9 @@ impl Stav {
             let mut cit = citace.into_iter();
             let mut kf = koef.iter_mut();
             let [r0, r1, r2] = &mut xyb;
-            for ((a, b), c) in r0.chunks_mut(riadok).zip(r1.chunks_mut(riadok)).zip(r2.chunks_mut(riadok)) {
+            for ((a, b), c) in
+                r0.chunks_mut(riadok[0]).zip(r1.chunks_mut(riadok[1])).zip(r2.chunks_mut(riadok[2]))
+            {
                 let mut sk = Vec::with_capacity(sx);
                 for _ in 0..sx {
                     let g = ulohy.len() * sx + sk.len();
@@ -1434,9 +1520,9 @@ impl Stav {
         let gx = g % self.roz.skup_x;
         let gy = g / self.roz.skup_x;
         let (bx0, by0) = (gx * 32, gy * 32);
-        let bw = 32.min(self.w8 - bx0);
-        let bh = 32.min(self.h8 - by0);
-        let sirka = bw * 8;
+        let bw = 32.min(self.bw8 - bx0);
+        let bh = 32.min(self.bh8 - by0);
+        let sirka = [0, 1, 2].map(|c| self.skupina_kanala(g, c).2 * 8);
         let posun = self.posuny.get(prechod).copied().unwrap_or(0);
         let p = &self.prechody[prechod];
         let hfp = c.u(ceil_log2(self.presety));
@@ -1450,10 +1536,10 @@ impl Stav {
         let lf_nas =
             (bctx.lf_prahy[0].len() + 1) * (bctx.lf_prahy[1].len() + 1) * (bctx.lf_prahy[2].len() + 1);
         let hf_nas = bctx.qf_prahy.len() + 1;
-        let mut nenulove = [vec![0u32; bw], vec![0u32; bw], vec![0u32; bw]];
+        let mut nenulove = [0, 1, 2].map(|c| vec![0u32; sirka[c] / 8]);
         for y in 0..bh {
             for x in 0..bw {
-                let gi = (by0 + y) * self.w8 + bx0 + x;
+                let gi = (by0 + y) * self.bw8 + bx0 + x;
                 let Blok::Zaciatok { typ, hf_mul } = self.bloky[gi] else { continue };
                 let (w8, h8) = typ.bloky();
                 let pocet_blokov = (w8 * h8) as u32;
@@ -1463,12 +1549,24 @@ impl Stav {
                 for cc in [0usize, 2, 1].into_iter().filter(|_| !self.lf_zo_snimky) {
                     let prahy = &bctx.lf_prahy[cc];
                     lf_idx *= prahy.len() + 1;
-                    let q = self.lf_kvant[cc][gi];
+                    let (a, b) = self.sh[cc];
+                    let q = self.lf_kvant[cc][((by0 + y) >> b) * self.kw8[cc] + ((bx0 + x) >> a)];
                     lf_idx += prahy.iter().filter(|&&p| q > p).count();
                 }
                 let hf_idx = bctx.qf_prahy.iter().filter(|&&p| hf_mul > p as i32).count();
                 for (ci, cc) in [1usize, 0, 2].into_iter().enumerate() {
                     let ch_idx = ci * 13 + por;
+                    // podvzorkovaný kanál má koeficienty len v blokoch na párnych pozíciách
+                    let (a, b) = self.sh[cc];
+                    let (x, y) = (x >> a, y >> b);
+                    if a != 0 || b != 0 {
+                        let zarovnany = (x << a) == gi % self.bw8 - bx0 && (y << b) == gi / self.bw8 - by0;
+                        let data =
+                            matches!(self.bloky[(by0 + y) * self.bw8 + bx0 + x], Blok::Zaciatok { .. });
+                        if !zarovnany || !data {
+                            continue;
+                        }
+                    }
                     let idx = (ch_idx * hf_nas + hf_idx) * lf_nas + lf_idx;
                     let blok_ctx =
                         *bctx.mapa.get(idx).ok_or_else(|| chyba("kontext bloku mimo mapy"))? as usize;
@@ -1521,7 +1619,7 @@ impl Stav {
                         }
                         let px = x * 8 + dx as usize;
                         let py = y * 8 + dy as usize;
-                        let i = py * sirka + px;
+                        let i = py * sirka[cc] + px;
                         koef.k[cc][i] = koef.k[cc][i].wrapping_add(v);
                         predosly = 1;
                         nz -= 1;
@@ -1536,103 +1634,128 @@ impl Stav {
         Ok(())
     }
 
+    /// Bloky kanála `c` v skupine: (x, y v blokoch kanála, druh, násobok) – pri podvzorkovaní len bloky na
+    /// zarovnaných pozíciách.
+    fn bloky_kanala(&self, g: usize, c: usize) -> Vec<(usize, usize, Typ, i32)> {
+        let (a, b) = self.sh[c];
+        let bx0 = (g % self.roz.skup_x) * 32;
+        let by0 = (g / self.roz.skup_x) * 32;
+        let bw = 32.min(self.bw8 - bx0);
+        let bh = 32.min(self.bh8 - by0);
+        let mut v = Vec::new();
+        for y in 0..bh {
+            for x in 0..bw {
+                let Blok::Zaciatok { typ, hf_mul } = self.bloky[(by0 + y) * self.bw8 + bx0 + x] else {
+                    continue;
+                };
+                let (sx, sy) = (x >> a, y >> b);
+                if a != 0 || b != 0 {
+                    if (sx << a) != x || (sy << b) != y {
+                        continue;
+                    }
+                    if !matches!(self.bloky[(by0 + sy) * self.bw8 + bx0 + sx], Blok::Zaciatok { .. }) {
+                        continue;
+                    }
+                }
+                v.push((sx, sy, typ, hf_mul));
+            }
+        }
+        v
+    }
+
     /// Dekvantizácia, korelácia farieb, najnižšie frekvencie z LF a spätné transformácie jednej skupiny
-    /// do rovín `f` (šírka skupiny × výška skupiny, zarovnané na bloky).
+    /// do rovín `f` (šírka skupiny × výška skupiny v pixeloch kanála, zarovnané na bloky).
     fn vykresli(&self, g: usize, k: &KoefSkupiny, f: &mut [Vec<f32>; 3]) {
-        let gx = g % self.roz.skup_x;
-        let gy = g / self.roz.skup_x;
-        let (bx0, by0) = (gx * 32, gy * 32);
-        let bw = 32.min(self.w8 - bx0);
-        let bh = 32.min(self.h8 - by0);
-        let sirka = bw * 8;
         let qm = [
             matematika::mocnina(0.8, self.x_qm as f64 - 2.0) as f32,
             1.0,
             matematika::mocnina(0.8, self.b_qm as f64 - 2.0) as f32,
         ];
-        for fc in f.iter_mut() {
+        let bloky: [Vec<(usize, usize, Typ, i32)>; 3] = [0, 1, 2].map(|c| self.bloky_kanala(g, c));
+        let skup = [0, 1, 2].map(|c| self.skupina_kanala(g, c));
+        for (c, fc) in f.iter_mut().enumerate() {
             fc.clear();
-            fc.resize(sirka * bh * 8, 0.0);
+            fc.resize(skup[c].2 * 8 * skup[c].3 * 8, 0.0);
         }
-        let mut lfb = [0f32; 1024];
-        for y in 0..bh {
-            for x in 0..bw {
-                let Blok::Zaciatok { typ, hf_mul } = self.bloky[(by0 + y) * self.w8 + bx0 + x] else {
-                    continue;
-                };
+        for c in 0..3 {
+            let sirka = skup[c].2 * 8;
+            for &(x, y, typ, hf_mul) in &bloky[c] {
                 let (w8, h8) = typ.bloky();
                 let (w, h) = (w8 * 8, h8 * 8);
                 let mi = typ.matica();
                 let (mw, _) = ROZMER_MATICE[mi];
                 let prehod = typ.prehodit();
-                for c in 0..3 {
-                    let nas = 65536.0 / (self.globalna_mierka as f32 * hf_mul as f32) * qm[c];
-                    let m = &self.matice[mi][c];
-                    for yy in 0..h {
-                        for xx in 0..w {
-                            // matica je pre širší tvar; pri vyššom bloku prehodená
-                            let mv = if prehod { m[xx * mw + yy] } else { m[yy * mw + xx] };
-                            let i = (y * 8 + yy) * sirka + x * 8 + xx;
-                            let q = k.k[c][i];
-                            if q == 0 {
-                                continue;
-                            }
-                            let mut v = q as f32;
-                            if v.abs() <= 1.0 {
-                                v *= self.kvant_bias[c];
-                            } else {
-                                v -= self.kvant_citatel / v;
-                            }
-                            f[c][i] = v * mv * nas;
+                let nas = 65536.0 / (self.globalna_mierka as f32 * hf_mul as f32) * qm[c];
+                let m = &self.matice[mi][c];
+                for yy in 0..h {
+                    for xx in 0..w {
+                        // matica je pre širší tvar; pri vyššom bloku prehodená
+                        let mv = if prehod { m[xx * mw + yy] } else { m[yy * mw + xx] };
+                        let i = (y * 8 + yy) * sirka + x * 8 + xx;
+                        let q = k.k[c][i];
+                        if q == 0 {
+                            continue;
                         }
+                        let mut v = q as f32;
+                        if v.abs() <= 1.0 {
+                            v *= self.kvant_bias[c];
+                        } else {
+                            v -= self.kvant_citatel / v;
+                        }
+                        f[c][i] = v * mv * nas;
                     }
                 }
             }
         }
-        // korelácia farieb HF (po dlaždiciach 64×64)
-        for py in 0..bh * 8 {
-            for px in 0..sirka {
-                let (fx, fy) = (bx0 * 8 + px, by0 * 8 + py);
-                let ti = (fy / 64) * self.w64 + fx / 64;
-                let kx = self.cfl_x + self.x_z_y[ti] as f32 / self.cfl_faktor;
-                let kb = self.cfl_b + self.b_z_y[ti] as f32 / self.cfl_faktor;
-                let i = py * sirka + px;
-                let yv = f[1][i];
-                f[0][i] += kx * yv;
-                f[2][i] += kb * yv;
+        if !self.podvzorkovane {
+            // korelácia farieb HF (po dlaždiciach 64×64)
+            let (bx0, by0, bw, bh) = skup[1];
+            let sirka = bw * 8;
+            for py in 0..bh * 8 {
+                for px in 0..sirka {
+                    let (fx, fy) = (bx0 * 8 + px, by0 * 8 + py);
+                    let ti = (fy / 64) * self.w64 + fx / 64;
+                    let kx = self.cfl_x + self.x_z_y[ti] as f32 / self.cfl_faktor;
+                    let kb = self.cfl_b + self.b_z_y[ti] as f32 / self.cfl_faktor;
+                    let i = py * sirka + px;
+                    let yv = f[1][i];
+                    f[0][i] += kx * yv;
+                    f[2][i] += kb * yv;
+                }
             }
         }
         // LLF a spätné transformácie
-        for y in 0..bh {
-            for x in 0..bw {
-                let Blok::Zaciatok { typ, .. } = self.bloky[(by0 + y) * self.w8 + bx0 + x] else { continue };
+        let mut lfb = [0f32; 1024];
+        for (c, fc) in f.iter_mut().enumerate() {
+            let (bx0, by0, bw, _) = skup[c];
+            let sirka = bw * 8;
+            let lw8 = self.kw8[c];
+            for &(x, y, typ, _) in &bloky[c] {
                 let (w8, h8) = typ.bloky();
-                for (c, fc) in f.iter_mut().enumerate() {
-                    let zac = y * 8 * sirka + x * 8;
-                    if w8 * h8 == 1 {
-                        fc[zac] = self.lf[c][(by0 + y) * self.w8 + bx0 + x];
-                    } else {
-                        let lfb = &mut lfb[..w8 * h8];
-                        for yy in 0..h8 {
-                            for xx in 0..w8 {
-                                lfb[yy * w8 + xx] = self.lf[c][(by0 + y + yy) * self.w8 + bx0 + x + xx];
-                            }
-                        }
-                        dct_2d(lfb, w8, w8, h8, false);
-                        let (lw, lh) = (5 - w8.trailing_zeros(), 5 - h8.trailing_zeros());
-                        for yy in 0..h8 {
-                            for xx in 0..w8 {
-                                fc[zac + yy * sirka + xx] =
-                                    lfb[yy * w8 + xx] / (MIERKA_F[yy << lh] * MIERKA_F[xx << lw]);
-                            }
+                let zac = y * 8 * sirka + x * 8;
+                if w8 * h8 == 1 {
+                    fc[zac] = self.lf[c][(by0 + y) * lw8 + bx0 + x];
+                } else {
+                    let lfb = &mut lfb[..w8 * h8];
+                    for yy in 0..h8 {
+                        for xx in 0..w8 {
+                            lfb[yy * w8 + xx] = self.lf[c][(by0 + y + yy) * lw8 + bx0 + x + xx];
                         }
                     }
-                    let blok = &mut fc[zac..];
-                    if w8 * h8 == 1 {
-                        transformacia_mala(typ, blok, sirka);
-                    } else {
-                        dct_2d(blok, sirka, w8 * 8, h8 * 8, true);
+                    dct_2d(lfb, w8, w8, h8, false);
+                    let (lw, lh) = (5 - w8.trailing_zeros(), 5 - h8.trailing_zeros());
+                    for yy in 0..h8 {
+                        for xx in 0..w8 {
+                            fc[zac + yy * sirka + xx] =
+                                lfb[yy * w8 + xx] / (MIERKA_F[yy << lh] * MIERKA_F[xx << lw]);
+                        }
                     }
+                }
+                let blok = &mut fc[zac..];
+                if w8 * h8 == 1 {
+                    transformacia_mala(typ, blok, sirka);
+                } else {
+                    dct_2d(blok, sirka, w8 * 8, h8 * 8, true);
                 }
             }
         }
@@ -1640,14 +1763,16 @@ impl Stav {
 
     /// Zapíše vykreslenú skupinu do riadku skupín (bez zarovnania na bloky 8×8).
     fn zapis(&self, g: usize, f: &[Vec<f32>; 3], roviny: &mut [&mut [f32]; 3]) {
-        let gx = g % self.roz.skup_x;
-        let (w, h) = (self.roz.w, self.roz.h);
-        let bx0 = gx * 32;
-        let sirka = 32.min(self.w8 - bx0) * 8;
-        let x0 = bx0 * 8;
-        let sw = sirka.min(w - x0);
-        for (fc, r) in f.iter().zip(roviny.iter_mut()) {
-            let riadkov = (r.len() / w).min(h);
+        for (c, (fc, r)) in f.iter().zip(roviny.iter_mut()).enumerate() {
+            let (bx0, _, bw, _) = self.skupina_kanala(g, c);
+            let (w, h) = (self.pw[c], self.ph[c]);
+            let sirka = bw * 8;
+            let x0 = bx0 * 8;
+            if x0 >= w {
+                continue;
+            }
+            let sw = sirka.min(w - x0);
+            let riadkov = (r.len() / w).min(h).min(fc.len() / sirka.max(1));
             for py in 0..riadkov {
                 let z = py * w + x0;
                 r[z..z + sw].copy_from_slice(&fc[py * sirka..py * sirka + sw]);
@@ -1655,17 +1780,61 @@ impl Stav {
         }
     }
 
-    /// Dokončí snímku: filtre, zväčšenie a pri `do_rgb` prevod XYB → lineárne RGB.
-    pub fn dokonci(mut self, h: &HlavickaSnimky, m: &Metadata, do_rgb: bool) -> Vysledok<[Vec<f32>; 3]> {
+    /// Dokončí snímku: filtre obnovy; vráti roviny X, Y, B.
+    pub fn dokonci(mut self, h: &HlavickaSnimky) -> Vysledok<[Vec<f32>; 3]> {
         if self.koef.iter().any(|s| s.is_some()) {
             return Err(chyba("neúplné prechody skupín"));
         }
         let (w, hh) = (self.roz.w, self.roz.h);
         let mut obraz = std::mem::take(&mut self.xyb);
-        let sigma = Sigma::Bloky { hodnoty: &self.sigma, w8: self.w8 };
-        obnov(&mut obraz, w, hh, h, m, sigma)?;
-        Ok(if do_rgb { xyb_na_rgb(obraz, m) } else { obraz })
+        if self.podvzorkovane {
+            // zväčšenie podvzorkovaných kanálov ako v JPEG (váhy 3/4 a 1/4)
+            for (c, o) in obraz.iter_mut().enumerate() {
+                let (a, b) = self.sh[c];
+                let (mut cw, ch) = (self.pw[c], self.ph[c]);
+                if a == 1 {
+                    *o = zvacsi_jpeg_vodorovne(o, cw, ch, w);
+                    cw = w;
+                }
+                if b == 1 {
+                    *o = zvacsi_jpeg_zvisle(o, cw, ch, hh);
+                }
+            }
+            return Ok(obraz);
+        }
+        let sigma = Sigma::Bloky { hodnoty: &self.sigma, w8: self.bw8 };
+        obnov(&mut obraz, w, hh, h, sigma);
+        Ok(obraz)
     }
+}
+
+/// Vodorovné zdvojenie riadkov (výstup 3/4 · stred + 1/4 · sused, okraje opakované) na šírku `ciel`.
+fn zvacsi_jpeg_vodorovne(d: &[f32], w: usize, h: usize, ciel: usize) -> Vec<f32> {
+    let mut v = vec![0f32; ciel * h];
+    for y in 0..h {
+        let r = &d[y * w..(y + 1) * w];
+        for x in 0..ciel {
+            let i = x / 2;
+            let s = r[i.min(w - 1)];
+            let sused = if x % 2 == 0 { r[i.saturating_sub(1)] } else { r[(i + 1).min(w - 1)] };
+            v[y * ciel + x] = 0.25 * sused + 0.75 * s;
+        }
+    }
+    v
+}
+
+/// Zvislé zdvojenie stĺpcov na výšku `ciel`.
+fn zvacsi_jpeg_zvisle(d: &[f32], w: usize, h: usize, ciel: usize) -> Vec<f32> {
+    let mut v = vec![0f32; w * ciel];
+    for y in 0..ciel {
+        let i = (y / 2).min(h - 1);
+        let j = if y % 2 == 0 { i.saturating_sub(1) } else { (i + 1).min(h - 1) };
+        for x in 0..w {
+            let (s, sused) = (d[i * w + x], d[j * w + x]);
+            v[y * w + x] = 0.75 * s + 0.25 * sused;
+        }
+    }
+    v
 }
 
 /// Zdroj parametra sigma pre EPF.
@@ -1676,16 +1845,8 @@ pub(super) enum Sigma<'a> {
     Stala(f32),
 }
 
-/// Filtre obnovy (Gabor, EPF) a zväčšenie snímky nad tromi rovinami `w × hh`; roviny potom majú
-/// rozmery snímky z hlavičky.
-pub(super) fn obnov(
-    obraz: &mut [Vec<f32>; 3],
-    w: usize,
-    hh: usize,
-    h: &HlavickaSnimky,
-    m: &Metadata,
-    sigma: Sigma,
-) -> Vysledok<()> {
+/// Filtre obnovy (Gabor, EPF) nad tromi rovinami `w × hh`.
+pub(super) fn obnov(obraz: &mut [Vec<f32>; 3], w: usize, hh: usize, h: &HlavickaSnimky, sigma: Sigma) {
     let f = &h.filtre;
     if f.gabor || f.epf_iteracie > 0 {
         let mut p: Vec<[f32; 3]> = (0..w * hh).map(|i| [obraz[0][i], obraz[1][i], obraz[2][i]]).collect();
@@ -1710,13 +1871,6 @@ pub(super) fn obnov(
             }
         }
     }
-    if h.zvacsenie > 1 {
-        let (cw, ch) = (h.sirka as usize, h.vyska as usize);
-        for o in obraz.iter_mut() {
-            *o = zvacsi_rovinu(o, w, hh, h.zvacsenie as usize, m, cw, ch);
-        }
-    }
-    Ok(())
 }
 
 /// Zväčší rovinu faktorom `k` a oreže ju na `cw × ch`.

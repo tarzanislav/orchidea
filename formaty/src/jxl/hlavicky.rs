@@ -73,6 +73,8 @@ pub(super) struct DodatocnyKanal {
     pub hlbka: Hlbka,
     pub posun_rozmeru: u32,
     pub alfa_nasobena: bool,
+    /// Bodová farba (R, G, B, krycia schopnosť) kanála typu „spot color“.
+    pub bodova: Option<[f32; 4]>,
 }
 
 /// Typ dodatočného kanála „alfa“.
@@ -85,6 +87,7 @@ fn dodatocny(c: &mut Citac) -> Vysledok<DodatocnyKanal> {
             hlbka: Hlbka { plavajuca: false, bitov: 8, exp_bitov: 0 },
             posun_rozmeru: 0,
             alfa_nasobena: false,
+            bodova: None,
         });
     }
     let typ = c.enum_()?;
@@ -94,16 +97,19 @@ fn dodatocny(c: &mut Citac) -> Vysledok<DodatocnyKanal> {
     // meno kanála sa zatiaľ nepoužije
     c.preskoc(8 * dlzka_mena as u64);
     let alfa_nasobena = if typ == KANAL_ALFA { c.bool() } else { false };
+    let mut bodova = None;
     if typ == 2 {
-        for _ in 0..4 {
-            c.f16()?;
+        let mut b = [0f32; 4];
+        for x in b.iter_mut() {
+            *x = c.f16()?;
         }
+        bodova = Some(b);
     }
     if typ == 5 {
         c.u32([D::V(1), D::B(2, 0), D::B(4, 3), D::B(8, 19)]);
     }
     c.over()?;
-    Ok(DodatocnyKanal { typ, hlbka: h, posun_rozmeru, alfa_nasobena })
+    Ok(DodatocnyKanal { typ, hlbka: h, posun_rozmeru, alfa_nasobena, bodova })
 }
 
 /// Kódovanie farby (ColourEncoding).
@@ -383,10 +389,17 @@ pub(super) struct Prechody {
     pub posledny: Vec<u32>,
 }
 
-/// Spôsob prekrytia snímok (BlendingInfo).
+/// Spôsob prekrytia snímok (BlendingInfo): 0 nahradiť, 1 pridať, 2 zmiešať podľa alfy, 3 násobiť a pridať,
+/// 4 násobiť.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Prekrytie {
     pub rezim: u32,
+    /// Index dodatočného kanála s alfou.
+    pub alfa: u32,
+    /// Orezanie alfy (a pri násobení vzorky) do 0–1.
+    pub orez: bool,
+    /// Referenčná snímka, na ktorú sa snímka kladie.
+    pub zdroj: u32,
 }
 
 /// Hlavička snímky (FrameHeader).
@@ -410,6 +423,12 @@ pub(super) struct HlavickaSnimky {
     pub sirka: u32,
     pub vyska: u32,
     pub prekrytie: Prekrytie,
+    /// Prekrytie dodatočných kanálov.
+    pub prekrytie_dodatocnych: Vec<Prekrytie>,
+    /// Trvanie snímky animácie (v tikoch).
+    pub trvanie: u32,
+    /// Snímka sa ukladá ako referencia pred prevodom farieb.
+    pub uloz_pred_ct: bool,
     pub posledna: bool,
     pub uloz_ako: u32,
     pub filtre: Filtre,
@@ -436,7 +455,8 @@ pub(super) fn hlavicka_snimky(
         zvacsenie: 1,
         zvacsenie_dodatocnych: vec![1; m.dodatocne.len()],
         posun_skupiny: 1,
-        x_qm: 3,
+        // predvolené mierky kvantizácie: X pri XYB 3, inak 2
+        x_qm: if m.xyb { 3 } else { 2 },
         b_qm: 2,
         prechody: pred_prechody,
         lf_uroven: 0,
@@ -444,7 +464,13 @@ pub(super) fn hlavicka_snimky(
         y0: 0,
         sirka,
         vyska,
-        prekrytie: Prekrytie { rezim: 0 },
+        prekrytie: Prekrytie { rezim: 0, alfa: 0, orez: false, zdroj: 0 },
+        prekrytie_dodatocnych: vec![
+            Prekrytie { rezim: 0, alfa: 0, orez: false, zdroj: 0 };
+            m.dodatocne.len()
+        ],
+        trvanie: 0,
+        uloz_pred_ct: false,
         posledna: true,
         uloz_ako: 0,
         filtre: filtre_predvolene(),
@@ -516,9 +542,10 @@ pub(super) fn hlavicka_snimky(
             && h.y0 as i64 + h.vyska as i64 >= vyska as i64);
     let mut trvanie = 0;
     if h.typ == 0 || h.typ == 3 {
-        h.prekrytie = prekrytie(c, m, cela)?;
-        for _ in &m.dodatocne {
-            prekrytie(c, m, cela)?;
+        h.prekrytie = prekrytie(c, m, cela, None)?;
+        let hlavny = h.prekrytie.rezim;
+        for p in h.prekrytie_dodatocnych.iter_mut() {
+            *p = prekrytie(c, m, cela, Some(hlavny))?;
         }
         if let Some((casove_kody,)) = m.animacia {
             trvanie = c.u32([D::V(0), D::V(1), D::B(8, 0), D::B(32, 0)]);
@@ -539,9 +566,9 @@ pub(super) fn hlavicka_snimky(
             && h.prekrytie.rezim == 0
             && (trvanie == 0 || h.uloz_ako != 0)
             && !h.posledna);
-    if pred_ct {
-        c.bool();
-    }
+    // predvolene sa pred prevodom farieb ukladajú len snímky, ktoré nie sú bežné (referenčné, LF)
+    h.uloz_pred_ct = if pred_ct { c.bool() } else { !(h.typ == 0 || h.typ == 3) };
+    h.trvanie = trvanie;
     let dlzka_mena = c.u32([D::V(0), D::B(4, 0), D::B(5, 16), D::B(10, 48)]);
     c.preskoc(8 * dlzka_mena as u64);
     h.filtre = filtre(c, h.modular)?;
@@ -555,16 +582,22 @@ fn filtre_predvolene() -> Filtre {
     filtre(&mut c, false).unwrap_or_else(|_| unreachable!("predvolené filtre"))
 }
 
-fn prekrytie(c: &mut Citac, m: &Metadata, cela: bool) -> Vysledok<Prekrytie> {
+fn prekrytie(c: &mut Citac, m: &Metadata, cela: bool, hlavny: Option<u32>) -> Vysledok<Prekrytie> {
     let rezim = c.u32([D::V(0), D::V(1), D::V(2), D::B(2, 3)]);
-    if !m.dodatocne.is_empty() && (rezim == 2 || rezim == 3) {
-        c.u32([D::V(0), D::V(1), D::V(2), D::B(3, 3)]);
+    if rezim > 4 {
+        return Err(chyba("neznámy spôsob prekrytia snímok"));
     }
-    if !m.dodatocne.is_empty() && (rezim == 2 || rezim == 3 || rezim == 4) {
-        c.bool();
+    let dodatocne = !m.dodatocne.is_empty();
+    let mut p = Prekrytie { rezim, alfa: 0, orez: false, zdroj: 0 };
+    if dodatocne && (rezim == 2 || rezim == 3) {
+        p.alfa = c.u32([D::V(0), D::V(1), D::V(2), D::B(3, 3)]);
     }
-    if rezim != 0 || !cela {
-        c.u(2); // zdroj prekrytia
+    if (dodatocne && (rezim == 2 || rezim == 3)) || rezim == 4 {
+        p.orez = c.bool();
     }
-    Ok(Prekrytie { rezim })
+    // zdroj sa nečíta, ak snímka (podľa hlavného spôsobu) prepisuje celé plátno
+    if hlavny.unwrap_or(rezim) != 0 || !cela {
+        p.zdroj = c.u(2);
+    }
+    Ok(p)
 }

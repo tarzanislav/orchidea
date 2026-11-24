@@ -25,7 +25,7 @@ macro_rules! subor {
 /// Súbor, údaje, šírka, výška, kanály, CRC-32 vzoriek z referenčnej knižnice.
 pub type Subor = (&'static str, &'static [u8], usize, usize, usize, u32);
 
-pub const SUBORY: [Subor; 7] = [
+pub const SUBORY: [Subor; 8] = [
     subor!("bezstratovy_f32.jxl", 16, 12, 3, 0x9006_90C6),
     subor!("bezstratovy_paleta.jxl", 32, 24, 3, 0x69C4_C6AE),
     subor!("bezstratovy_rgb_e1.jxl", 32, 24, 3, 0x9ED3_EC4C),
@@ -33,6 +33,7 @@ pub const SUBORY: [Subor; 7] = [
     subor!("bezstratovy_rgb_e9.jxl", 32, 24, 3, 0x9ED3_EC4C),
     subor!("bezstratovy_rgba16.jxl", 32, 24, 4, 0x83B7_1D9E),
     subor!("bezstratovy_sivy.jxl", 32, 24, 1, 0xA061_79BA),
+    subor!("bezstratovy_zaplaty.jxl", 160, 120, 3, 0x0B5A_127E),
 ];
 
 #[test]
@@ -55,12 +56,14 @@ macro_rules! stratovy {
 }
 
 /// Stratový súbor JPEG XL (VarDCT) a výstup libjxl v PNG.
-pub const STRATOVE: [(&str, &[u8], &[u8]); 5] = [
+pub const STRATOVE: [(&str, &[u8], &[u8]); 7] = [
     stratovy!("stratovy_d1"),
     stratovy!("stratovy_d2"),
     stratovy!("stratovy_d5"),
     stratovy!("stratovy_d12"),
     stratovy!("stratovy_rgba"),
+    stratovy!("stratovy_zaplaty"),
+    stratovy!("stratovy_jpeg420"),
 ];
 
 #[test]

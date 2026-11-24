@@ -525,16 +525,42 @@ def over_jxl(rng):
         except Exception as e:  # noqa: BLE001
             zapis_vysledok("JPEG XL stratovo", nazov, False, str(e)[:160])
 
+    # prekódovaný JPEG (bezstratové prekódovanie JPEG → JPEG XL, VarDCT v YCbCr s podvzorkovaním farby)
+    import io
+    from PIL import Image
+    for (h, w) in [(200, 300), (37, 53), (257, 129), (9, 17), (600, 2100)]:
+        for ss, meno_ss in [(0, "4:4:4"), (1, "4:2:2"), (2, "4:2:0")]:
+            for sivy in (False, True):
+                nazov = f"{w}×{h} {meno_ss}{' sivý' if sivy else ''}"
+                cesta = os.path.join(PRAC, f"jxl_{len(RIADKY)}.jxl")
+                try:
+                    o = obraz(h, w)
+                    b = io.BytesIO()
+                    Image.fromarray(o[..., 1] if sivy else o).save(b, "JPEG", quality=85, subsampling=ss)
+                    d = imagecodecs.jpegxl_encode_jpeg(b.getvalue())
+                    open(cesta, "wb").write(d)
+                    ref = imagecodecs.jpegxl_decode(d)
+                    nas = nase(cesta)
+                    ref = ref.reshape(nas.shape)
+                    dd = np.abs(nas.astype(np.float64) - ref.astype(np.float64))
+                    zapis_vysledok("JPEG XL z JPEG", nazov, dd.max() <= 1.0, f"max {dd.max():.0f}, priemer {dd.mean():.3f} ({len(d)} B)")
+                except Exception as e:  # noqa: BLE001
+                    zapis_vysledok("JPEG XL z JPEG", nazov, False, str(e)[:160])
+
     # súbory konformity libjxl (ak je k dispozícii ich priečinok): podporované prípady voči libjxl
     konf = os.environ.get("ORCHIDEA_JXL_KONFORMITA")
     if konf:
         import json
-        for meno in ["alpha_nonpremultiplied", "alpha_triangles", "animation_icos4d", "bicycles",
-                     "grayscale_public_university", "lossless_pfm", "lz77_flower", "opsin_inverse", "upsampling"]:
+        for meno in ["alpha_nonpremultiplied", "alpha_triangles", "animation_icos4d", "animation_newtons_cradle",
+                     "bench_oriented_brg", "bicycles", "bike", "blendmodes", "cafe", "cmyk_layers", "delta_palette",
+                     "grayscale_jpeg", "grayscale_public_university",
+                     "lossless_pfm", "lz77_flower", "mul_no_extra_channels", "opsin_inverse", "patches_lossless",
+                     "spot", "sunset_logo", "upsampling"]:
             cesta = os.path.join(konf, "testcases", meno, "input.jxl")
             try:
                 d = open(cesta, "rb").read()
-                ref = imagecodecs.jpegxl_decode(d)
+                # natočenie sa neaplikuje – náš obraz ho nesie v metadátach
+                ref = imagecodecs.jpegxl_decode(d, keeporientation=True)
                 if ref.ndim == 4:
                     ref = ref[0]
                 nas = nase(cesta)

@@ -13,6 +13,7 @@ mod entropia;
 mod hlavicky;
 mod icc;
 mod modular;
+mod skladanie;
 mod snimka;
 mod vardct;
 mod zvacsenie;
@@ -116,32 +117,83 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
     if let Some((nw, nh)) = m.nahlad {
         // náhľad sa dekóduje len na preskočenie
         let mut cs = Citac::novy(&tok[posun..]);
-        let (_, koniec) = snimka::dekoduj(&mut cs, &tok[posun..], &m, nw, nh, &[], limity)?;
+        let (_, koniec) = snimka::dekoduj(&mut cs, &tok[posun..], &m, nw, nh, &[], &[], limity)?;
         posun += koniec;
     }
-    // prvá zobrazená snímka; pred ňou môžu byť LF snímky (progresívny obraz) a referenčné snímky
+    // prvá zobrazená snímka; pred ňou môžu byť LF snímky (progresívny obraz), referenčné snímky (záplaty)
+    // a vrstvy, ktoré sa skladajú na plátno
     let mut lf_snimky: [Option<[Vec<f32>; 3]>; 4] = [None, None, None, None];
-    let s = loop {
+    let mut referencie: [Option<skladanie::Referencia>; 4] = [None, None, None, None];
+    let (wu, hu) = (w as usize, h as usize);
+    let vysledok = loop {
         if posun >= tok.len() {
             return Err(chyba("súbor nemá zobrazenú snímku"));
         }
         let mut cs = Citac::novy(&tok[posun..]);
-        let (s, koniec) = snimka::dekoduj(&mut cs, &tok[posun..], &m, w, h, &lf_snimky, limity)?;
+        let (s, koniec) = snimka::dekoduj(&mut cs, &tok[posun..], &m, w, h, &lf_snimky, &referencie, limity)?;
         posun += koniec;
-        match (s.hlavicka.typ, s.vysledok) {
-            (1, Vysledok3::Xyb(r)) => lf_snimky[s.hlavicka.lf_uroven as usize] = Some(r),
-            (1, _) => return Err(chyba("LF snímka bez XYB zatiaľ nie je podporená")),
-            (2, _) => {} // referenčná snímka sa zatiaľ nepoužíva (záplaty nie sú podporené)
-            (_, v) => break snimka::Snimka { hlavicka: s.hlavicka, vysledok: v },
+        let hl = s.hlavicka;
+        match hl.typ {
+            1 => {
+                let Vysledok3::Platno(p) = s.vysledok else {
+                    return Err(chyba("LF snímka bez XYB zatiaľ nie je podporená"));
+                };
+                let Ok(r) = <[Vec<f32>; 3]>::try_from(p.farba) else {
+                    return Err(chyba("LF snímka nemá tri roviny"));
+                };
+                lf_snimky[hl.lf_uroven as usize] = Some(r);
+                continue;
+            }
+            2 => {
+                let platno = na_platno(s.vysledok, &m);
+                referencie[hl.uloz_ako as usize] =
+                    Some(skladanie::Referencia { platno, pred_ct: hl.uloz_pred_ct });
+                continue;
+            }
+            _ => {}
+        }
+        let zobrazena = hl.posledna || (m.animacia.is_some() && hl.trvanie > 0);
+        let cela = hl.x0 == 0 && hl.y0 == 0 && hl.sirka == w && hl.vyska == h;
+        let nahrad = hl.prekrytie.rezim == 0 && hl.prekrytie_dodatocnych.iter().all(|p| p.rezim == 0);
+        if zobrazena && cela && nahrad {
+            break Konecne::Snimka(s.vysledok);
+        }
+        let nova = na_platno(s.vysledok, &m);
+        let nova = if hl.uloz_pred_ct && !zobrazena { nova } else { prevod_farieb(nova, &m) };
+        let zaklad = referencie[hl.prekrytie.zdroj as usize].as_ref().map(|r| &r.platno);
+        let p = skladanie::prekry(
+            zaklad,
+            &nova,
+            (hl.x0 as i64, hl.y0 as i64),
+            (wu, hu),
+            &hl.prekrytie,
+            &hl.prekrytie_dodatocnych,
+            &m,
+        )?;
+        if zobrazena {
+            break Konecne::Platno(p);
+        }
+        if hl.trvanie == 0 || hl.uloz_ako != 0 {
+            referencie[hl.uloz_ako as usize] =
+                Some(skladanie::Referencia { platno: p, pred_ct: hl.uloz_pred_ct });
         }
     };
-    if !s.hlavicka.posledna && m.animacia.is_none() {
-        return Err(chyba("vrstvy s prekrytím zatiaľ nie sú podporené"));
+    let xyb_s_icc = m.xyb && icc.is_some();
+    // bodové farby (spot colors) sa vykreslia do farby ako pri libjxl
+    let bodove = m.dodatocne.iter().any(|d| d.bodova.is_some());
+    let mut o = match vysledok {
+        Konecne::Snimka(Vysledok3::Cele(k)) if !bodove => vystup_cele(k, &m, wu, hu)?,
+        Konecne::Snimka(v) => vystup_platno(vykresli_bodove(prevod_farieb(na_platno(v, &m), &m), &m), &m)?,
+        Konecne::Platno(p) => vystup_platno(vykresli_bodove(p, &m), &m)?,
+    };
+    o.bitov = m.hlbka.bitov.min(32) as u8;
+    let alfa_i = m.dodatocne.iter().position(|d| d.typ == hlavicky::KANAL_ALFA);
+    if alfa_i.is_some_and(|i| m.dodatocne[i].alfa_nasobena) {
+        crate::obraz::rozdel_alfu(&mut o);
     }
-    let xyb = matches!(s.vysledok, Vysledok3::Plavajuce(..));
-    let mut o = vystup(s, &m, w as usize, h as usize)?;
+    popis_farby(&mut o, &m);
     if let Some(p) = icc {
-        if xyb {
+        if xyb_s_icc {
             // pixely sú prevedené do sRGB; prevod do vloženého profilu príde s balíkom farba
             o.farba.cicp = Some(Cicp { zakladne: 1, prenos: 13, matica: 0, plny_rozsah: true });
             o.farba.srgb = Some(0);
@@ -173,152 +225,199 @@ fn bt709_z_lin(v: f32) -> f32 {
     }
 }
 
-fn vystup(s: snimka::Snimka, m: &hlavicky::Metadata, w: usize, h: usize) -> Vysledok<Obraz> {
-    if s.hlavicka.sirka as usize != w
-        || s.hlavicka.vyska as usize != h
-        || s.hlavicka.x0 != 0
-        || s.hlavicka.y0 != 0
-    {
-        return Err(chyba("snímka s orezaním zatiaľ nie je podporená"));
-    }
-    let sivy = m.farba.priestor == 1;
-    let farebnych = if sivy { 1 } else { 3 };
-    let alfa_i = m.dodatocne.iter().position(|d| d.typ == hlavicky::KANAL_ALFA);
-    let k = farebnych + alfa_i.is_some() as usize;
-    let model = if sivy { Model::Siva } else { Model::Rgb };
-    let hlbka = m.hlbka;
-    let px = w * h;
-    let mut o = match s.vysledok {
-        Vysledok3::Xyb(_) => return Err(chyba("zobrazená snímka nemá prevod farieb")),
-        Vysledok3::Cele(kanaly) => {
-            let alfa = alfa_i.map(|i| &kanaly[farebnych + i]);
-            let zdroj: Vec<&Vec<i32>> =
-                kanaly[..farebnych].iter().map(|k| &k.data).chain(alfa.map(|a| &a.data)).collect();
-            let hlbky: Vec<hlavicky::Hlbka> =
-                (0..farebnych).map(|_| hlbka).chain(alfa_i.map(|i| m.dodatocne[i].hlbka)).collect();
-            if hlbka.plavajuca {
-                let mut v = vec![0f32; px * k];
-                for (c, (d, hb)) in zdroj.iter().zip(&hlbky).enumerate() {
-                    for i in 0..px {
-                        v[i * k + c] = cele_na_plavajuce(d[i], hb);
-                    }
-                }
-                Obraz::novy(w, h, model, alfa_i.is_some(), Vzorky::F32(v))?
-            } else if hlbka.bitov <= 8 {
-                let mut v = vec![0u8; px * k];
-                for (c, (d, hb)) in zdroj.iter().zip(&hlbky).enumerate() {
-                    let max = ((1u64 << hb.bitov) - 1) as i64;
-                    for i in 0..px {
-                        let x = (d[i] as i64).clamp(0, max);
-                        v[i * k + c] = ((x * 255 + max / 2) / max) as u8;
-                    }
-                }
-                Obraz::novy(w, h, model, alfa_i.is_some(), Vzorky::U8(v))?
-            } else {
-                let mut v = vec![0u16; px * k];
-                for (c, (d, hb)) in zdroj.iter().zip(&hlbky).enumerate() {
-                    let max = ((1u64 << hb.bitov.min(31)) - 1) as i64;
-                    for i in 0..px {
-                        let x = (d[i] as i64).clamp(0, max);
-                        v[i * k + c] = ((x * 65_535 + max / 2) / max) as u16;
-                    }
-                }
-                Obraz::novy(w, h, model, alfa_i.is_some(), Vzorky::U16(v))?
-            }
-        }
-        Vysledok3::Kodovane(roviny, kanaly) => {
-            let alfa = alfa_i.map(|i| (&kanaly[i].data, m.dodatocne[i].hlbka));
-            let mut f = vec![0f32; px * k];
-            for i in 0..px {
-                for (c, r) in roviny.iter().enumerate().take(farebnych) {
-                    f[i * k + c] = r[i];
-                }
-                if let Some((a, hb)) = &alfa {
-                    f[i * k + farebnych] = if hb.plavajuca {
-                        cele_na_plavajuce(a[i], hb)
-                    } else {
-                        a[i] as f32 / ((1u64 << hb.bitov) - 1) as f32
-                    };
-                }
-            }
-            let vzorky = if hlbka.plavajuca {
-                Vzorky::F32(f)
-            } else if hlbka.bitov <= 8 {
-                Vzorky::U8(f.iter().map(|&x| (x.clamp(0.0, 1.0) * 255.0).round() as u8).collect())
-            } else {
-                Vzorky::U16(f.iter().map(|&x| (x.clamp(0.0, 1.0) * 65_535.0).round() as u16).collect())
-            };
-            Obraz::novy(w, h, model, alfa_i.is_some(), vzorky)?
-        }
-        Vysledok3::Plavajuce(roviny, kanaly) => {
-            // lineárne RGB → prenosová funkcia súboru
-            let prenos = |x: f32| -> f32 {
-                match (m.farba.gama, m.farba.prenos) {
-                    (Some(g), _) => orchidea_jadro::matematika::mocnina(x.max(0.0) as f64, g) as f32,
-                    (None, 8) => x,
-                    (None, 1) => bt709_z_lin(x),
-                    _ => srgb_z_lin(x),
-                }
-            };
-            // pre celé vzorky stačí tabuľka s lineárnou interpoláciou (chyba < 1e-7)
-            const N: usize = 65_536;
-            let tabulka: Option<Vec<f32>> =
-                (!hlbka.plavajuca).then(|| (0..=N).map(|i| prenos(i as f32 / N as f32)).collect());
-            let prenos = |x: f32| -> f32 {
-                match &tabulka {
-                    Some(t) => {
-                        let p = x.clamp(0.0, 1.0) * N as f32;
-                        let i = (p as usize).min(N - 1);
-                        let z = p - i as f32;
-                        t[i] + (t[i + 1] - t[i]) * z
-                    }
-                    None => prenos(x),
-                }
-            };
-            let alfa = alfa_i.map(|i| (&kanaly[i].data, m.dodatocne[i].hlbka));
-            let mut f = vec![0f32; px * k];
-            for i in 0..px {
-                if sivy {
-                    f[i * k] = prenos(roviny[1][i]);
+/// Výsledok skladania snímok.
+enum Konecne {
+    /// Jediná snímka cez celé plátno (pred prevodom farieb).
+    Snimka(Vysledok3),
+    /// Zložené plátno po prevode farieb.
+    Platno(skladanie::Platno),
+}
+
+/// Výsledok snímky ako plávajúce plátno (pred prevodom farieb).
+fn na_platno(v: Vysledok3, m: &hlavicky::Metadata) -> skladanie::Platno {
+    match v {
+        Vysledok3::Platno(p) => p,
+        Vysledok3::Cele(mut kanaly) => {
+            let farebnych = kanaly.len() - m.dodatocne.len().min(kanaly.len());
+            let dodatocne = kanaly.split_off(farebnych);
+            let (w, h) = kanaly.first().map_or((0, 0), |k| (k.w, k.h));
+            let plav = |k: &modular::Kanal, hb: &hlavicky::Hlbka| -> Vec<f32> {
+                if hb.plavajuca {
+                    k.data.iter().map(|&x| cele_na_plavajuce(x, hb)).collect()
                 } else {
-                    for c in 0..3 {
-                        f[i * k + c] = prenos(roviny[c][i]);
-                    }
+                    let max = ((1u64 << hb.bitov.min(31)) - 1) as f32;
+                    k.data.iter().map(|&x| x as f32 / max).collect()
                 }
-                if let Some((a, hb)) = &alfa {
-                    f[i * k + farebnych] = if hb.plavajuca {
-                        cele_na_plavajuce(a[i], hb)
-                    } else {
-                        a[i] as f32 / ((1u64 << hb.bitov) - 1) as f32
-                    };
-                }
-            }
-            let vzorky = if hlbka.plavajuca {
-                Vzorky::F32(f)
-            } else if hlbka.bitov <= 8 {
-                Vzorky::U8(f.iter().map(|&x| (x.clamp(0.0, 1.0) * 255.0).round() as u8).collect())
-            } else {
-                Vzorky::U16(f.iter().map(|&x| (x.clamp(0.0, 1.0) * 65_535.0).round() as u16).collect())
             };
-            Obraz::novy(w, h, model, alfa_i.is_some(), vzorky)?
+            skladanie::Platno {
+                w,
+                h,
+                farba: kanaly.iter().map(|k| plav(k, &m.hlbka)).collect(),
+                dodatocne: dodatocne.iter().zip(&m.dodatocne).map(|(k, d)| plav(k, &d.hlbka)).collect(),
+            }
+        }
+    }
+}
+
+/// Prevod farieb plátna: XYB → lineárne RGB → prenosová funkcia súboru (pri sivom obraze jedna rovina).
+fn prevod_farieb(mut p: skladanie::Platno, m: &hlavicky::Metadata) -> skladanie::Platno {
+    if !m.xyb || p.farba.len() != 3 {
+        return p;
+    }
+    let [x, y, b]: [Vec<f32>; 3] = std::mem::take(&mut p.farba).try_into().unwrap_or_else(|_| unreachable!());
+    let roviny = vardct::xyb_na_rgb([x, y, b], m);
+    let prenos = |x: f32| -> f32 {
+        match (m.farba.gama, m.farba.prenos) {
+            (Some(g), _) => orchidea_jadro::matematika::mocnina(x.max(0.0) as f64, g) as f32,
+            (None, 8) => x,
+            (None, 1) => bt709_z_lin(x),
+            _ => srgb_z_lin(x),
         }
     };
-    o.bitov = hlbka.bitov.min(32) as u8;
-    if alfa_i.is_some_and(|i| m.dodatocne[i].alfa_nasobena) {
-        crate::obraz::rozdel_alfu(&mut o);
+    // pre celé vzorky stačí tabuľka s lineárnou interpoláciou (chyba < 1e-7)
+    const N: usize = 65_536;
+    let tabulka: Option<Vec<f32>> =
+        (!m.hlbka.plavajuca).then(|| (0..=N).map(|i| prenos(i as f32 / N as f32)).collect());
+    let zakoduj = |x: f32| -> f32 {
+        match &tabulka {
+            Some(t) => {
+                let q = x.clamp(0.0, 1.0) * N as f32;
+                let i = (q as usize).min(N - 1);
+                t[i] + (t[i + 1] - t[i]) * (q - i as f32)
+            }
+            None => prenos(x),
+        }
+    };
+    let sivy = m.farba.priestor == 1;
+    p.farba = roviny
+        .into_iter()
+        .enumerate()
+        .filter(|&(i, _)| !sivy || i == 1)
+        .map(|(_, r)| r.into_iter().map(zakoduj).collect())
+        .collect();
+    p
+}
+
+/// Vykreslí kanály bodových farieb: `farba = zmes · bodová + (1 − zmes) · farba`, zmes = hodnota · krytie.
+fn vykresli_bodove(mut p: skladanie::Platno, m: &hlavicky::Metadata) -> skladanie::Platno {
+    if p.farba.len() != 3 {
+        return p;
     }
+    for (k, d) in p.dodatocne.iter().zip(&m.dodatocne) {
+        let Some([r, g, b, krytie]) = d.bodova else { continue };
+        for (rovina, farba) in p.farba.iter_mut().zip([r, g, b]) {
+            for (v, &s) in rovina.iter_mut().zip(k) {
+                let zmes = s * krytie;
+                *v = zmes * farba + (1.0 - zmes) * *v;
+            }
+        }
+    }
+    p
+}
+
+/// Model a alfa obrazu podľa metadát.
+fn tvar(m: &hlavicky::Metadata) -> (Model, usize, Option<usize>) {
+    let sivy = m.farba.priestor == 1;
+    let alfa_i = m.dodatocne.iter().position(|d| d.typ == hlavicky::KANAL_ALFA);
+    (if sivy { Model::Siva } else { Model::Rgb }, if sivy { 1 } else { 3 }, alfa_i)
+}
+
+/// Celé vzorky Modular → obraz (presne, bez plávajúcej čiarky).
+fn vystup_cele(kanaly: Vec<modular::Kanal>, m: &hlavicky::Metadata, w: usize, h: usize) -> Vysledok<Obraz> {
+    let (model, farebnych, alfa_i) = tvar(m);
+    let k = farebnych + alfa_i.is_some() as usize;
+    let hlbka = m.hlbka;
+    let px = w * h;
+    if kanaly.len() < farebnych {
+        return Err(chyba("chýbajú farebné kanály"));
+    }
+    let alfa = alfa_i.map(|i| &kanaly[farebnych + i]);
+    let zdroj: Vec<&Vec<i32>> =
+        kanaly[..farebnych].iter().map(|k| &k.data).chain(alfa.map(|a| &a.data)).collect();
+    let hlbky: Vec<hlavicky::Hlbka> =
+        (0..farebnych).map(|_| hlbka).chain(alfa_i.map(|i| m.dodatocne[i].hlbka)).collect();
+    if hlbka.plavajuca {
+        let mut v = vec![0f32; px * k];
+        for (c, (d, hb)) in zdroj.iter().zip(&hlbky).enumerate() {
+            for i in 0..px {
+                v[i * k + c] = cele_na_plavajuce(d[i], hb);
+            }
+        }
+        Obraz::novy(w, h, model, alfa_i.is_some(), Vzorky::F32(v))
+    } else if hlbka.bitov <= 8 {
+        let mut v = vec![0u8; px * k];
+        for (c, (d, hb)) in zdroj.iter().zip(&hlbky).enumerate() {
+            let max = ((1u64 << hb.bitov) - 1) as i64;
+            for i in 0..px {
+                let x = (d[i] as i64).clamp(0, max);
+                v[i * k + c] = ((x * 255 + max / 2) / max) as u8;
+            }
+        }
+        Obraz::novy(w, h, model, alfa_i.is_some(), Vzorky::U8(v))
+    } else {
+        let mut v = vec![0u16; px * k];
+        for (c, (d, hb)) in zdroj.iter().zip(&hlbky).enumerate() {
+            let max = ((1u64 << hb.bitov.min(31)) - 1) as i64;
+            for i in 0..px {
+                let x = (d[i] as i64).clamp(0, max);
+                v[i * k + c] = ((x * 65_535 + max / 2) / max) as u16;
+            }
+        }
+        Obraz::novy(w, h, model, alfa_i.is_some(), Vzorky::U16(v))
+    }
+}
+
+/// Plátno v prenosovej funkcii súboru (0–1) → obraz.
+fn vystup_platno(p: skladanie::Platno, m: &hlavicky::Metadata) -> Vysledok<Obraz> {
+    let (model, farebnych, alfa_i) = tvar(m);
+    if p.farba.len() != farebnych {
+        return Err(chyba("plátno má iný počet farebných rovín"));
+    }
+    let k = farebnych + alfa_i.is_some() as usize;
+    let px = p.w * p.h;
+    let alfa = alfa_i.map(|i| &p.dodatocne[i]);
+    let mut f = vec![0f32; px * k];
+    for i in 0..px {
+        for (c, r) in p.farba.iter().enumerate() {
+            f[i * k + c] = r[i];
+        }
+        if let Some(a) = alfa {
+            f[i * k + farebnych] = a[i];
+        }
+    }
+    let hlbka = m.hlbka;
+    let vzorky = if hlbka.plavajuca {
+        Vzorky::F32(f)
+    } else if hlbka.bitov <= 8 {
+        Vzorky::U8(f.iter().map(|&x| (x.clamp(0.0, 1.0) * 255.0).round() as u8).collect())
+    } else {
+        Vzorky::U16(f.iter().map(|&x| (x.clamp(0.0, 1.0) * 65_535.0).round() as u16).collect())
+    };
+    Obraz::novy(p.w, p.h, model, alfa_i.is_some(), vzorky)
+}
+
+/// Popis farby z hlavičky (cICP, sRGB, gama).
+fn popis_farby(o: &mut Obraz, m: &hlavicky::Metadata) {
     let f = &m.farba;
     if f.priestor != 2 && !f.chce_icc {
-        let zakladne = match f.zakladne {
+        let mut zakladne = match f.zakladne {
             1 => 1,
             9 => 9,
             11 => 12,
             _ => 2,
         };
-        let prenos = match (f.gama, f.prenos) {
+        let mut prenos = match (f.gama, f.prenos) {
             (Some(_), _) => 2,
             (None, p) => p as u8,
         };
+        if m.xyb {
+            // z XYB sa zatiaľ vydáva lineárne sRGB s prenosovou funkciou súboru (sRGB, BT.709, lineárna,
+            // gama); iné základné farby a PQ/HLG prídu s balíkom farba
+            zakladne = 1;
+            if !matches!(prenos, 1 | 2 | 8 | 13) {
+                prenos = 13;
+            }
+        }
         o.farba.cicp = Some(Cicp { zakladne, prenos, matica: 0, plny_rozsah: true });
         if zakladne == 1 && prenos == 13 {
             o.farba.srgb = Some(f.zamer as u8);
@@ -328,7 +427,6 @@ fn vystup(s: snimka::Snimka, m: &hlavicky::Metadata, w: usize, h: usize) -> Vysl
         }
         o.farba.linearne = prenos == 8;
     }
-    Ok(o)
 }
 
 /// Plávajúca vzorka uložená ako celé číslo (bity IEEE so zadaným počtom bitov exponentu).
