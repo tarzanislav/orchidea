@@ -51,6 +51,8 @@ pub enum Zdroj {
     Start,
     /// Z modelu: nečinná teplota, sklon a vlastný ohrev.
     Model,
+    /// R195: z teplomera – vlastník zapísal teplotu v izbe do SKLENIK.TXT (`izba=`).
+    Izba,
 }
 
 /// Prostredie zariadenia.
@@ -121,6 +123,8 @@ pub struct Okolie {
     prekalibrovat: Option<(f64, u64)>,
     prostredie: Option<Prostredie>,
     ohrev_pri_praci: Option<f64>,
+    /// R195: teplota v izbe z teplomera (SKLENIK.TXT) – okolie sa neodhaduje.
+    izba: Option<f64>,
 }
 
 impl Okolie {
@@ -131,6 +135,15 @@ impl Okolie {
     /// Pre TV krabičky (dlhý štart zohreje čip skôr, než KLÍČ prvý raz zmeria).
     pub fn s_dlhym_startom() -> Okolie {
         Okolie { dlhy_start: true, ..Okolie::default() }
+    }
+
+    /// R195: teplota v izbe z teplomera – okolie je známe, vlastný ohrev = ustálená teplota − izba (aj pri
+    /// teplom štarte, keď by odhad zo štartu bol zlý – 2. kolo meraní, plastová krabička: +5 °C).
+    pub fn nastav_izbu(&mut self, t: f64) {
+        self.izba = Some(t);
+        self.okolie_start = Some(t);
+        self.odhad = Some(t);
+        self.zdroj = Some(Zdroj::Izba);
     }
 
     /// Krok: hodiny „beží“ (s), teplota čipu, vyťaženie (0–1).
@@ -195,6 +208,12 @@ impl Okolie {
     fn analyzuj(&mut self) {
         let Some((_, t0)) = self.prve else { return };
         // 1. studený alebo teplý štart – rozhodne sa po troch celých minútach
+        if self.studeny.is_none()
+            && let Some(izba) = self.izba
+        {
+            // čip je po pár sekundách práce o niekoľko °C nad izbou; viac = doska ešte teplá z predošlého behu
+            self.studeny = Some(t0 - izba <= 6.0);
+        }
         if self.studeny.is_none() && self.minuty.len() >= 3 {
             let priemer = self.minuty[..3].iter().map(|m| m.teplota).sum::<f64>() / 3.0;
             let rastie = self.minuty[2].teplota > self.minuty[0].teplota;
@@ -212,7 +231,7 @@ impl Okolie {
             }
         }
         // 2. vlastný ohrev a τ z priebehu nečinného ohrevu po studenom štarte
-        if self.studeny == Some(true) && self.samohrev.is_none() {
+        if (self.studeny == Some(true) || self.izba.is_some()) && self.samohrev.is_none() {
             self.prelozenie_ohrevu();
         }
         // 3. ustálená nečinnosť: vlastný ohrev (prvý raz / po prekalibrovaní)
@@ -234,6 +253,7 @@ impl Okolie {
         if let (Some(sh), Some(posledna)) = (self.samohrev, self.minuty.last().copied())
             && posledna.necinna()
             && self.prekalibrovat.is_none()
+            && self.izba.is_none()
         {
             let predpoved = self.ustalena_teplota().unwrap_or(posledna.teplota);
             let novy = predpoved - sh;
@@ -462,6 +482,26 @@ mod skusky {
     fn plastova_rpi3(okolie: f64) -> Doska {
         // ako zmerané 21. 11.: ustálenie 60,5 °C pri ~22 °C, τ ≈ 610 s
         Doska { t: okolie, r: 20.0, c: 610.0 / 20.0, p_necinna: 38.5 / 20.0 }
+    }
+
+    #[test]
+    fn izba_z_teplomera_aj_pri_teplom_starte() {
+        // plastová krabička, doska ešte teplá z predošlého merania: štart 33,8 °C, izba 25 °C
+        let mut o = Okolie::nove();
+        o.nastav_izbu(25.0);
+        let mut s = 0.0;
+        while s < 40.0 * 60.0 {
+            // ohrev k 46 °C (vlastný ohrev 21 °C), τ 5 min, od 33,8 °C
+            let t = 46.0 - (46.0 - 33.8) * (-s / 300.0f64).exp();
+            o.krok(s, t, Some(0.01));
+            s += 30.0;
+        }
+        let st = o.stav();
+        assert_eq!(st.zdroj, Some(Zdroj::Izba));
+        assert_eq!(st.okolie, Some(25.0));
+        assert_eq!(st.studeny_start, Some(false));
+        let sh = st.samohrev.expect("vlastný ohrev");
+        assert!((sh - 21.0).abs() < 1.0, "vlastný ohrev {sh}");
     }
 
     #[test]

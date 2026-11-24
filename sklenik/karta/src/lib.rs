@@ -380,6 +380,10 @@ pub struct NastavenieZariadenia {
     pub dlhy_test: Option<bool>,
     /// Novinky vypnuté jednotlivo (kľúče z [`NOVINKY`]).
     pub vypnute: Vec<String>,
+    /// R195 – teplota v izbe pri štarte (°C) z teplomera: presné okolie a vlastný ohrev (bez nej ich KLÍČ
+    /// odhaduje z teploty pri štarte – pri teplom štarte nesprávne).
+    /// V desatinách °C (245 = 24,5 °C).
+    pub izba: Option<i32>,
 }
 
 /// R183 – blok prepínačov do SKLENIK.TXT (píše ho SADIČ a doplní ho aj KLÍČ, ak chýba): všetko zapnuté,
@@ -395,7 +399,9 @@ pub fn blok_prepinacov() -> String {
          # ovládanie televízora cez HDMI: ano = zapína aj uspáva TV, zapni = len zapína, nie = vôbec\n\
          cec=ano\n\
          # hľadanie chyby: novinky=nie vypne všetky novinky naraz, inak každá zvlášť\n\
-         novinky=ano\n",
+         novinky=ano\n\
+         # teplota v izbe pri štarte z teplomera (°C), napr. izba=24,5 – presné okolie; prázdne = odhad KLÍČA\n\
+         izba=\n",
     );
     for (k, popis) in NOVINKY {
         t += &format!("# {popis}\n{k}=ano\n");
@@ -503,6 +509,11 @@ impl NastavenieZariadenia {
                     "povodny" | "pôvodný" => n.obraz = Some("povodny".into()),
                     _ => upozornenia
                         .push(format!("riadok {}: obraz má byť chladny, ostry alebo povodny", i + 1)),
+                },
+                "izba" if v.is_empty() => n.izba = None,
+                "izba" => match v.replace(',', ".").parse::<f64>() {
+                    Ok(t) if (-10.0..=60.0).contains(&t) => n.izba = Some((t * 10.0).round() as i32),
+                    _ => upozornenia.push(format!("riadok {}: izba má byť teplota v °C, napr. 24,5", i + 1)),
                 },
                 "zhasni" | "vypni" => match v.parse::<u32>() {
                     Ok(m) if m <= 24 * 60 => {
@@ -895,6 +906,12 @@ mod skusky {
         assert_eq!((z.cec.as_deref(), u.len()), (Some("zapni"), 0));
         let (z, u) = NastavenieZariadenia::z_textu("cec=mozno\n");
         assert_eq!((z.cec, u.len()), (None, 1));
+        let (z, u) = NastavenieZariadenia::z_textu("izba=24,5\n");
+        assert_eq!((z.izba, u.len()), (Some(245), 0));
+        let (z, u) = NastavenieZariadenia::z_textu("izba=\n");
+        assert_eq!((z.izba, u.len()), (None, 0));
+        let (z, u) = NastavenieZariadenia::z_textu("izba=teplo\n");
+        assert_eq!((z.izba, u.len()), (None, 1));
         let (z, u) = NastavenieZariadenia::z_textu("obraz=farebny\nzhasni=-1\nvypni=99999\n");
         assert_eq!((z.obraz, z.zhasni_min, z.vypni_min, u.len()), (None, None, None, 3));
     }

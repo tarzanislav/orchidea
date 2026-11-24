@@ -1362,6 +1362,11 @@ pub fn spusti() {
     let parkovat_mozno = !hw.vypinatelne.is_empty();
     // R123–R128: odhad okolia, zdroj tepla, predpoveď, úspora v horúcom okolí, tepelný rozpočet
     let mut okolie = if je_tv_krabicka(&model) { Okolie::s_dlhym_startom() } else { Okolie::nove() };
+    // R195: teplota v izbe z teplomera (SKLENIK.TXT izba=) – presné okolie a vlastný ohrev
+    if let Some(t) = nastavenie.as_ref().and_then(|(_, n)| n.izba).map(|d| d as f64 / 10.0) {
+        okolie.nastav_izbu(t);
+        hlas(&format!("okolie: izba {t:.1} °C z teplomera (SKLENIK.TXT) – R195"));
+    }
     let mut uspora = false;
     let mut posledny_rozpocet: Option<(Instant, u32, u32)> = None;
     let cas_startu = start.elapsed();
@@ -3358,6 +3363,7 @@ fn popis_okolia(o: &okolie::StavOkolia, uspora: bool) -> String {
         match o.zdroj {
             Some(okolie::Zdroj::Start) => "zo štartu",
             Some(okolie::Zdroj::Model) => "z modelu",
+            Some(okolie::Zdroj::Izba) => "z teplomera – izba= v SKLENIK.TXT",
             None => "neznáme",
         },
         c(o.okolie_start, 1),

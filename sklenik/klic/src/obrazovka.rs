@@ -764,6 +764,7 @@ fn riadok_okolia(o: &crate::okolie::StavOkolia, uspora: bool, j: Jazyk) -> Vec<(
         (Some(t), _) => {
             let odkial = match o.zdroj {
                 Some(Zdroj::Start) => j.t(" (zo štartu)", " (ze startu)", " (at start)"),
+                Some(Zdroj::Izba) => j.t(" (teplomer)", " (teploměr)", " (thermometer)"),
                 _ => "",
             };
             v.push((format!("≈ {} °C{odkial}", j.cislo(t, 0)), TEXT));

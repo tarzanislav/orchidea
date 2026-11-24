@@ -603,6 +603,10 @@ pub fn stav_systemu() -> String {
     if !napatia.is_empty() {
         riadok(&mut t, format!("napätia regulátorov: {}", napatia.join(" · ")));
     }
+    // R193: skutočné takty a napätia grafického čipu Raspberry Pi zo schránky firmvéru
+    if let Ok(s) = crate::vcio::Schranka::otvor() {
+        riadok(&mut t, format!("VideoCore (R193): {}", s.popis()));
+    }
     if let Some(v) = citaj("/proc/version") {
         riadok(&mut t, format!("jadro: {}", v.split_whitespace().take(3).collect::<Vec<_>>().join(" ")));
     }

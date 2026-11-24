@@ -72,6 +72,9 @@ mod sys;
 mod v4l2;
 #[cfg(target_os = "linux")]
 mod zaznam;
+// vlastný klient schránky firmvéru Raspberry Pi – takty, napätia, škrtenie VideoCore (R193)
+#[cfg(target_os = "linux")]
+mod vcio;
 
 /// Verzia SKLENÍKA (dátum a odtlačok zostavenia z CI) – na obrazovke, aby bolo vidieť, ktorá karta beží.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
