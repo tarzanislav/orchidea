@@ -899,8 +899,6 @@ mod skusky {
         assert!(r.contains("fáza 1 vyšla o"), "{r}");
     }
 
-    // mená v /sys obsahujú dvojbodky (1-2:1.0) – vo Windows nemožné, skúška len na unixových systémoch
-    #[cfg(unix)]
     #[test]
     fn siet_spi_ked_ju_nic_nepotrebuje() {
         let mut k = Kabel::novy();
@@ -921,6 +919,8 @@ mod skusky {
         assert!(!k.riadeny());
     }
 
+    // mená v /sys obsahujú dvojbodky (1-2:1.0) – vo Windows nemožné, skúška len na unixových systémoch
+    #[cfg(unix)]
     #[test]
     fn usb_strom_spi() {
         let k = std::env::temp_dir().join(format!("sklenik-usbstrom-{}", std::process::id()));
@@ -957,6 +957,8 @@ mod skusky {
         let _ = fs::remove_dir_all(&k);
     }
 
+    // mená v /sys obsahujú dvojbodky (1-2:1.0) – vo Windows nemožné, skúška len na unixových systémoch
+    #[cfg(unix)]
     #[test]
     fn usb_ulozisko_spi_a_meria_sa_spanok() {
         let k = std::env::temp_dir().join(format!("sklenik-usb-{}", std::process::id()));
