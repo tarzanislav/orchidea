@@ -220,6 +220,43 @@ impl Obraz {
     }
 }
 
+/// Prevod násobenej alfy (farba × alfa) na nenásobenú.
+pub fn rozdel_alfu(o: &mut Obraz) {
+    let k = o.kanaly();
+    match &mut o.vzorky {
+        Vzorky::U8(v) => {
+            for p in v.chunks_exact_mut(k) {
+                let a = p[k - 1] as u32;
+                for x in &mut p[..k - 1] {
+                    if let Some(v) = (*x as u32 * 255 + a / 2).checked_div(a) {
+                        *x = v.min(255) as u8;
+                    }
+                }
+            }
+        }
+        Vzorky::U16(v) => {
+            for p in v.chunks_exact_mut(k) {
+                let a = p[k - 1] as u32;
+                for x in &mut p[..k - 1] {
+                    if let Some(v) = (*x as u32 * 65_535 + a / 2).checked_div(a) {
+                        *x = v.min(65_535) as u16;
+                    }
+                }
+            }
+        }
+        Vzorky::F32(v) => {
+            for p in v.chunks_exact_mut(k) {
+                let a = p[k - 1];
+                if a > 0.0 {
+                    for x in &mut p[..k - 1] {
+                        *x /= a;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Bezpečnostné limity čítačiek (R211). Súbor, ktorý by ich prekročil, skončí chybou `Limit` – nikdy nie
 /// vyčerpaním pamäte alebo pádom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -3,7 +3,7 @@
 //! skrátenie, zväčšenie rozmerov v hlavičke a zámena úsekov. Semienko je pevné – chyba sa dá zopakovať.
 
 use orchidea_formaty::obraz::{Limity, Model, Obraz, Vzorky};
-use orchidea_formaty::{deflate, exr, jpeg, png, tiff};
+use orchidea_formaty::{deflate, exr, jpeg, jxl, png, tiff};
 use orchidea_jadro::nahoda::Nahoda;
 
 /// Prísne limity – fuzzer nesmie alokovať veľa pamäte ani pri „platnom“ obrovskom rozmere.
@@ -199,6 +199,28 @@ fn fuzzer_exr() {
             let _ = exr::citaj_hlavicku(d);
         },
         15,
+    );
+}
+
+#[test]
+fn fuzzer_jxl() {
+    let priecinok = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+    let mut zaklady: Vec<Vec<u8>> = std::fs::read_dir(&priecinok)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|p| p == "jxl"))
+        .map(|e| std::fs::read(e.path()).unwrap())
+        .collect();
+    zaklady.sort();
+    let l = limity();
+    fuzz(
+        "JPEG XL",
+        &zaklady,
+        |d| {
+            let _ = jxl::citaj(d, &l);
+            let _ = jxl::citaj_hlavicku(d);
+        },
+        16,
     );
 }
 

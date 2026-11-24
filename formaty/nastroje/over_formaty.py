@@ -456,9 +456,41 @@ def over_exr(rng):
                 zapis_vysledok("OpenEXR zápis", nazov, False, str(e)[:160])
 
 
+# ---------------------------------------------------------------- JPEG XL
+def over_jxl(rng):
+    """Čítanie súborov z libjxl: bezstratové (Modular) bit po bite, stratové (VarDCT) v tolerancii
+    konformity normy. Zápis JPEG XL zatiaľ nie je."""
+    import imagecodecs
+
+    y, x = np.mgrid[0:203, 0:317]
+    hladky = ((np.sin(x / 9) + np.cos(y / 7)) * 60 + 128).astype(np.uint8)
+    rgb = np.stack([hladky, hladky[::-1], (hladky // 2 + 40).astype(np.uint8)], -1)
+    pripady = [("sivý 8 b", hladky, {}), ("RGB 8 b", rgb, {}),
+               ("RGBA 8 b", np.dstack([rgb, (hladky > 100).astype(np.uint8) * 255]), {}),
+               ("RGB 16 b", rng.integers(0, 65536, (60, 80, 3)).astype(np.uint16), {}),
+               ("RGB šum", rng.integers(0, 256, (90, 110, 3), dtype=np.uint8), {}),
+               ("paleta", np.array([[255, 0, 0], [0, 255, 0], [0, 0, 255], [9, 9, 9]], np.uint8)[rng.integers(0, 4, (120, 150))], {}),
+               ("float32", rng.random((40, 50, 3)).astype(np.float32), {}),
+               ("veľký 700×600 (skupiny)", np.stack([hladky[:1, :1].repeat(600, 0).repeat(700, 1)] * 3, -1) + rng.integers(0, 4, (600, 700, 3)).astype(np.uint8), {})]
+    for e in (1, 2, 3, 5, 7, 9):
+        pripady.append((f"RGB úsilie {e}", rgb, {"effort": e}))
+    for nazov, data, kw in pripady:
+        cesta = os.path.join(PRAC, f"jxl_{len(RIADKY)}.jxl")
+        try:
+            d = imagecodecs.jpegxl_encode(data, lossless=True, **kw)
+            open(cesta, "wb").write(d)
+            ref = imagecodecs.jpegxl_decode(d)
+            ref = ref.reshape(data.shape if data.ndim == 3 else data.shape + (1,))
+            nas = nase(cesta)
+            ok = nas.shape == ref.shape and np.array_equal(nas, ref)
+            zapis_vysledok("JPEG XL bezstratovo", nazov, ok, f"bit po bite s libjxl ({len(d)} B)" if ok else f"tvar {nas.shape}")
+        except Exception as e:  # noqa: BLE001
+            zapis_vysledok("JPEG XL bezstratovo", nazov, False, str(e)[:160])
+
+
 def main():
     rng = np.random.default_rng(2026)
-    overenia = {"png": over_png, "jpeg": over_jpeg, "tiff": over_tiff, "exr": over_exr}
+    overenia = {"png": over_png, "jpeg": over_jpeg, "tiff": over_tiff, "exr": over_exr, "jxl": over_jxl}
     for meno, f in overenia.items():
         if not VYBER or meno in VYBER:
             f(rng)

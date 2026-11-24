@@ -819,47 +819,10 @@ fn prevod_vzoriek(
     };
     if nasobena && alfa {
         // výstup je nenásobená alfa
-        rozdel_alfu(&mut o);
+        crate::obraz::rozdel_alfu(&mut o);
     }
     o.bitov = bps.min(32) as u8;
     Ok(o)
-}
-
-/// Prevod násobenej alfy (farba × alfa) na nenásobenú.
-fn rozdel_alfu(o: &mut Obraz) {
-    let k = o.kanaly();
-    match &mut o.vzorky {
-        Vzorky::U8(v) => {
-            for p in v.chunks_exact_mut(k) {
-                let a = p[k - 1] as u32;
-                for x in &mut p[..k - 1] {
-                    if let Some(v) = (*x as u32 * 255 + a / 2).checked_div(a) {
-                        *x = v.min(255) as u8;
-                    }
-                }
-            }
-        }
-        Vzorky::U16(v) => {
-            for p in v.chunks_exact_mut(k) {
-                let a = p[k - 1] as u32;
-                for x in &mut p[..k - 1] {
-                    if let Some(v) = (*x as u32 * 65_535 + a / 2).checked_div(a) {
-                        *x = v.min(65_535) as u16;
-                    }
-                }
-            }
-        }
-        Vzorky::F32(v) => {
-            for p in v.chunks_exact_mut(k) {
-                let a = p[k - 1];
-                if a > 0.0 {
-                    for x in &mut p[..k - 1] {
-                        *x /= a;
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// 24-bitové plávajúce (1 + 7 + 16 bitov, používajú niektoré skenery a Photoshop).

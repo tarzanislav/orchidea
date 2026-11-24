@@ -222,6 +222,14 @@
       "kde": "len CI – formaty/nastroje/over_formaty.py (inštalácia cez pip pri behu), nie je v repozitári ani v programe",
       "ucel": "nezávislé overenie vlastných čítačiek a zapisovačov balíka formaty (R211): porovnanie s referenčnými knižnicami v oboch smeroch",
       "posudenie_charty": "slobodné knižnice bez vojenského účelu; použité len ako rozhodcovia správnosti, žiadny ich kód nie je v ORCHIDEI"
+    },
+    {
+      "meno": "skúšobné súbory JPEG XL z libjxl (formaty/tests/data/*.jxl)",
+      "trieda": "B",
+      "licencia": "BSD-3-Clause (libjxl, nástroj, ktorý ich vytvoril)",
+      "kde": "len skúšky – dáta v repozitári (spolu ≈ 8 kB), nie kód a nie súčasť programu",
+      "ucel": "skúška zhody nášho dekodéra JPEG XL s referenčným (kontrolné súčty vzoriek) a semienka fuzzera",
+      "posudenie_charty": "obrázky bez obsahu (vzorky a šum); vznikli slobodným nástrojom bez vojenského účelu"
     }
   ],
   "triedy": {

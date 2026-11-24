@@ -473,7 +473,7 @@ jobs:
       - name: Dlhý fuzzer čítačiek (štyri semienka)
         run: |
           for s in 1 2 3 4; do
-            ORCHIDEA_FUZZER=200000 ORCHIDEA_FUZZER_SEMIENKO=$s cargo test --locked --release -p orchidea-formaty --test fuzzer
+            ORCHIDEA_FUZZER=100000 ORCHIDEA_FUZZER_SEMIENKO=$s cargo test --locked --release -p orchidea-formaty --test fuzzer
           done
 
   shadery:

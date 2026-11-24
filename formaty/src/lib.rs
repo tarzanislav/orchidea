@@ -6,6 +6,7 @@ pub mod exif;
 pub mod exr;
 pub mod huffman;
 pub mod jpeg;
+pub mod jxl;
 pub mod kontrola;
 pub mod obraz;
 pub mod png;
@@ -23,6 +24,7 @@ pub enum Format {
     Jpeg,
     Tiff,
     Exr,
+    Jxl,
 }
 
 impl Format {
@@ -32,6 +34,7 @@ impl Format {
             Format::Jpeg => "JPEG",
             Format::Tiff => "TIFF",
             Format::Exr => "OpenEXR",
+            Format::Jxl => "JPEG XL",
         }
     }
 
@@ -42,6 +45,7 @@ impl Format {
             "jpg" | "jpeg" | "jpe" | "jfif" => Some(Format::Jpeg),
             "tif" | "tiff" => Some(Format::Tiff),
             "exr" => Some(Format::Exr),
+            "jxl" => Some(Format::Jxl),
             _ => None,
         }
     }
@@ -61,6 +65,9 @@ pub fn rozpoznaj(data: &[u8]) -> Option<Format> {
     if data.starts_with(&exr::PODPIS) {
         return Some(Format::Exr);
     }
+    if data.starts_with(&jxl::PODPIS_TOKU) || data.starts_with(&jxl::PODPIS_KONTAJNERA) {
+        return Some(Format::Jxl);
+    }
     None
 }
 
@@ -71,6 +78,7 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
         Some(Format::Jpeg) => jpeg::citaj(data, limity),
         Some(Format::Tiff) => tiff::citaj(data, limity),
         Some(Format::Exr) => exr::citaj(data, limity),
+        Some(Format::Jxl) => jxl::citaj(data, limity),
         None => Err(Chyba::NezhodaTypov { popis: "neznámy obrazový formát".into(), navrh: None }),
     }
 }
@@ -82,5 +90,9 @@ pub fn zapis(obraz: &Obraz, format: Format) -> Vysledok<Vec<u8>> {
         Format::Jpeg => jpeg::zapis(obraz, &jpeg::NastavenieJpeg::default()),
         Format::Tiff => tiff::zapis(obraz, &tiff::NastavenieTiff::default()),
         Format::Exr => exr::zapis(obraz, &exr::NastavenieExr::default()),
+        Format::Jxl => Err(Chyba::NezhodaTypov {
+            popis: "zápis JPEG XL zatiaľ nie je".into(),
+            navrh: Some("uložiť ako PNG alebo OpenEXR".into()),
+        }),
     }
 }
