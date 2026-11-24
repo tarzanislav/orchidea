@@ -216,7 +216,11 @@ impl Okolie {
         }
         if self.studeny.is_none() && self.minuty.len() >= 3 {
             let priemer = self.minuty[..3].iter().map(|m| m.teplota).sum::<f64>() / 3.0;
-            let rastie = self.minuty[2].teplota > self.minuty[0].teplota;
+            // R219: studená doska sa zohrieva minúty (τ celej dosky 5–10 min) – ohrev pokračuje aj v 3. minúte a
+            // spomaľuje sa len pomaly. Teplá doska po reštarte (RPi 3 B+ 24. 11.: 38,6 → 41,3 °C za 30 s, potom
+            // rovno) zohreje len samotný čip (τ ≈ 30 s) – 3. minúta je už takmer rovná.
+            let (m0, m1, m2) = (self.minuty[0].teplota, self.minuty[1].teplota, self.minuty[2].teplota);
+            let rastie = m2 > m0 && m2 - m1 >= 0.25 && m2 - m1 >= 0.5 * (m1 - m0);
             // TV krabička: nad 30 °C pri prvom meraní to nie je vzduch v izbe, ale čip zohriaty zavádzačom
             // (pôvodný zavádzač, logo, náš U-Boot a čítanie z USB trvá ~20 s) – okolie zo štartu by bolo
             // o 10 °C vyššie (X96: 36 °C pri 24,6 °C v izbe)
@@ -522,6 +526,37 @@ mod skusky {
         assert!((sh - 38.5).abs() < 4.0, "vlastný ohrev {sh:.1}");
         assert!((s.okolie.unwrap() - 22.0).abs() < 2.5, "{s:?}");
         assert_eq!(s.prostredie, Prostredie::Normalne);
+    }
+
+    #[test]
+    fn studeny_start_kovova_krabicka_s_malym_ohrevom() {
+        // kov s ventilátormi (2. kolo: vlastný ohrev +4,4 °C), τ dosky 5 min, čip +1 °C za prvých 30 s
+        let mut o = Okolie::nove();
+        let mut s = 2.0;
+        while s < 10.0 * 60.0 {
+            let t = 25.0 + 1.0 * (1.0 - (-s / 20.0f64).exp()) + 3.4 * (1.0 - (-s / 300.0f64).exp());
+            o.krok(s, (t * 2.0).round() / 2.0, Some(0.01));
+            s += 4.0;
+        }
+        let st = o.stav();
+        assert_eq!(st.studeny_start, Some(true), "{st:?}");
+        assert!((st.okolie.unwrap() - 25.0).abs() < 1.5, "{st:?}");
+    }
+
+    #[test]
+    fn teply_start_rpi3_ohreje_len_cip() {
+        // RPi 3 B+ 24. 11. (izba ~25 °C): doska ešte teplá ~41 °C, čip sa po štarte zohreje za ~30 s a ďalej je
+        // teplota rovná – nie je to studený štart a okolie 38 °C by bolo zle
+        let mut o = Okolie::nove();
+        let mut s = 2.0;
+        while s < 10.0 * 60.0 {
+            let t = 41.4 - 2.8 * (-s / 20.0f64).exp();
+            o.krok(s, (t * 2.0).round() / 2.0, Some(0.01));
+            s += 4.0;
+        }
+        let st = o.stav();
+        assert_eq!(st.studeny_start, Some(false), "{st:?}");
+        assert_eq!(st.okolie, None);
     }
 
     #[test]

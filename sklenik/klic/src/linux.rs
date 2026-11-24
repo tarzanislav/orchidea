@@ -815,6 +815,36 @@ fn popis_zataze(s: &StatZataze, max_teplota: Option<f64>) -> String {
 /// R190: obsah súboru `sklenik-obraz.txt` na karte RPi (vkladá ho `config.txt`) – obraz cez KMS (vc4) alebo od
 /// firmvéru. Spravuje ho KLÍČ podľa prepínača `obraz_kms` v SKLENIK.TXT, platí od ďalšieho štartu.
 const OBRAZ_KMS: &str = include_str!("../../boot/sklenik-obraz.txt");
+
+/// R218: značka v sklenik-obraz.txt – vlastný ovládač obrazu sa s touto verziou karty nespustil.
+fn obraz_kms_zlyhal_text() -> String {
+    format!("# R218: vlastný ovládač obrazu sa nespustil – verzia {}", crate::VERZIA)
+}
+
+/// R218: obsah sklenik-obraz.txt po zlyhaní vlastného ovládača – obraz od firmvéru so značkou verzie.
+fn obraz_po_zlyhani() -> String {
+    format!(
+        "{}\n# Obraz kreslí firmvér. Nová verzia karty skúsi vlastný ovládač znova; hneď ho skúsiš zmazaním tohto \
+         súboru.\n[all]\n",
+        obraz_kms_zlyhal_text()
+    )
+}
+
+/// R218: zapol firmvér vlastný ovládač obrazu (prekrytie vc4-kms) a jadro ho nespustilo? Ovládač vc4 pri každom
+/// pokuse o spustenie najprv odstráni obrazovku firmvéru – keď sa nedokončí, na HDMI nejde nič („žiadny signál“).
+fn kms_rpi_zlyhal() -> bool {
+    let zapnuty = fs::read("/proc/device-tree/soc/gpu/status").is_ok_and(|s| s.starts_with(b"okay"));
+    if !zapnuty {
+        return false;
+    }
+    let vc4 = fs::read_dir("/sys/class/drm").into_iter().flatten().flatten().any(|z| {
+        fs::read_link(z.path().join("device/driver"))
+            .ok()
+            .and_then(|c| c.file_name().map(|m| m.to_string_lossy().contains("vc4")))
+            .unwrap_or(false)
+    });
+    !vc4
+}
 const OBRAZ_FIRMVER: &str = "# ORCHIDEA OS (R190) – obrazovka od firmvéru (prepínač obraz_kms=nie v SKLENIK.TXT). Súbor spravuje KLÍČ –\n# zmena platí od ďalšieho štartu. Ručne neupravovať.\n[all]\n";
 
 /// R199: zariadenia, na ktorých už táto verzia karty urobila tepelný pokus (riadok „sériové číslo verzia model“).
@@ -1399,6 +1429,10 @@ pub fn spusti() {
     let pokus_kluc =
         format!("{} {}", zaznam::seriove_cislo().unwrap_or_else(|| model.replace(' ', "_")), crate::VERZIA);
     let mut pokus_hotovy_tu = false;
+    // R218: vlastný ovládač obrazu na tomto zariadení s touto kartou zlyhal (obraz od firmvéru)
+    let mut kms_zlyhal_tu = false;
+    let mut kms_kontrola = false;
+    let mut pokus_bez_kms_ohlaseny = false;
     let mut pokus_hotovy_text: Option<String> = None;
     // R192: fázy tepelného pokusu podľa zariadenia (RPi: spánok siete zvlášť, bez fáz taktu VPU)
     let je_rpi = model.contains("Raspberry Pi");
@@ -1425,8 +1459,24 @@ pub fn spusti() {
             let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
             let obsah = if novinka(&nastavenie, "obraz_kms") { OBRAZ_KMS } else { OBRAZ_FIRMVER };
             if let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next() {
-                match zaznam::subor_v_koreni(&n, "sklenik-obraz.txt", obsah) {
-                    Ok(Some(stary)) if stary == obsah => {}
+                // R218: vlastný ovládač obrazu na tomto zariadení s touto verziou karty zlyhal – ostáva obraz od
+                // firmvéru (nová verzia karty skúsi KMS znova)
+                let zlyhal = obraz_kms_zlyhal_text();
+                match zaznam::uprav_v_koreni(&n, "sklenik-obraz.txt", |stary| {
+                    if stary.is_some_and(|t| t.contains(&zlyhal)) {
+                        stary.unwrap_or_default().to_string()
+                    } else {
+                        obsah.to_string()
+                    }
+                }) {
+                    Ok((_, novy)) if novy.contains(&zlyhal) => {
+                        kms_zlyhal_tu = true;
+                        hlas(
+                            "obraz (R218): vlastný ovládač obrazu sa na tomto zariadení s touto kartou nespustil – \
+                             obraz od firmvéru (skúsi sa znova s novou verziou karty)",
+                        )
+                    }
+                    Ok((Some(stary), novy)) if stary == novy => {}
                     Ok(_) => hlas(&format!(
                         "obraz (R190): od ďalšieho štartu {} (prepínač obraz_kms)",
                         if obsah == OBRAZ_KMS { "vlastný ovládač KMS" } else { "obrazovka od firmvéru" }
@@ -1453,7 +1503,7 @@ pub fn spusti() {
                     (Some(true), _) => "pri každom štarte (pokus=ano)".into(),
                     (None, true) => "na tomto zariadení s touto kartou už hotový – bežný režim".into(),
                     (None, false) => "prvý štart tejto karty na zariadení – urobí sa sám (2 h 15 min) aj so \
-                                      skúškou videa"
+                                      skúškou videa, ak beží vlastný ovládač obrazu"
                         .into(),
                 }
             ));
@@ -2148,6 +2198,39 @@ pub fn spusti() {
             }));
             pokoj_stav = Some((pokoj::Stav::Overene, true, n));
         }
+        // R218: vlastný ovládač obrazu sa na RPi nespustil → obraz od firmvéru a reštart (raz pre verziu karty)
+        if pid1
+            && !skuska
+            && tv
+            && !kms_kontrola
+            && !kms_zlyhal_tu
+            && hore >= 30.0
+            && model.contains("Raspberry Pi")
+            && nastavenie.is_some()
+            && novinka(&nastavenie, "obraz_kms")
+        {
+            kms_kontrola = true;
+            if kms_rpi_zlyhal() {
+                hlas(
+                    "obraz (R218): vlastný ovládač obrazu sa po 30 s nespustil a obrazovku firmvéru už odstránil – \
+                     na HDMI nie je signál; prepínam na obraz od firmvéru a reštartujem",
+                );
+                let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
+                let zapisane = uloziska::na_pozadi("obraz-zlyhal", move || {
+                    let n = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next()?;
+                    zaznam::subor_v_koreni(&n, "sklenik-obraz.txt", &obraz_po_zlyhani()).ok()
+                })
+                .pockaj(Duration::from_secs(10));
+                // zapísané = nosič sa našiel a zápis prešiel
+                if matches!(zapisane, Some(Some(_))) {
+                    std::thread::sleep(Duration::from_secs(1));
+                    let e = sys::vypni(true);
+                    hlas(&format!("obraz (R218): reštart sa nepodaril ({e})"));
+                } else {
+                    hlas("obraz (R218): súbor sklenik-obraz.txt sa nepodarilo zapísať – bez reštartu");
+                }
+            }
+        }
         if pid1
             && !skuska
             && !video_spustene
@@ -2685,6 +2768,21 @@ pub fn spusti() {
         {
             merania = Some(zaznam::Riadenie::s_milnikmi(chlad::milniky_pokusu(pocet_faz)));
             pokus = true;
+        }
+        // R218: pokus potrebuje vlastný ovládač obrazu (fázy menia obraz) – bez neho len 30-minútové samomeranie;
+        // hlásenie pri štarte („urobí sa sám“) sa tu opraví, aby záznam hovoril pravdu
+        if tv
+            && !pokus
+            && !pokus_bez_kms_ohlaseny
+            && !vypnute
+            && merania.as_ref().is_some_and(|m| m.zaciatok_s().is_some())
+            && nastavenie.as_ref().and_then(|(_, n)| n.pokus).unwrap_or(!pokus_hotovy_tu)
+        {
+            pokus_bez_kms_ohlaseny = true;
+            hlas(
+                "tepelný pokus (R199): nespustený – vlastný ovládač obrazu nebeží (obraz od firmvéru); namiesto neho \
+                 30-minútové samomeranie",
+            );
         }
         let merania_teraz = merania.as_mut().filter(|_| !vypnute);
         if let Some(m) = merania_teraz {
