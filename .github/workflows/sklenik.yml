@@ -17,6 +17,11 @@ on:
       - ".github/workflows/sklenik.yml"
   workflow_dispatch:
 
+# novší beh na tej istej vetve zruší starší – karta sa zostaví z najnovšieho stavu
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

@@ -2,7 +2,15 @@ name: Zostavenie a skúšky
 
 on:
   push:
+    # zmena len v dokumentoch nespúšťa celé zostavenie (charta a zdroje majú vlastný postup)
+    paths-ignore:
+      - "**.md"
   pull_request:
+
+# viac relácií posiela zmeny súbežne: novší beh na tej istej vetve zruší starší (obsahuje aj jeho zmeny)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
