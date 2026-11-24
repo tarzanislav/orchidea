@@ -4,7 +4,7 @@
 //!
 //! Spustenie: `cargo run --release -p orchidea-hevc-dekoder --example hevc_dekoduj -- <súbor alebo priečinok>…`
 //! Premenné: `ORCHIDEA_HEVC_YUV=<priečinok>` zapíše výstup YUV, `ORCHIDEA_HEVC_PRISNE=1` vráti chybu pri
-//! akejkoľvek nezhode (CI), `ORCHIDEA_HEVC_RYCHLOST=1` meria čisté dekódovanie (bez overovania MD5) – ako
+//! akejkoľvek nezhode či neoverenom toku v profile (CI), `ORCHIDEA_HEVC_RYCHLOST=1` meria čisté dekódovanie (bez overovania MD5) – ako
 //! pri prehrávaní, `ORCHIDEA_HEVC_VLAKNA=<n>` počet vlákien dekódovania (predvolene počet jadier).
 
 use orchidea_hevc::jednotky_annex_b;
@@ -241,7 +241,8 @@ fn main() {
          mimo profilu Main 8-bit: {mimo}**",
         zoznam.len()
     );
-    if prisne && zlych > 0 {
+    // prísne (CI): každý tok v profile musí byť bitovo presný a overený (SEI alebo MD5 celého výstupu)
+    if prisne && (zlych > 0 || neoverenych > 0) {
         std::process::exit(1);
     }
 }

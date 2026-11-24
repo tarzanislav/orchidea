@@ -96,8 +96,35 @@ jobs:
         run: |
           echo "### HEVC – rozbor syntaxe a príprava V4L2 (H0, H1) – ${{ matrix.meno }}" >> "$GITHUB_STEP_SUMMARY"
           cargo run --locked --release -p orchidea-hevc --example hevc_rozbor -- toky | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Vlastný dekodér – bitová zhoda (H2–H4)
+      - name: Vlastný dekodér – bitová zhoda (H2–H5)
         shell: bash
+        env:
+          ORCHIDEA_HEVC_PRISNE: "1"
         run: |
-          echo "### HEVC – vlastný dekodér, bitová zhoda MD5 (H2–H4) – ${{ matrix.meno }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### HEVC – vlastný dekodér, bitová zhoda MD5 (H2–H5, všetky jadrá) – ${{ matrix.meno }}" >> "$GITHUB_STEP_SUMMARY"
           cargo run --locked --release -p orchidea-hevc-dekoder --example hevc_dekoduj -- toky | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Vlastný dekodér – rovnaký výsledok v jednom vlákne (H5)
+        shell: bash
+        env:
+          ORCHIDEA_HEVC_PRISNE: "1"
+          ORCHIDEA_HEVC_VLAKNA: "1"
+        run: |
+          echo "### HEVC – vlastný dekodér v jednom vlákne – ${{ matrix.meno }}" >> "$GITHUB_STEP_SUMMARY"
+          cargo run --locked --release -p orchidea-hevc-dekoder --example hevc_dekoduj -- toky > jedno.txt || {
+            cat jedno.txt | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          tail -n 1 jedno.txt | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Rýchlosť dekódovania (H5)
+        shell: bash
+        env:
+          ORCHIDEA_HEVC_RYCHLOST: "1"
+        run: |
+          echo "### HEVC – rýchlosť (obr./s, bez overovania) – ${{ matrix.meno }}, jadier: $(nproc)" >> "$GITHUB_STEP_SUMMARY"
+          vyber=$(ls -d toky/norma/PICSIZE_A* toky/norma/PICSIZE_C* toky/norma/AMP_D* toky/norma/TILES_A* \
+            toky/norma/WPP_D_ericsson_MAIN_* toky/x265 2>/dev/null || true)
+          for n in 1 2 4; do
+            echo "**Vlákien: $n**" >> "$GITHUB_STEP_SUMMARY"
+            ORCHIDEA_HEVC_VLAKNA=$n cargo run --locked --release -q -p orchidea-hevc-dekoder --example hevc_dekoduj -- \
+              $vyber | grep -E '^\|' | cut -d'|' -f1-3,8,10 | tee -a "$GITHUB_STEP_SUMMARY"
+          done
