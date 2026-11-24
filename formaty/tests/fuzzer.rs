@@ -6,13 +6,18 @@ use orchidea_formaty::obraz::{Limity, Model, Obraz, Vzorky};
 use orchidea_formaty::{deflate, exr, jpeg, jxl, png, tiff};
 use orchidea_jadro::nahoda::Nahoda;
 
-/// Prísne limity – fuzzer nesmie alokovať veľa pamäte ani pri „platnom“ obrovskom rozmere.
+#[allow(dead_code)]
+mod subory;
+
+/// Prísne limity – fuzzer nesmie alokovať veľa pamäte ani pri „platnom“ obrovskom rozmere. Obraz s 2^18
+/// pixelmi stačí na všetky cesty kódu (viac skupín JPEG XL, viac pruhov TIFF) a beh ostane rýchly aj v QEMU.
 fn limity() -> Limity {
-    Limity { pixelov: 1 << 22, bajtov: 64 << 20, metadat: 1 << 20 }
+    Limity { pixelov: 1 << 18, bajtov: 16 << 20, metadat: 1 << 20 }
 }
 
 fn pocet_pokusov() -> usize {
-    let zaklad = if cfg!(debug_assertions) { 3_000 } else { 30_000 };
+    // bežné skúšky (aj v emulátoroch ARM a Androidu) krátko; dlhý beh v CI cez ORCHIDEA_FUZZER
+    let zaklad = if cfg!(debug_assertions) { 2_000 } else { 10_000 };
     std::env::var("ORCHIDEA_FUZZER").ok().and_then(|v| v.parse().ok()).unwrap_or(zaklad)
 }
 
@@ -55,10 +60,13 @@ fn zmutuj(zaklad: &[u8], n: &mut Nahoda) -> Vec<u8> {
 }
 
 fn fuzz(meno: &str, zaklady: &[Vec<u8>], citaj: impl Fn(&[u8]), semienko: u64) {
+    fuzz_n(meno, zaklady, citaj, semienko, pocet_pokusov());
+}
+
+fn fuzz_n(meno: &str, zaklady: &[Vec<u8>], citaj: impl Fn(&[u8]), semienko: u64, pokusov: usize) {
     // ORCHIDEA_FUZZER_SEMIENKO mení semienko (dlhé behy mimo CI); bez neho je beh vždy rovnaký
     let extra: u64 = std::env::var("ORCHIDEA_FUZZER_SEMIENKO").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let mut n = Nahoda::zo_semienka(semienko ^ extra.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-    let pokusov = pocet_pokusov();
     for i in 0..pokusov {
         let data = if i % 10 == 0 {
             let l = n.mensie_ako(300) as usize;
@@ -204,16 +212,10 @@ fn fuzzer_exr() {
 
 #[test]
 fn fuzzer_jxl() {
-    let priecinok = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
-    let mut zaklady: Vec<Vec<u8>> = std::fs::read_dir(&priecinok)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|p| p == "jxl"))
-        .map(|e| std::fs::read(e.path()).unwrap())
-        .collect();
-    zaklady.sort();
+    let zaklady: Vec<Vec<u8>> = subory::SUBORY.iter().map(|s| s.1.to_vec()).collect();
     let l = limity();
-    fuzz(
+    // JPEG XL je najpomalší (dekóduje aj „prázdne“ obrazy bez údajov) – tretina pokusov
+    fuzz_n(
         "JPEG XL",
         &zaklady,
         |d| {
@@ -221,6 +223,7 @@ fn fuzzer_jxl() {
             let _ = jxl::citaj_hlavicku(d);
         },
         16,
+        pocet_pokusov() / 3,
     );
 }
 
