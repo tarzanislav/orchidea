@@ -581,6 +581,41 @@ mod testy {
         assert!(zvysky.iter().all(|&z| z), "pokryté zvyšky dĺžky po delení 8: {zvysky:?}");
     }
 
+    /// Krátke podprúdy (dlaždice, riadky WPP, koniec vzoriek PCM) tesne pred koncom dát rezu: okno sa pri každej
+    /// inicializácii naplní vopred za koniec dát, ale to nie je poškodený tok.
+    #[test]
+    fn kratke_podprudy_na_konci_dat() {
+        let mut data = Vec::new();
+        let mut zaciatky = Vec::new();
+        let mut biny = Vec::new();
+        let mut n = orchidea_jadro::nahoda::Nahoda::zo_semienka(7);
+        for _ in 0..6 {
+            zaciatky.push(data.len());
+            let mut kod = Koder::novy();
+            let mut ks = Kontexty::nove(1, 30);
+            let b: Vec<u32> = (0..3).map(|_| (n.dalsie() % 2) as u32).collect();
+            for &x in &b {
+                kod.bin(&mut ks.0[k::CU_SKIP], x);
+            }
+            kod.ukoncenie(1);
+            data.extend(kod.bajty());
+            biny.push(b);
+        }
+        let mut d = Cabac::novy(&data, 0);
+        for (i, b) in biny.iter().enumerate() {
+            if i > 0 {
+                assert_eq!(d.bajt_po_ukonceni(), zaciatky[i]);
+                d.znova(zaciatky[i]);
+            }
+            let mut ks = Kontexty::nove(1, 30);
+            for &x in b {
+                assert_eq!(d.bin(&mut ks.0[k::CU_SKIP]), x, "podprúd {i}");
+            }
+            assert_eq!(d.ukoncenie(), 1);
+            assert!(!d.poskodeny(), "podprúd {i} z {} bajtov nie je poškodený", data.len());
+        }
+    }
+
     #[test]
     fn inicializacia_kontextov() {
         // initValue 154 (m = 0, n = 0) pri ľubovoľnom QP → preCtxState 64 → pStateIdx 0, valMps 1
