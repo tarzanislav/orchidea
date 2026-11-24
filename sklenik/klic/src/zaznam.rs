@@ -59,10 +59,44 @@ pub fn druh_disku(disk: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// R215: disky, ktoré vrátili chybu vstupu/výstupu (poškodená alebo nekompatibilná karta) – už sa neskúšajú,
+/// aby každý pokus neznamenal sekundy obnovy radiča a teplo navyše.
+static CHYBNE: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Disk oddielu („mmcblk0p1“ → „mmcblk0“, „sda1“ → „sda“).
+pub fn disk_oddielu(oddiel: &str) -> String {
+    let bez = oddiel.trim_end_matches(|c: char| c.is_ascii_digit());
+    match bez.strip_suffix('p') {
+        Some(d) if d.ends_with(|c: char| c.is_ascii_digit()) => d.to_string(),
+        _ => bez.to_string(),
+    }
+}
+
+/// Je disk označený ako nečitateľný?
+pub fn je_chybny(disk: &str) -> bool {
+    CHYBNE.lock().is_ok_and(|c| c.contains(disk))
+}
+
+/// Chyba vstupu/výstupu (EIO) na disku: disk sa označí a vráti sa `true`, ak je to prvé označenie.
+pub fn oznac_ak_chybny(disk: &str, e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(5) && CHYBNE.lock().is_ok_and(|mut c| c.insert(disk.to_string()))
+}
+
 fn je_fat(oddiel: &str) -> bool {
+    let disk = disk_oddielu(oddiel);
+    if je_chybny(&disk) {
+        return false;
+    }
     let Ok(f) = fs::File::open(format!("/dev/{oddiel}")) else { return false };
     let mut s = [0u8; 512];
-    f.read_exact_at(&mut s, 0).is_ok() && samomeranie::je_fat(&s)
+    match f.read_exact_at(&mut s, 0) {
+        Ok(()) => samomeranie::je_fat(&s),
+        Err(e) => {
+            oznac_ak_chybny(&disk, &e);
+            false
+        }
+    }
 }
 
 /// Prvé oddiely diskov so súborovým systémom FAT: najprv disk, z ktorého SKLENÍK štartoval, potom USB

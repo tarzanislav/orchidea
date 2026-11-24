@@ -64,6 +64,10 @@ mod sys;
 mod v4l2;
 #[cfg(target_os = "linux")]
 mod zaznam;
+
+// R215: čítanie a zápis kariet a USB kľúčov mimo hlavnej slučky – zaseknuté úložisko nezastaví strážny časovač
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod uloziska;
 // vlastný klient schránky firmvéru Raspberry Pi – takty, napätia, škrtenie VideoCore (R193)
 #[cfg(target_os = "linux")]
 mod vcio;

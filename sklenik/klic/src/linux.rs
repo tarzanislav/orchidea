@@ -16,6 +16,7 @@ use crate::strazca::{
     urovne,
 };
 use crate::sys;
+use crate::uloziska;
 use crate::zaznam;
 use orchidea_pismo::{Pismo, Platno};
 use orchidea_teplo::okolie::{self, Okolie};
@@ -63,6 +64,35 @@ fn hlas(sprava: &str) {
     if let Ok(mut k) = fs::OpenOptions::new().write(true).open("/dev/kmsg") {
         let _ = k.write_all(format!("<6>KLÍČ: {sprava}\n").as_bytes());
     }
+    // R216: záznamník pádov – pamäť, ktorá prežije reštart (pstore/ramoops), ak ju doska má
+    if let Ok(mut p) = fs::OpenOptions::new().write(true).open("/dev/pmsg0") {
+        let s = uptime().unwrap_or(0.0) as u64;
+        let _ = p.write_all(format!("[{}:{:02}:{:02}] {sprava}\n", s / 3600, s / 60 % 60, s % 60).as_bytes());
+    }
+}
+
+/// R216: posledné riadky predošlého štartu zo záznamníka pádov (pstore) – po nečakanom reštarte
+/// ukážu, čo sa dialo tesne pred ním. Súbory sa potom zmažú, aby sa uvoľnila pamäť pre ďalší záznam.
+fn predosly_start() -> Vec<String> {
+    const KOREN: &str = "/sys/fs/pstore";
+    let _ = fs::create_dir_all(KOREN);
+    let _ = sys::pripoj("pstore", KOREN, "pstore", sys::MS_NOSUID | sys::MS_NODEV | sys::MS_NOEXEC);
+    let mut subory: Vec<_> = fs::read_dir(KOREN).into_iter().flatten().flatten().map(|z| z.path()).collect();
+    subory.sort();
+    let mut riadky = Vec::new();
+    for cesta in subory {
+        let meno = cesta.file_name().and_then(|m| m.to_str()).unwrap_or("").to_string();
+        let Ok(obsah) = fs::read(&cesta) else { continue };
+        let text = String::from_utf8_lossy(&obsah);
+        // z KLÍČA (pmsg) posledných 25 riadkov, z jadra (dmesg pri páde, konzola) posledných 15
+        let kolko = if meno.starts_with("pmsg") { 25 } else { 15 };
+        let vsetky: Vec<&str> = text.lines().filter(|r| !r.trim().is_empty()).collect();
+        for r in &vsetky[vsetky.len().saturating_sub(kolko)..] {
+            riadky.push(format!("{meno}: {}", r.chars().take(200).collect::<String>()));
+        }
+        let _ = fs::remove_file(&cesta);
+    }
+    riadky
 }
 
 /// R183: je novinka zapnutá podľa SKLENIK.TXT? (bez nastavenia áno)
@@ -789,6 +819,8 @@ const OBRAZ_FIRMVER: &str = "# ORCHIDEA OS (R190) – obrazovka od firmvéru (pr
 
 /// R199: zariadenia, na ktorých už táto verzia karty urobila tepelný pokus (riadok „sériové číslo verzia model“).
 const POKUSY: &str = "POKUSY.TXT";
+/// R215: po koľkých sekundách sa úloha s úložiskom ohlási ako zaseknutá.
+const ZASEKNUTE_ULOZISKO: Duration = Duration::from_secs(30);
 
 /// Značka na karte: krabička sa po dlhom teste vypla (R184).
 const VYPNUTE_PO_TESTE: &str = "VYPNUTE.TXT";
@@ -845,13 +877,23 @@ impl SpanokJadier {
         if !radice::spanok_jadier_je(koren) {
             return SpanokJadier::Zakazany("jadro nemá ovládač sklenik_jadra".into());
         }
-        let Some(n) = zaznam::najdi_nosice(spustaci).into_iter().next() else {
-            return SpanokJadier::Zakazany("nezapnutý – chýba karta s FAT na poistku".into());
-        };
-        let text = "Hlboký spánok jadier (R167) bol zapnutý a ešte neprešlo 5 minút bez problému.\r\n\
+        const TEXT: &str = "Hlboký spánok jadier (R167) bol zapnutý a ešte neprešlo 5 minút bez problému.\r\n\
                     Ak tento súbor zostal na karte, krabička medzitým zamrzla alebo sa reštartovala\r\n\
                     a KLÍČ hlboký spánok jadier už nezapne. Znova ho zapneš zmazaním tohto súboru.\r\n";
-        match zaznam::poistka(&n, POISTKA_JADIER, zaznam::Poistka::Vytvor(text)) {
+        // R215: poistka na pozadí s limitom – zaseknutý nosič nezastaví hlavnú slučku
+        let spustaci = spustaci.map(str::to_string);
+        let poistka = uloziska::na_pozadi("poistka-spanku", move || {
+            let n = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next()?;
+            let r = zaznam::poistka(&n, POISTKA_JADIER, zaznam::Poistka::Vytvor(TEXT));
+            Some((n, r))
+        })
+        .pockaj(Duration::from_secs(5));
+        let Some(Some((n, poistka))) = poistka else {
+            return SpanokJadier::Zakazany(
+                "nezapnutý – chýba karta s FAT na poistku alebo neodpovedá".into(),
+            );
+        };
+        match poistka {
             Ok(true) => {
                 let d = format!(
                     "nezapnutý – predošlý hlboký spánok nedobehol (zamrznutie alebo reštart); zapne ho zmazanie \
@@ -1020,9 +1062,27 @@ fn nahraj_firmver_videa(zariadenie: &str) {
 }
 
 fn nacitaj_nastavenie(supis: &Supis) -> Option<(String, NastavenieZariadenia)> {
-    for u in &supis.ulozisko {
-        let cesta = format!("/dev/{}", u.meno);
+    let mena: Vec<String> = supis.ulozisko.iter().map(|u| u.meno.clone()).collect();
+    nacitaj_nastavenie_z(&mena)
+}
+
+/// R215: nastavenie z diskov podľa mien; disk s chybou vstupu/výstupu sa označí a ďalej neskúša.
+fn nacitaj_nastavenie_z(mena: &[String]) -> Option<(String, NastavenieZariadenia)> {
+    for meno in mena {
+        if zaznam::je_chybny(meno) {
+            continue;
+        }
+        let cesta = format!("/dev/{meno}");
         let Ok(mut f) = fs::File::open(&cesta) else { continue };
+        let mut prvy = [0u8; 512];
+        if let Err(e) = f.read_exact_at(&mut prvy, 0) {
+            if zaznam::oznac_ak_chybny(meno, &e) {
+                hlas(&format!(
+                    "úložisko {meno}: chyba čítania ({e}) – správca systému ho už neskúša, záznamy idú na iný nosič (R215)"
+                ));
+            }
+            continue;
+        }
         if let Ok(text) = sklenik_karta::citaj_nastavenie(&mut f) {
             let (n, upozornenia) = NastavenieZariadenia::z_textu(&text);
             for up in upozornenia {
@@ -1223,6 +1283,20 @@ pub fn spusti() {
     let pid1 = std::process::id() == 1;
     if pid1 {
         pripoj_systemove();
+        // R216: čo sa dialo pred predošlým (nečakaným) reštartom
+        let predosly = predosly_start();
+        if !Path::new("/dev/pmsg0").exists() {
+            hlas("záznamník pádov (R216): doska ho nemá – po reštarte nebude vidno, čo mu predchádzalo");
+        } else if predosly.is_empty() {
+            hlas(
+                "záznamník pádov (R216): zapnutý, z predošlého štartu nič (prvý štart alebo vypnutie napájania)",
+            );
+        } else {
+            hlas(&format!("záznamník pádov (R216): PREDOŠLÝ ŠTART – posledných {} riadkov:", predosly.len()));
+            for r in predosly {
+                hlas(&format!("  predošlý štart: {r}"));
+            }
+        }
     }
     let prikazovy_riadok = citaj("/proc/cmdline").unwrap_or_default();
     let skuska = prikazovy_riadok.split_whitespace().any(|x| x == "sklenik.skuska=1")
@@ -1580,6 +1654,11 @@ pub fn spusti() {
     let mut pokus = false;
     // R192: fáza pokusu dovoľuje spánok siete s káblom (mimo pokusu vždy)
     let mut siet_spi_faza = true;
+    // R215: práca s úložiskami na pozadí – hlavná slučka (strážny časovač) nikdy nečaká na kartu ani kľúč
+    let mut hladanie_nastavenia: Option<uloziska::Cakanie<Option<(String, NastavenieZariadenia)>>> = None;
+    let mut hladanie_nosicov: Option<uloziska::Cakanie<Vec<String>>> = None;
+    let mut nosice: Option<Vec<String>> = None;
+    let mut pozadie: Vec<uloziska::Cakanie<()>> = Vec::new();
     let mut pokus_zastaveny = false;
     let mut faza_teraz: Option<usize> = None;
     let mut zobrazeny_chlad: Option<obrazovka::Chlad> = None;
@@ -1842,8 +1921,66 @@ pub fn spusti() {
             }
             if pid1 {
                 sys::zber_procesov();
-                eee.krok();
+                // R191: zmeny spojenia, ktoré spôsobuje uspávanie čipu siete, nie sú výpadky
+                eee.krok(
+                    tv && periferie_teraz == Some(true)
+                        && novinka(&nastavenie, "siet")
+                        && novinka(&nastavenie, "siet_spi")
+                        && siet_spi_faza,
+                );
             }
+            // R215: výsledky práce s úložiskami na pozadí; zaseknuté úložisko sa len ohlási
+            if let Some(c) = hladanie_nastavenia.as_mut() {
+                match c.vyzdvihni(ZASEKNUTE_ULOZISKO) {
+                    uloziska::Stav::Hotovo(n) => {
+                        hladanie_nastavenia = None;
+                        if n.is_some() {
+                            nastavenie = n;
+                            nastav_zariadenie(&nastavenie);
+                            // spúšťací disk je teraz známy – poradie nosičov sa zistí znova
+                            nosice = None;
+                        }
+                    }
+                    uloziska::Stav::Zaseknuta(t) => hlas(&format!(
+                        "úložisko neodpovedá {} s (hľadanie nastavenia) – hlavný program pokračuje (R215)",
+                        t.as_secs()
+                    )),
+                    uloziska::Stav::Stratena => hladanie_nastavenia = None,
+                    uloziska::Stav::Bezi => {}
+                }
+            }
+            if nosice.is_none() && hladanie_nosicov.is_none() {
+                let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
+                hladanie_nosicov = Some(uloziska::na_pozadi("nosice", move || {
+                    zaznam::najdi_nosice(spustaci.as_deref()).into_iter().map(|n| n.oddiel).collect()
+                }));
+            }
+            if let Some(c) = hladanie_nosicov.as_mut() {
+                match c.vyzdvihni(ZASEKNUTE_ULOZISKO) {
+                    uloziska::Stav::Hotovo(v) => {
+                        hladanie_nosicov = None;
+                        nosice = Some(v);
+                    }
+                    uloziska::Stav::Zaseknuta(t) => hlas(&format!(
+                        "úložisko neodpovedá {} s (zoznam nosičov) – hlavný program pokračuje (R215)",
+                        t.as_secs()
+                    )),
+                    uloziska::Stav::Stratena => hladanie_nosicov = None,
+                    uloziska::Stav::Bezi => {}
+                }
+            }
+            pozadie.retain_mut(|c| match c.vyzdvihni(ZASEKNUTE_ULOZISKO) {
+                uloziska::Stav::Hotovo(()) | uloziska::Stav::Stratena => false,
+                uloziska::Stav::Zaseknuta(t) => {
+                    hlas(&format!(
+                        "úložisko neodpovedá {} s ({}) – hlavný program pokračuje (R215)",
+                        t.as_secs(),
+                        c.meno()
+                    ));
+                    true
+                }
+                uloziska::Stav::Bezi => true,
+            });
             if let Ok(mut k) = kontrolky.lock() {
                 k.teplota = teplota;
                 k.porucha = !poda.chybne_jadra.is_empty()
@@ -1920,11 +2057,14 @@ pub fn spusti() {
                     }
                 }
                 eee.obnov(&supis);
-                // karta sa môže objaviť až chvíľu po štarte
-                if nastavenie.is_none() {
-                    nastavenie = nacitaj_nastavenie(&supis);
-                    nastav_zariadenie(&nastavenie);
+                // karta sa môže objaviť až chvíľu po štarte – hľadá sa na pozadí (R215)
+                if nastavenie.is_none() && hladanie_nastavenia.is_none() {
+                    let mena: Vec<String> = supis.ulozisko.iter().map(|u| u.meno.clone()).collect();
+                    hladanie_nastavenia =
+                        Some(uloziska::na_pozadi("nastavenie", move || nacitaj_nastavenie_z(&mena)));
                 }
+                // nosiče záznamov sa po zmene periférií zistia znova (na pozadí)
+                nosice = None;
                 if merana_karta.is_empty()
                     && let Some(u) = vyber_kartu(&supis, &nastavenie)
                 {
@@ -1992,22 +2132,21 @@ pub fn spusti() {
             && hore >= pokoj::OVERENIE_S
         {
             let (st, n) = (*st, n.clone());
-            match zaznam::subor_v_koreni(&n, pokoj::SUBOR, &pokoj::obsah(pokoj::Stav::Overene)) {
-                Ok(_) => {
-                    hlas(&format!(
+            let nosic = n.clone();
+            // R215: zápis na kartu na pozadí
+            pozadie.push(uloziska::na_pozadi("pokoj", move || {
+                match zaznam::subor_v_koreni(&nosic, pokoj::SUBOR, &pokoj::obsah(pokoj::Stav::Overene)) {
+                    Ok(_) => hlas(&format!(
                         "podpätie v nečinnosti (chladný pokoj, R198): {} min s nižším napätím bez chyby – overený",
                         pokoj::OVERENIE_S as u32 / 60
-                    ));
-                    pokoj_stav = Some((pokoj::Stav::Overene, true, n));
-                }
-                Err(e) => {
-                    hlas(&format!(
+                    )),
+                    Err(e) => hlas(&format!(
                         "podpätie v nečinnosti (chladný pokoj, R198): overenie sa nepodarilo zapísať ({e}) – {}",
                         st.popis()
-                    ));
-                    pokoj_stav = None;
+                    )),
                 }
-            }
+            }));
+            pokoj_stav = Some((pokoj::Stav::Overene, true, n));
         }
         if pid1
             && !skuska
@@ -2149,15 +2288,17 @@ pub fn spusti() {
                         // R199: zapísať, že toto zariadenie má pokus s touto verziou karty hotový
                         let spustaci =
                             nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
-                        if !pokus_hotovy_tu
-                            && let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next()
-                        {
-                            match zaznam::subor_merani(&n, POKUSY, Some(&format!("{pokus_kluc} {model}"))) {
-                                Ok(_) => pokus_hotovy_tu = true,
-                                Err(e) => {
+                        if !pokus_hotovy_tu {
+                            // R215: zápis značky na pozadí – zaseknutý nosič nezastaví hlavnú slučku
+                            let riadok = format!("{pokus_kluc} {model}");
+                            pozadie.push(uloziska::na_pozadi("pokus", move || {
+                                if let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next()
+                                    && let Err(e) = zaznam::subor_merani(&n, POKUSY, Some(&riadok))
+                                {
                                     hlas(&format!("tepelný pokus (R199): značku sa nepodarilo zapísať ({e})"))
                                 }
-                            }
+                            }));
+                            pokus_hotovy_tu = true;
                         }
                         pokus_hotovy_text = Some(
                             "tepelný pokus hotový – výsledok je na karte, zariadenie môžeš vypnúť".into(),
@@ -2385,12 +2526,15 @@ pub fn spusti() {
             // perifériách; až minútu po štarte, keď dobehne meranie úložiska
             let chce_odpojit =
                 pid1 && !skuska && r.periferie && r.radice && hore >= 60.0 && novinka(&nastavenie, "radice");
-            if chce_odpojit && radice_stav != Some(true) {
+            // R215: nosiče záznamov sa zisťujú na pozadí – kým nie sú známe, nič sa neodpája
+            if chce_odpojit
+                && radice_stav != Some(true)
+                && let Some(zname) = nosice.as_ref()
+            {
                 // R188: chránené sú aj nosiče záznamov (Odroid zo vstavanej eMMC má na nej nastavenie aj záznamy)
                 let mut chranene: Vec<String> =
                     nastavenie.as_ref().map(|(c, _)| c.clone()).into_iter().collect();
-                let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
-                chranene.extend(zaznam::najdi_nosice(spustaci.as_deref()).into_iter().map(|n| n.oddiel));
+                chranene.extend(zname.iter().cloned());
                 for rd in radice::nepouzite_radice(Path::new("/"), &chranene) {
                     match radice::odpoj(&rd) {
                         Ok(()) => radice_odpojene.push(rd),
@@ -3076,15 +3220,19 @@ pub fn spusti() {
             }
             hlas("dlhý test hardvéru hotový – televízor ide spať a krabička sa vypína");
             let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
-            if let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next() {
-                let _ = zaznam::poistka(
-                    &n,
-                    VYPNUTE_PO_TESTE,
-                    zaznam::Poistka::Vytvor(
-                        "Krabička sa po dlhom teste hardvéru (R184) vypla. KLÍČ to pri ďalšom štarte zapíše do záznamu a súbor zmaže.\r\n",
-                    ),
-                );
-            }
+            // R215: zápis značky na pozadí s limitom (kratším ako strážny časovač)
+            let _ = uloziska::na_pozadi("vypnutie-po-teste", move || {
+                if let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next() {
+                    let _ = zaznam::poistka(
+                        &n,
+                        VYPNUTE_PO_TESTE,
+                        zaznam::Poistka::Vytvor(
+                            "Krabička sa po dlhom teste hardvéru (R184) vypla. KLÍČ to pri ďalšom štarte zapíše do záznamu a súbor zmaže.\r\n",
+                        ),
+                    );
+                }
+            })
+            .pockaj(Duration::from_secs(10));
             if let Some(c) = cec.as_mut() {
                 c.uspi_tv_hned();
             }
@@ -3390,9 +3538,15 @@ impl SledovanieEee {
         }
     }
 
-    fn krok(&mut self) {
+    /// `uspavane`: sieť uspáva sám správca systému (R191) – zmeny spojenia sú vtedy zámerné, nie výpadky (R215).
+    fn krok(&mut self, uspavane: bool) {
         let Some(meno) = self.rozhranie.clone() else { return };
         if self.vypnute {
+            return;
+        }
+        if uspavane {
+            self.posledny_pocet = None;
+            self.vypadky.clear();
             return;
         }
         let Some(pocet) =

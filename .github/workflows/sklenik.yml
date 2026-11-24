@@ -631,6 +631,17 @@ jobs:
               fdtput -t i "$f" "/thermal-zones/$z" polling-delay 5000
             done
             echo "$f: teplota každých $(fdtget "$f" /thermal-zones/cpu-thermal polling-delay) ms (CPU) a $(fdtget "$f" /thermal-zones/ddr-thermal polling-delay) ms (DDR), pri ohreve $(fdtget "$f" /thermal-zones/cpu-thermal polling-delay-passive) ms"
+            # R216: záznamník pádov – 1 MiB pamäte na 1008 MiB (nad jadrom 0x08080000 a systémom v pamäti od
+            # 0x13000000, pod zavádzačom na konci pamäte; dosky majú 2 až 4 GiB): hlásenia jadra pri páde 128 KiB,
+            # konzola jadra 256 KiB, riadky KLÍČA (/dev/pmsg0) 256 KiB
+            r=/reserved-memory/ramoops@3f000000
+            fdtput -c "$f" "$r"
+            fdtput -t s "$f" "$r" compatible ramoops
+            fdtput -t x "$f" "$r" reg 0 3f000000 0 100000
+            fdtput -t x "$f" "$r" record-size 20000
+            fdtput -t x "$f" "$r" console-size 40000
+            fdtput -t x "$f" "$r" pmsg-size 40000
+            echo "$f: záznamník pádov – $(fdtget "$f" "$r" compatible), reg $(fdtget -t x "$f" "$r" reg)"
           done
           # X96 Max Plus – gigabitový čip siete býva iný ako v referenčnej doske (iná adresa, iný výrobca):
           # reset čipu presunutý na zbernicu MDIO (čip sa prebudí PRED hľadaním), bez pevnej adresy (jadro ho

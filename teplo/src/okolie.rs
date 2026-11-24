@@ -256,7 +256,8 @@ impl Okolie {
             && self.izba.is_none()
         {
             let predpoved = self.ustalena_teplota().unwrap_or(posledna.teplota);
-            let novy = predpoved - sh;
+            // R215: okolie nemôže byť teplejšie ako nečinná doska (tá sa zohrieva sama, teplo tečie do okolia)
+            let novy = (predpoved - sh).min(posledna.teplota - 0.3);
             // vyhladenie – minútový šum snímača sa neprenesie do odhadu
             self.odhad = Some(match (self.odhad, self.zdroj) {
                 (Some(o), Some(Zdroj::Model)) => o + 0.3 * (novy - o),
