@@ -774,11 +774,11 @@ enum SpanokJadier {
 
 impl SpanokJadier {
     /// Jeden krok; vráti `true`, ak sa stav zmenil (zmena tepla).
-    fn krok(&mut self, chce: bool, spustaci: Option<&str>) -> bool {
+    fn krok(&mut self, chce: bool, spustaci: Option<&str>, casovac: bool) -> bool {
         let koren = Path::new("/");
         match self {
             SpanokJadier::Vypnuty if chce => {
-                *self = SpanokJadier::zapni(koren, spustaci);
+                *self = SpanokJadier::zapni(koren, spustaci, casovac);
                 matches!(self, SpanokJadier::Zapnuty { .. })
             }
             SpanokJadier::Zapnuty { od, poistka, .. } if chce => {
@@ -806,7 +806,7 @@ impl SpanokJadier {
         }
     }
 
-    fn zapni(koren: &Path, spustaci: Option<&str>) -> SpanokJadier {
+    fn zapni(koren: &Path, spustaci: Option<&str>, casovac: bool) -> SpanokJadier {
         if !radice::spanok_jadier_je(koren) {
             return SpanokJadier::Zakazany("jadro nemá ovládač sklenik_jadra".into());
         }
@@ -825,26 +825,39 @@ impl SpanokJadier {
                 hlas(&format!("hlboký spánok jadier: {d}"));
                 SpanokJadier::Zakazany(d)
             }
-            Ok(false) => match radice::nastav_spanok_jadier(koren, true) {
-                Ok(stav) => {
-                    hlas(&format!(
-                        "hlboký spánok jadier: {stav} – poistka na karte {} min",
-                        POISTKA_JADIER_S / 60
-                    ));
-                    SpanokJadier::Zapnuty {
-                        od: Instant::now(),
-                        poistka: Some(n),
-                        stav,
-                        zaciatok: radice::Spanok::nacitaj(koren).unwrap_or_default(),
+            Ok(false) => {
+                // R186: spoločný časovač budenia mimo jadier – až s ním smie hlboko spať aj cpu0 (v pokoji jediné
+                // bežiace jadro); zapína sa pod tou istou poistkou ako spánok jadier
+                if casovac && radice::casovac_budenia_je(koren) {
+                    match radice::zapni_casovac_budenia(koren) {
+                        Ok(s) | Err(s) => hlas(&format!("časovač budenia (R186): {s}")),
                     }
                 }
-                Err(e) => {
-                    let _ = zaznam::poistka(&n, POISTKA_JADIER, zaznam::Poistka::Zmaz);
-                    hlas(&format!("hlboký spánok jadier: {e}"));
-                    SpanokJadier::Zakazany(e)
-                }
-            },
+                SpanokJadier::zapni_spanok(koren, n)
+            }
             Err(e) => SpanokJadier::Zakazany(format!("nezapnutý – poistka sa nezapísala ({e})")),
+        }
+    }
+
+    fn zapni_spanok(koren: &Path, n: zaznam::Nosic) -> SpanokJadier {
+        match radice::nastav_spanok_jadier(koren, true) {
+            Ok(stav) => {
+                hlas(&format!(
+                    "hlboký spánok jadier: {stav} – poistka na karte {} min",
+                    POISTKA_JADIER_S / 60
+                ));
+                SpanokJadier::Zapnuty {
+                    od: Instant::now(),
+                    poistka: Some(n),
+                    stav,
+                    zaciatok: radice::Spanok::nacitaj(koren).unwrap_or_default(),
+                }
+            }
+            Err(e) => {
+                let _ = zaznam::poistka(&n, POISTKA_JADIER, zaznam::Poistka::Zmaz);
+                hlas(&format!("hlboký spánok jadier: {e}"));
+                SpanokJadier::Zakazany(e)
+            }
         }
     }
 
@@ -1250,6 +1263,15 @@ pub fn spusti() {
         }
     };
     nastav_zariadenie(&nastavenie);
+    // R187: Full HD bez kódovania signálu (ako RPi) – jadro to má predvolené; prepínač hdmi_bez_kodovania=nie
+    // vráti správanie hlavného jadra (kódovanie aj pri Full HD, keď ho televízor podporuje). Pred prvým obrazom KLÍČA.
+    if pid1 && !novinka(&nastavenie, "hdmi_bez_kodovania") && hdmi::krabicka_koduje(Path::new("/")).is_some()
+    {
+        match hdmi::nastav_kodovanie(Path::new("/"), true) {
+            Ok(()) => hlas("HDMI (R187): Full HD s kódovaním signálu (prepínač hdmi_bez_kodovania=nie)"),
+            Err(e) => hlas(&format!("HDMI (R187): kódovanie sa nepodarilo zapnúť ({e})")),
+        }
+    }
     // R122: samomeranie – len ako PID 1 (pripája kartu); vypne sa nastavením `meranie=nie` v SKLENIK.TXT
     let mut merania = pid1.then(zaznam::Riadenie::default);
     let predpona_merania = samomeranie::predpona(&model, "", zaznam::seriove_cislo().as_deref());
@@ -1412,6 +1434,7 @@ pub fn spusti() {
     let (mut hdmi_restartov, mut hdmi_oprav) = (0u32, 0u32);
     let mut stlacenia: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
     let mut rucny_restart = false;
+    let (mut limit_hlaseny, mut hdmi_zamknuty) = (false, false);
     let straz_hdmi = novinka(&nastavenie, "straz_hdmi");
     // R184: človek sa krabičky dotkol (ovládač, klávesnica, ovládač TV) – až potom smie dlhý test zapnúť TV
     let mut clovek_bol = false;
@@ -1989,24 +2012,37 @@ pub fn spusti() {
                     hdmi_kontrola = teraz;
                     match x.stav() {
                         Ok(st) => {
-                            if st.caka_kodovanie(d.takt_khz()) {
+                            if st.caka_kodovanie(d.takt_khz(), hdmi::krabicka_koduje(Path::new("/"))) {
                                 if x.zrus_kodovanie().is_ok() {
                                     hdmi_oprav += 1;
-                                    hlas(
-                                        "HDMI: televízor čakal zakódovaný signál (zaseknutý po 4K) – vrátený do Full HD",
-                                    );
+                                    hlas(&format!(
+                                        "HDMI: televízor čakal zakódovaný signál, krabička nekóduje ({}) – vrátený",
+                                        st.popis()
+                                    ));
                                     restart = true;
                                 }
                             } else if !st.zamknuty()
                                 && !tv_spi
                                 && linka_od.elapsed() >= Duration::from_secs(8)
                             {
-                                hlas(&format!(
-                                    "HDMI: televízor signál nezamkol ({}) – reštart linky",
-                                    st.popis()
-                                ));
                                 restart = true;
+                                if restarty_linky.len() < 3 {
+                                    hlas(&format!(
+                                        "HDMI: televízor signál nezamkol ({}) – reštart linky",
+                                        st.popis()
+                                    ));
+                                } else if !limit_hlaseny {
+                                    hlas(&format!(
+                                        "HDMI: televízor signál nezamkol ({}) – už 3 reštarty za 10 min, strážca čaká \
+                                         (ručne 5× tlačidlo; inak televízor na 1 min zo zásuvky)",
+                                        st.popis()
+                                    ));
+                                    limit_hlaseny = true;
+                                }
+                            } else if st.zamknuty() && !hdmi_zamknuty {
+                                hlas(&format!("HDMI: televízor signál prijíma ({})", st.popis()));
                             }
+                            hdmi_zamknuty = st.zamknuty();
                             hdmi_stav = Some(st);
                             hdmi_chyba = None;
                         }
@@ -2018,6 +2054,9 @@ pub fn spusti() {
                     }
                 }
                 restarty_linky.retain(|t| t.elapsed() < Duration::from_secs(600));
+                if restarty_linky.len() < 3 {
+                    limit_hlaseny = false;
+                }
                 if restart && signal && (rucny || restarty_linky.len() < 3) {
                     let stav = d.stav_obrazu();
                     d.nastav_stav_obrazu(StavObrazu::Vypnuty);
@@ -2108,7 +2147,7 @@ pub fn spusti() {
                 && hore >= 120.0
                 && novinka(&nastavenie, "spanok_jadier");
             let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
-            if spanok_jadier.krok(chce_spanok, spustaci.as_deref()) {
+            if spanok_jadier.krok(chce_spanok, spustaci.as_deref(), novinka(&nastavenie, "casovac_budenia")) {
                 okolie.prekalibruj();
             }
         }
@@ -2434,13 +2473,24 @@ pub fn spusti() {
                             },
                             spanok_jadier.popis()
                         );
+                        if radice::casovac_budenia_je(Path::new("/")) {
+                            text += &format!(
+                                "  časovač budenia (R186): {}{NL}",
+                                radice::stav_casovaca_budenia(Path::new("/"))
+                            );
+                        }
                         text += &format!("  prepínače (R183): {}{NL}", vypnute_novinky(&nastavenie));
                         text += &format!(
-                            "  linka HDMI (R185): {} · opravy kódovania {} · reštarty linky {}{NL}",
+                            "  linka HDMI (R185): {} · krabička kóduje Full HD: {} (R187) · opravy kódovania {} · reštarty linky {}{NL}",
                             match (&hdmi_stav, &hdmi_chyba) {
                                 (_, Some(e)) => e.clone(),
                                 (Some(st), None) => st.popis(),
                                 (None, None) => "zatiaľ nečítaná".into(),
+                            },
+                            match hdmi::krabicka_koduje(Path::new("/")) {
+                                Some(true) => "áno",
+                                Some(false) => "nie",
+                                None => "?",
                             },
                             hdmi_oprav,
                             hdmi_restartov

@@ -171,9 +171,16 @@ jobs:
           # R174: vlastný kodek HEVC v jadre meson-vdec (formát HEVC pre SM1, prívod toku podľa voľných snímok)
           cp ../sklenik/jadro-ovladace/sklenik_hevc.c ../sklenik/jadro-ovladace/sklenik_hevc.h drivers/staging/media/meson/vdec/
           patch -p1 --forward < ../sklenik/jadro-ovladace/sklenik-hevc.patch
+          # R187: Full HD bez kódovania signálu (scrambling) aj pri televízore, ktorý ho podporuje – ako RPi; prepínač
+          # /sys/module/dw_hdmi/parameters/sklenik_bez_kodovania (KLÍČ: hdmi_bez_kodovania=nie vráti kódovanie)
+          patch -p1 --forward < ../sklenik/jadro-ovladace/sklenik-hdmi.patch
+          grep -q sklenik_bez_kodovania drivers/gpu/drm/bridge/synopsys/dw-hdmi.c || { echo "úprava R187 sa neuplatnila"; exit 1; }
           # R167: vlastný ovládač hlbokého spánku jadier (cpuidle cez PSCI) – pri štarte vypnutý, zapína ho KLÍČ
           cp ../sklenik/jadro-ovladace/sklenik_jadra.c drivers/cpuidle/
           echo 'obj-$(CONFIG_ARM_PSCI_FW) += sklenik_jadra.o' >> drivers/cpuidle/Makefile
+          # R186: vlastný spoločný časovač budenia (Timer F mimo zhluku jadier) – hlboko môže spať aj cpu0; zapína ho KLÍČ
+          cp ../sklenik/jadro-ovladace/sklenik_casovac.c drivers/clocksource/
+          echo 'obj-$(CONFIG_GENERIC_CLOCKEVENTS_BROADCAST) += sklenik_casovac.o' >> drivers/clocksource/Makefile
           # R165/R174: firmvér dekodéra videa (mikrokód jeho procesora AMRISC z linux-firmware) – overený odtlačkom
           # SHA-256; na karte ako samostatné súbory s menami 8.3 (licencia LICENSE.amlogic_vdec nedovoľuje vložiť ho
           # do jadra), KLÍČ ich pri štarte skopíruje do /lib/firmware
@@ -207,6 +214,7 @@ jobs:
           grep -q " vdec_probe$" System.map || { echo "dekodér videa meson-vdec chýba v jadre"; exit 1; }
           grep -q " sklenik_hevc_ops$" System.map || { echo "vlastný kodek HEVC chýba v jadre"; exit 1; }
           grep -q " skl_nastav$" System.map || { echo "vlastný ovládač spánku jadier chýba v jadre"; exit 1; }
+          grep -q " skl_prerusenie$" System.map || { echo "vlastný spoločný časovač budenia chýba v jadre"; exit 1; }
           # firmvér Amlogic nesmie byť v jadre (licencia)
           ! grep -q "^CONFIG_EXTRA_FIRMWARE=\".*meson" .config
           mkdir -p ../jadro-vystup/amlogic/dtb/amlogic
@@ -586,6 +594,14 @@ jobs:
             fdtput -t u "$f" /sklenik-vpu clocks $ph 116 $ph 112 $ph 115 $ph 110 $ph 113 $ph 3 $ph 4 $ph 5
             fdtput -t s "$f" /sklenik-vpu clock-names vpu vpu_0 vpu_1 vpu_0_sel vpu_1_sel fclk_div3 fclk_div4 fclk_div5
             echo "$f: takt VPU – $(fdtget "$f" /sklenik-vpu compatible), takty $(fdtget "$f" /sklenik-vpu clock-names)"
+            # R186: spoločný časovač budenia – Timer F (riadenie ISA_TIMER_MUX1 0xffd0f190, hodnota 0xffd0f194),
+            # prerušenie GIC SPI 60 hrana (ako v Androide výrobcu); hlavné jadro tieto časovače nepoužíva
+            c=/soc/bus@ffd00000/sklenik-casovac@f190
+            fdtput -c "$f" "$c"
+            fdtput -t s "$f" "$c" compatible sklenik,casovac-budenia
+            fdtput -t x "$f" "$c" reg 0 f190 0 8
+            fdtput -t u "$f" "$c" interrupts 0 60 1
+            echo "$f: časovač budenia – $(fdtget "$f" "$c" compatible), reg $(fdtget -t x "$f" "$c" reg), prerušenie $(fdtget "$f" "$c" interrupts)"
             # R168: jadro sa na teplotu pýta raz za 5 s namiesto každú sekundu (menej prebudení čipu); nad hranicou
             # pasívneho chladenia ostáva 100 ms – bezpečnosť sa nemení (čas ohrevu čipu je v minútach)
             for z in cpu-thermal ddr-thermal; do

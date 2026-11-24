@@ -125,6 +125,32 @@ pub fn nastav_spanok_jadier(koren: &Path, zapnuty: bool) -> Result<String, Strin
     }
 }
 
+const CASOVAC: &str = "sys/module/sklenik_casovac/parameters";
+const SPOLOCNY: &str = "sys/devices/system/clockevents/broadcast/current_device";
+
+/// R186: jadro má vlastný spoločný časovač budenia (Timer F)?
+pub fn casovac_budenia_je(koren: &Path) -> bool {
+    koren.join(CASOVAC).join("zapnute").exists()
+}
+
+/// R186: zapne spoločný časovač budenia (ovládač ho najprv vyskúša; zapnutý ostane do reštartu).
+pub fn zapni_casovac_budenia(koren: &Path) -> Result<String, String> {
+    match fs::write(koren.join(CASOVAC).join("zapnute"), "1") {
+        Ok(()) => Ok(stav_casovaca_budenia(koren)),
+        Err(e) => Err(format!("{} ({e})", stav_casovaca_budenia(koren))),
+    }
+}
+
+/// R186: stav ovládača a ktorý časovač jadro naozaj používa ako spoločný.
+pub fn stav_casovaca_budenia(koren: &Path) -> String {
+    let stav = citaj(koren.join(CASOVAC).join("stav"))
+        .unwrap_or_else(|| "jadro nemá ovládač sklenik_casovac".into());
+    match citaj(koren.join(SPOLOCNY)) {
+        Some(c) => format!("{stav} · jadro budí cez {c}"),
+        None => stav,
+    }
+}
+
 /// Štatistika hlbokého stavu za všetky jadrá: vstupy, čas v ňom (µs), odmietnuté firmvérom.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Spanok {
@@ -303,5 +329,16 @@ mod skusky {
             .subor("sys/module/sklenik_jadra/parameters/stav", "zapnutý – PSCI 1.0\n");
         assert!(spanok_jadier_je(&s.0));
         assert_eq!(nastav_spanok_jadier(&s.0, true), Ok("zapnutý – PSCI 1.0".into()));
+        // R186
+        assert!(!casovac_budenia_je(&s.0));
+        assert_eq!(stav_casovaca_budenia(&s.0), "jadro nemá ovládač sklenik_casovac");
+        s.subor("sys/module/sklenik_casovac/parameters/zapnute", "0\n")
+            .subor("sys/module/sklenik_casovac/parameters/stav", "beží · prerušení 5\n")
+            .subor("sys/devices/system/clockevents/broadcast/current_device", "sklenik-casovac-f\n");
+        assert!(casovac_budenia_je(&s.0));
+        assert_eq!(
+            zapni_casovac_budenia(&s.0),
+            Ok("beží · prerušení 5 · jadro budí cez sklenik-casovac-f".into())
+        );
     }
 }

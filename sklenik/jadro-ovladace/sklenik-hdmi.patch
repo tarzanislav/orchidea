@@ -1,0 +1,27 @@
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi.c
+@@ -1361,6 +1361,15 @@
+ }
+ EXPORT_SYMBOL_GPL(dw_hdmi_phy_i2c_write);
+ 
++/*
++ * SKLENÍK (R187): pri takte do 340 MHz (Full HD) sa signál nekóduje (scrambling), aj keď televízor kódovanie
++ * pri nízkom takte podporuje – ako HDMI 1.4 a RPi. Niektoré televízory sa po prepínaní zdrojov s kódovaním
++ * a bez neho „zaseknú“. 0 = správanie hlavného jadra; mení sa za behu, platí od ďalšieho nastavenia obrazu.
++ */
++static bool sklenik_bez_kodovania = true;
++module_param(sklenik_bez_kodovania, bool, 0644);
++MODULE_PARM_DESC(sklenik_bez_kodovania, "Full HD bez kódovania signálu (R187)");
++
+ /* Filter out invalid setups to avoid configuring SCDC and scrambling */
+ static bool dw_hdmi_support_scdc(struct dw_hdmi *hdmi,
+ 				 const struct drm_display_info *display)
+@@ -2084,7 +2093,7 @@
+ 	/* Scrambling Control */
+ 	if (dw_hdmi_support_scdc(hdmi, display)) {
+ 		if (vmode->mtmdsclock > HDMI14_MAX_TMDSCLK ||
+-		    hdmi_info->scdc.scrambling.low_rates) {
++		    (hdmi_info->scdc.scrambling.low_rates && !READ_ONCE(sklenik_bez_kodovania))) {
+ 			/*
+ 			 * HDMI2.0 Specifies the following procedure:
+ 			 * After the Source Device has determined that
