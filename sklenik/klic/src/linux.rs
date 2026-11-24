@@ -12,7 +12,10 @@ use crate::periferie::{Supis, Ulozisko};
 use crate::poda::Poda;
 use crate::radice;
 use crate::samomeranie::{self, NL, ZNACKA_NOSICA, ZNACKA_PORADIA, nadpis};
-use crate::strazca::{Hardver, Profil, Regulator, Uroven, je_tv_krabicka, stupen_ventilatora, urovne};
+use crate::strazca::{
+    Hardver, Profil, Regulator, Uroven, je_tv_krabicka, ma_chladnu_sadu, smie_parkovat, stupen_ventilatora,
+    urovne,
+};
 use crate::sys;
 use crate::zaznam;
 use orchidea_pismo::{Pismo, Platno};
@@ -99,13 +102,15 @@ struct Sysfs {
     takty: Vec<u32>,
     jadier: u32,
     vypinatelne: Vec<PathBuf>,
+    /// R194: jadrá, ktoré sa po vypnutí nevrátili – už sa neparkujú ani nespúšťajú.
+    nefunkcne: Vec<PathBuf>,
     uplatnena: Option<(u32, u32)>,
     /// Ventilátory jadra (`cooling_device` typu *fan*): cesta a najvyšší stupeň; riadi ich strážca.
     ventilatory: Vec<(PathBuf, u32, u32)>,
 }
 
 impl Sysfs {
-    fn najdi() -> Sysfs {
+    fn najdi(parkovanie: bool) -> Sysfs {
         let snimace: Vec<PathBuf> = fs::read_dir("/sys/class/thermal")
             .into_iter()
             .flatten()
@@ -128,7 +133,7 @@ impl Sysfs {
             .map_or(1, |n| n + 1);
         let vypinatelne = (1..jadier)
             .map(|i| PathBuf::from(format!("{CPU}/cpu{i}/online")))
-            .filter(|p| p.exists())
+            .filter(|p| parkovanie && p.exists())
             .collect();
         // regulátor taktu jadra: schedutil (rýchla odozva, úspora v nečinnosti), inak ondemand
         if let Some(dostupne) = citaj(format!("{politika}/scaling_available_governors")) {
@@ -155,7 +160,7 @@ impl Sysfs {
                 }
             }
         }
-        Sysfs { snimace, takty, jadier, vypinatelne, uplatnena: None, ventilatory }
+        Sysfs { snimace, takty, jadier, vypinatelne, nefunkcne: Vec::new(), uplatnena: None, ventilatory }
     }
 
     fn ventiluj(&mut self, teplota: f64, profil: Profil) {
@@ -189,8 +194,26 @@ impl Hardver for Sysfs {
             zapis(format!("{CPU}/cpufreq/policy0/scaling_max_freq"), &u.takt_khz.to_string());
         }
         // jadro 0 zostáva vždy; ďalšie sa vypnú, ak to platforma dovolí (inak platí rozpočet pre ORCHIDEU)
+        let mut zlyhane = Vec::new();
         for (i, p) in self.vypinatelne.iter().enumerate() {
-            zapis(p, if (i as u32) + 1 < u.jadra { "1" } else { "0" });
+            let chce = (i as u32) + 1 < u.jadra;
+            let ok = zapis(p, if chce { "1" } else { "0" });
+            // R194: jadro sa nevrátilo – firmvér ho nespustí; ďalšie pokusy by len zahlcovali denník jadra
+            if chce && (!ok || citaj(p).as_deref() == Some("0")) {
+                zlyhane.push(p.clone());
+            }
+        }
+        for p in zlyhane {
+            self.vypinatelne.retain(|x| *x != p);
+            hlas(&format!(
+                "jadro {} sa po vypnutí nevrátilo – už sa nebude parkovať ani spúšťať (R194)",
+                p.parent()
+                    .and_then(|x| x.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            ));
+            self.nefunkcne.push(p);
+            self.jadier = self.jadier.saturating_sub(1).max(1);
         }
         // tepelný rozpočet pre ORCHIDEU zapisuje hlavná slučka (úplný, s predpoveďou – R127)
         self.uplatnena = Some((u.jadra, u.takt_khz));
@@ -1227,7 +1250,7 @@ pub fn spusti() {
     let mut podpatie_bolo = supis.podpatie == Some(true);
     let mut nastavenie = nacitaj_nastavenie(&supis);
     // R183: prepínače noviniek musia platiť od štartu – TV krabička chvíľu počká na USB kľúč s nastavením
-    if pid1 && !skuska && je_tv_krabicka(&model) && nastavenie.is_none() {
+    if pid1 && !skuska && ma_chladnu_sadu(&model) && nastavenie.is_none() {
         let t = Instant::now();
         while nastavenie.is_none() && t.elapsed() < Duration::from_secs(8) {
             std::thread::sleep(Duration::from_millis(250));
@@ -1278,7 +1301,7 @@ pub fn spusti() {
     let mut vytazenie_teraz: Option<f64> = None;
     let pismo = Pismo::stonka();
     // R158–R161: správca chladu na TV krabičkách – vlastný ovládač obrazu, USB, sieť, jadrá, tepelný pokus
-    let tv = je_tv_krabicka(&model) && pid1 && !skuska;
+    let tv = ma_chladnu_sadu(&model) && pid1 && !skuska;
     // R169: časovače KLÍČA smú meškať až 50 ms – jadro ich zlúči s inými budeniami
     if tv && novinka(&nastavenie, "casovace") {
         sys::tolerancia_casovacov(50_000_000);
@@ -1311,7 +1334,7 @@ pub fn spusti() {
     };
     let mut obraz_teraz = displej.as_ref().filter(|d| d.je_kms()).map(|_| ciel_obrazu(&nastavenie));
     let profil = Profil::pre_model(&model);
-    let mut hw = Sysfs::najdi();
+    let mut hw = Sysfs::najdi(smie_parkovat(&model));
     let mut regulator = Regulator::novy(urovne(&hw.takty(), hw.jadier()), profil);
     // R123–R128: odhad okolia, zdroj tepla, predpoveď, úspora v horúcom okolí, tepelný rozpočet
     let mut okolie = if je_tv_krabicka(&model) { Okolie::s_dlhym_startom() } else { Okolie::nove() };
@@ -1485,6 +1508,7 @@ pub fn spusti() {
     }
     let mut vytazenie = Vytazenie::nove();
     let mut kmsg = Hlasenia::otvor(&model);
+    let mut straz_sd = radice::StrazSd::default();
     kmsg.citaj();
     let mut usb_ozivene = false;
     // R165: hardvérový dekodér videa – výsledky skúšky (vlákno) a či už bežala
@@ -1773,6 +1797,39 @@ pub fn spusti() {
         } else {
             false
         };
+        // R189: karta SD, ktorú jadro opakovane nevie spustiť – nižší takt, potom odpojený radič
+        if pid1 && !skuska {
+            for host in std::mem::take(&mut kmsg.sd_zlyhania) {
+                let strop = radice::sd_strop_je(Path::new("/"));
+                let Some(krok) = straz_sd.zlyhanie(&host, strop) else { continue };
+                let Some((rd, _)) = radice::radic_sd(Path::new("/"), &host) else { continue };
+                let text = match krok {
+                    radice::KrokSd::Pomalsie(_) => {
+                        let ok = radice::nastav_sd_strop(Path::new("/"), radice::SD_POMALY_KHZ).is_ok()
+                            && radice::odpoj(&rd).is_ok()
+                            && radice::pripoj(&rd).is_ok();
+                        format!(
+                            "karta SD ({host}): {}× zlyhala – skúša sa takt {} MHz (R189){}",
+                            radice::SD_ZLYHANI,
+                            radice::SD_POMALY_KHZ / 1000,
+                            if ok { "" } else { " – nepodarilo sa" }
+                        )
+                    }
+                    radice::KrokSd::Odpoj(_) => match radice::odpoj(&rd) {
+                        Ok(()) => {
+                            straz_sd.odpojene.push(rd);
+                            format!(
+                                "karta SD ({host}): jadro ju nevie spustiť ani pomalšie – radič odpojený, už sa \
+                                 neskúša (R189); záznamy idú na USB kľúč"
+                            )
+                        }
+                        Err(e) => format!("karta SD ({host}): radič sa nepodarilo odpojiť ({e})"),
+                    },
+                };
+                hlas(&text);
+                straz_sd.hlasenie = Some(text);
+            }
+        }
         // R114: rozbočovač USB Odroidu C4 sa pri štarte občas nezobudí (klávesnica a myš chýbajú, kým sa
         // nevytiahnu a nezasunú) – KLÍČ ho raz „zasunie znova“ sám: odpojí a znova pripojí koreňové rozbočovače
         if pid1 && !skuska && !usb_ozivene && uptime().unwrap_or(0.0) >= 8.0 {
@@ -2118,7 +2175,11 @@ pub fn spusti() {
             let chce_odpojit =
                 pid1 && !skuska && r.periferie && r.radice && hore >= 60.0 && novinka(&nastavenie, "radice");
             if chce_odpojit && radice_stav != Some(true) {
-                let chranene: Vec<String> = nastavenie.as_ref().map(|(c, _)| c.clone()).into_iter().collect();
+                // R188: chránené sú aj nosiče záznamov (Odroid zo vstavanej eMMC má na nej nastavenie aj záznamy)
+                let mut chranene: Vec<String> =
+                    nastavenie.as_ref().map(|(c, _)| c.clone()).into_iter().collect();
+                let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
+                chranene.extend(zaznam::najdi_nosice(spustaci.as_deref()).into_iter().map(|n| n.oddiel));
                 for rd in radice::nepouzite_radice(Path::new("/"), &chranene) {
                     match radice::odpoj(&rd) {
                         Ok(()) => radice_odpojene.push(rd),
@@ -2473,6 +2534,9 @@ pub fn spusti() {
                             },
                             spanok_jadier.popis()
                         );
+                        if let Some(h) = straz_sd.hlasenie.as_ref() {
+                            text += &format!("  {h}{NL}");
+                        }
                         if radice::casovac_budenia_je(Path::new("/")) {
                             text += &format!(
                                 "  časovač budenia (R186): {}{NL}",
@@ -3089,6 +3153,8 @@ struct Hlasenia {
     nahlasene: usize,
     /// R183: hlásenia o obraze, HDMI a CEC (všetky úrovne) a hlásenia KLÍČA – najviac 160 (prvých 80 a najnovšie).
     obraz: Vec<String>,
+    /// R189: radiče kariet SD, ktoré ohlásili zlyhanie pri rozpoznaní karty (od posledného prevzatia).
+    sd_zlyhania: Vec<String>,
     obraz_nahlasene: usize,
     /// Najvyššia (najmenej závažná) úroveň, ktorá sa ešte ukáže: na RPi len chyby (ovládač USB RPi 1–3
     /// pri každom štarte píše neškodné varovanie), inde aj varovania.
@@ -3107,6 +3173,7 @@ impl Hlasenia {
             nahlasene: 0,
             obraz: Vec::new(),
             obraz_nahlasene: 0,
+            sd_zlyhania: Vec::new(),
             uroven: if model.contains("Raspberry Pi") { 3 } else { 4 },
         }
     }
@@ -3120,6 +3187,11 @@ impl Hlasenia {
                 Ok(0) => break,
                 Ok(n) => {
                     let zaznam = String::from_utf8_lossy(&buf[..n]);
+                    if let Some(host) =
+                        zaznam.split_once(';').and_then(|(_, sprava)| radice::zlyhanie_sd(sprava.trim_end()))
+                    {
+                        self.sd_zlyhania.push(host);
+                    }
                     if let Some(h) = hlasenie_obrazu(&zaznam) {
                         if self.obraz.len() >= 160 {
                             self.obraz.remove(80);

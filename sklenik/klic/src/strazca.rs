@@ -53,6 +53,22 @@ pub fn je_tv_krabicka(model: &str) -> bool {
     ["X96", "Tanix", "TANIX", "TX68"].iter().any(|m| model.contains(m))
 }
 
+/// R188: dosky s chladnými ovládačmi KLÍČA (R158–R187: vlastný obraz cez KMS, USB spí, sieť v troch stupňoch,
+/// takt VPU, CEC, strážca HDMI, odpojené radiče, spánok jadier, tepelný pokus) – TV krabičky a Odroid C4
+/// (ten istý čip Amlogic S905X3 ako X96 Max Plus, to isté jadro).
+pub fn ma_chladnu_sadu(model: &str) -> bool {
+    je_tv_krabicka(model) || model.contains("ODROID-C4")
+}
+
+/// R194: smú sa jadrá vypínať (CPU hotplug)? RPi 5: firmvér jadro po vypnutí už nespustí („CPU3: failed to
+/// come online“, potom „psci: failed to boot CPU3 (-22)“ – 2. kolo meraní 24. 11.). RPi 1–3 a Zero 2 W
+/// štartujú jadrá cez „spin-table“ – vypnúť sa nedajú vôbec. Inde (RPi 4, Amlogic, Allwinner) áno.
+pub fn smie_parkovat(model: &str) -> bool {
+    !model.contains("Raspberry Pi 5")
+        && !model.contains("Raspberry Pi 500")
+        && !model.contains("Compute Module 5")
+}
+
 /// Úrovne výkonu z dostupných taktov a počtu jadier. Napätie rastie s taktom, takže príkon jadra sa
 /// odhaduje ako f · V², V ≈ 0,8 + 0,2 · f/fmax. Zostanú len úrovne, ktoré pri vyššom príkone dajú aj viac
 /// práce (Paretova hranica).

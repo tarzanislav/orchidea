@@ -1,0 +1,52 @@
+--- a/drivers/mmc/core/sd.c
++++ b/drivers/mmc/core/sd.c
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include <linux/err.h>
++#include <linux/moduleparam.h>
+ #include <linux/sizes.h>
+ #include <linux/slab.h>
+ #include <linux/stat.h>
+@@ -1008,9 +1009,21 @@
+ 	return 0;
+ }
+ 
++/*
++ * SKLENÍK (R189): niektoré lacné karty SD na niektorých doskách (Odroid C4 + Taishin SD64G) pri 50 MHz vracajú
++ * chyby CRC. KLÍČ po opakovaných zlyhaniach nastaví nižší strop taktu a radič znova pripojí. 0 = bez stropu.
++ */
++static unsigned int sklenik_sd_max_khz;
++module_param(sklenik_sd_max_khz, uint, 0644);
++MODULE_PARM_DESC(sklenik_sd_max_khz, "strop taktu karty SD v kHz (R189, 0 = bez stropu)");
++
+ unsigned mmc_sd_get_max_clock(struct mmc_card *card)
+ {
+ 	unsigned max_dtr = (unsigned int)-1;
++	unsigned int strop = READ_ONCE(sklenik_sd_max_khz);
++
++	if (strop && max_dtr > strop * 1000)
++		max_dtr = strop * 1000;
+ 
+ 	if (mmc_card_hs(card)) {
+ 		if (max_dtr > card->sw_caps.hs_max_dtr)
+@@ -1573,8 +1586,17 @@
+ 	if (!oldcard) {
+ 		/* Read/parse the extension registers. */
+ 		err = sd_read_ext_regs(card);
+-		if (err)
+-			goto free_card;
++		if (err) {
++			/*
++			 * SKLENÍK (R189): rozširujúce registre sú voliteľné (vyrovnávacia pamäť karty, oznámenie
++			 * vypnutia). Karta, ktorá ich neprečíta, je inak v poriadku – nezahodiť ju, len ich nepoužiť.
++			 */
++			pr_warn("%s: SD ext reg nečitateľné (%d) – karta bez rozšírení (R189)\n",
++				mmc_hostname(host), err);
++			memset(&card->ext_power, 0, sizeof(card->ext_power));
++			memset(&card->ext_perf, 0, sizeof(card->ext_perf));
++			err = 0;
++		}
+ 	}
+ 
+ 	/* Enable internal SD cache if supported. */

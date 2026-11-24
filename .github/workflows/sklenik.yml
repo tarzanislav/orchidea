@@ -174,6 +174,10 @@ jobs:
           # R187: Full HD bez kódovania signálu (scrambling) aj pri televízore, ktorý ho podporuje – ako RPi; prepínač
           # /sys/module/dw_hdmi/parameters/sklenik_bez_kodovania (KLÍČ: hdmi_bez_kodovania=nie vráti kódovanie)
           patch -p1 --forward < ../sklenik/jadro-ovladace/sklenik-hdmi.patch
+          # R189: karta SD, ktorá neprečíta voliteľné rozširujúce registre, sa už nezahodí; strop taktu SD
+          # (/sys/module/mmc_core/parameters/sklenik_sd_max_khz) – KLÍČ ho zníži, keď karta opakovane zlyháva
+          patch -p1 --forward < ../sklenik/jadro-ovladace/sklenik-sd.patch
+          grep -q sklenik_sd_max_khz drivers/mmc/core/sd.c || { echo "úprava R189 sa neuplatnila"; exit 1; }
           grep -q sklenik_bez_kodovania drivers/gpu/drm/bridge/synopsys/dw-hdmi.c || { echo "úprava R187 sa neuplatnila"; exit 1; }
           # R167: vlastný ovládač hlbokého spánku jadier (cpuidle cez PSCI) – pri štarte vypnutý, zapína ho KLÍČ
           cp ../sklenik/jadro-ovladace/sklenik_jadra.c drivers/cpuidle/
@@ -578,7 +582,8 @@ jobs:
           # R161: X96 Max Plus – nepoužívané časti čipu vypnuté: grafický procesor Mali (obraz skladajú roviny
           # obvodu obrazu VPU, GPU netreba; bez napájania v popise hlásil chybu) a USB OTG dwc2 (krabička nikdy
           # nie je USB zariadením – oba porty natrvalo ako hostiteľ, bez pokusu o g_mass_storage)
-          for d in meson-sm1-x96-air-gbit meson-sm1-x96-air; do
+          # R188: Odroid C4 (ten istý čip S905X3) dostáva tie isté chladné úpravy ako X96 Max Plus
+          for d in meson-sm1-x96-air-gbit meson-sm1-x96-air meson-sm1-odroid-c4; do
             f="boot/dtb/amlogic/$d.dtb"
             fdtput -t s "$f" /soc/gpu@ffe40000 status disabled
             fdtput -t s "$f" /soc/usb@ffe09000/usb@ff400000 status disabled

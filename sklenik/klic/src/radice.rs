@@ -2,7 +2,9 @@
 //! - **R178** – nepoužité radiče kariet: vstavaná eMMC Androidu a slot Wi-Fi bez ovládača bežia stále (eMMC
 //!   s taktom karty až 200 MHz, radič sa zastaví len pri zmene rýchlosti). Odpojením od ovládača jadro zastaví
 //!   takt karty aj radiča a čip Wi-Fi drží v resete. Navyše **istota, že sa do krabičky nič nezapíše**.
-//!   Karta SD sa nikdy neodpája (môže byť spúšťacia).
+//!   Karta SD sa ako „nepoužitá“ neodpája nikdy (môže byť spúšťacia).
+//! - **R189** – karta SD, ktorú jadro opakovane nevie spustiť (Odroid C4 + lacná karta, chyby CRC): najprv
+//!   nižší takt (strop v jadre SKLENÍKA), potom sa radič odpojí – jadro by ju inak skúšalo každú sekundu.
 //! - **R167** – hlboký spánok jadier: vlastný ovládač jadra `sklenik_jadra` (cpuidle cez PSCI), ktorý zapína
 //!   KLÍČ až pri bežiacom strážnom časovači a s poistkou na karte.
 
@@ -105,6 +107,86 @@ pub fn odpoj(r: &Radic) -> io::Result<()> {
 /// Znova pripojí radič (jadro kartu nanovo rozpozná).
 pub fn pripoj(r: &Radic) -> io::Result<()> {
     fs::write(r.ovladac.join("bind"), &r.zariadenie)
+}
+
+/// R189: z textu hlásenia jadra „mmc0: error -84 whilst initialising SD card“ vráti meno radiča (`mmc0`).
+pub fn zlyhanie_sd(sprava: &str) -> Option<String> {
+    let (host, zvysok) = sprava.split_once(": ")?;
+    (host.starts_with("mmc") && zvysok.contains("whilst initialising SD card")).then(|| host.to_string())
+}
+
+/// R189: radič karty `mmcN` (platformové zariadenie a jeho ovládač) a či je v ňom rozpoznaná karta.
+pub fn radic_sd(koren: &Path, host: &str) -> Option<(Radic, bool)> {
+    let h = koren.join("sys/class/mmc_host").join(host);
+    let zariadenie_cesta = fs::canonicalize(h.join("device")).ok()?;
+    let ovladac = fs::canonicalize(zariadenie_cesta.join("driver")).ok()?;
+    let zariadenie = zariadenie_cesta.file_name()?.to_string_lossy().to_string();
+    let predpona = format!("{host}:");
+    let ma_kartu =
+        fs::read_dir(&h).ok()?.flatten().any(|z| z.file_name().to_string_lossy().starts_with(&predpona));
+    Some((Radic { zariadenie, ovladac, popis: format!("karta SD {host}") }, ma_kartu))
+}
+
+const SD_STROP: &str = "sys/module/mmc_core/parameters/sklenik_sd_max_khz";
+
+/// R189: má jadro strop taktu karty SD (úprava jadra SKLENÍKA)?
+pub fn sd_strop_je(koren: &Path) -> bool {
+    koren.join(SD_STROP).exists()
+}
+
+/// R189: strop taktu karty SD v kHz (0 = bez stropu); platí od ďalšieho rozpoznania karty.
+pub fn nastav_sd_strop(koren: &Path, khz: u32) -> io::Result<()> {
+    fs::write(koren.join(SD_STROP), khz.to_string())
+}
+
+/// R189: strážca karty SD – po opakovaných zlyhaniach najprv nižší takt, potom odpojený radič (jadro by
+/// kartu inak skúšalo každú sekundu až do vypnutia – teplo a budenie).
+#[derive(Debug, Default)]
+pub struct StrazSd {
+    zlyhania: std::collections::HashMap<String, u32>,
+    /// mmcN → 1 = skúša sa nižší takt, 2 = radič odpojený
+    stupen: std::collections::HashMap<String, u8>,
+    pub odpojene: Vec<Radic>,
+    pub hlasenie: Option<String>,
+}
+
+/// Čo urobiť s radičom karty SD.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KrokSd {
+    Pomalsie(String),
+    Odpoj(String),
+}
+
+pub const SD_ZLYHANI: u32 = 5;
+pub const SD_POMALY_KHZ: u32 = 25_000;
+
+impl StrazSd {
+    /// Zapíše zlyhanie radiča; vráti krok, ak ich je dosť (`strop` = jadro má strop taktu).
+    pub fn zlyhanie(&mut self, host: &str, strop: bool) -> Option<KrokSd> {
+        let n = self.zlyhania.entry(host.to_string()).or_insert(0);
+        *n += 1;
+        if *n < SD_ZLYHANI {
+            return None;
+        }
+        *n = 0;
+        let stupen = self.stupen.entry(host.to_string()).or_insert(0);
+        match *stupen {
+            0 if strop => {
+                *stupen = 1;
+                Some(KrokSd::Pomalsie(host.to_string()))
+            }
+            0 | 1 => {
+                *stupen = 2;
+                Some(KrokSd::Odpoj(host.to_string()))
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn stupen(&self, host: &str) -> u8 {
+        self.stupen.get(host).copied().unwrap_or(0)
+    }
 }
 
 /// Parametre vlastného ovládača spánku jadier v jadre (R167).
@@ -340,5 +422,31 @@ mod skusky {
             zapni_casovac_budenia(&s.0),
             Ok("beží · prerušení 5 · jadro budí cez sklenik-casovac-f".into())
         );
+    }
+
+    #[test]
+    fn straz_karty_sd() {
+        assert_eq!(zlyhanie_sd("mmc0: error -84 whilst initialising SD card"), Some("mmc0".into()));
+        assert_eq!(zlyhanie_sd("mmc0: error -84 reading general info of SD ext reg"), None);
+        assert_eq!(zlyhanie_sd("usb 1-1: new device"), None);
+        let mut z = StrazSd::default();
+        for _ in 0..SD_ZLYHANI - 1 {
+            assert_eq!(z.zlyhanie("mmc0", true), None);
+        }
+        assert_eq!(z.zlyhanie("mmc0", true), Some(KrokSd::Pomalsie("mmc0".into())));
+        for _ in 0..SD_ZLYHANI - 1 {
+            assert_eq!(z.zlyhanie("mmc0", true), None);
+        }
+        assert_eq!(z.zlyhanie("mmc0", true), Some(KrokSd::Odpoj("mmc0".into())));
+        assert_eq!(z.stupen("mmc0"), 2);
+        for _ in 0..2 * SD_ZLYHANI {
+            assert_eq!(z.zlyhanie("mmc0", true), None);
+        }
+        // jadro bez stropu taktu: hneď odpojiť
+        let mut b = StrazSd::default();
+        for _ in 0..SD_ZLYHANI - 1 {
+            b.zlyhanie("mmc1", false);
+        }
+        assert_eq!(b.zlyhanie("mmc1", false), Some(KrokSd::Odpoj("mmc1".into())));
     }
 }
