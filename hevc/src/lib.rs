@@ -18,6 +18,7 @@
 pub mod bity;
 pub mod nal;
 pub mod obrazy;
+pub mod odtlacok;
 pub mod parametre;
 pub mod rez;
 pub mod sady;

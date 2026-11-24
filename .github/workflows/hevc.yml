@@ -1,0 +1,103 @@
+name: HEVC – rozbor a vlastný dekodér (R214)
+
+# Prúd B (HEVC na Raspberry Pi): beží len pri zmene balíkov hevc a hevc-dekoder – ostatné prúdy nebrzdí.
+# Skúšobné toky normy ITU-T/JCT-VC (celá sada HEVC_v1) a toky x265:
+# - H0/H1: každá parametrická sada, hlavička rezu a príprava parametrov V4L2 sa prečíta bez chyby,
+# - H2–H6: vlastný dekodér je bitovo presný – MD5 každého obrazu zo SEI a MD5 celého výstupu YUV.
+on:
+  push:
+    paths:
+      - "hevc/**"
+      - "hevc-dekoder/**"
+      - "jadro/**"
+      - "Cargo.lock"
+      - ".github/workflows/hevc.yml"
+  pull_request:
+    paths:
+      - "hevc/**"
+      - "hevc-dekoder/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  toky:
+    name: HEVC – ${{ matrix.meno }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { meno: "Linux x86-64", os: ubuntu-latest }
+          - { meno: "Linux ARM64 (ako Raspberry Pi 3/4/5)", os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Zoznam skúšobných tokov normy (HEVC_v1)
+        id: zoznam
+        shell: bash
+        run: |
+          zaklad=https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1
+          curl -sSfL --retry 3 "$zaklad/" | grep -oE '[A-Za-z0-9_.-]+\.zip' | sort -u > zoznam.txt || true
+          echo "tokov v zozname: $(wc -l < zoznam.txt)"
+          echo "kluc=$(sha256sum zoznam.txt | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: pamat
+        with:
+          path: toky/norma
+          key: hevc-v1-${{ steps.zoznam.outputs.kluc }}
+      - name: Stiahnutie tokov normy
+        if: steps.pamat.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          sh nastroje/balicky.sh unzip
+          zaklad=https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1
+          mkdir -p toky/norma toky/zip
+          stiahnute=0
+          while read -r z; do
+            m="${z%.zip}"
+            if curl -sSfL --retry 3 -o "toky/zip/$z" "$zaklad/$z" && unzip -qo "toky/zip/$z" -d "toky/norma/$m"; then
+              stiahnute=$((stiahnute + 1))
+            else
+              echo "::warning::skúšobný tok $m sa nepodarilo stiahnuť"
+            fi
+            rm -f "toky/zip/$z"
+          done < zoznam.txt
+          echo "stiahnuté toky normy: $stiahnute"
+      - name: Toky x265 (nástroje, ktoré v norme nie sú pokope)
+        shell: bash
+        run: |
+          sh nastroje/balicky.sh ffmpeg
+          mkdir -p toky/x265
+          z="-hide_banner -loglevel error -y -f lavfi"
+          gen() { ffmpeg $z -i "$2" -frames:v "$3" -c:v libx265 -pix_fmt yuv420p -x265-params "log-level=error:hash=1:$4" "toky/x265/$1.hevc"; }
+          s1="testsrc2=size=352x288:rate=25,noise=alls=12:allf=t"
+          s2="testsrc2=size=416x240:rate=25"
+          gen intra "$s1" 4 "keyint=1:tskip=1:signhide=1"
+          gen b "$s1" 16 "bframes=3:b-pyramid=1:ref=4"
+          gen vahy "mandelbrot=size=320x192:rate=25" 12 "bframes=3:weightp=1:weightb=1"
+          gen wpp_rezy "$s2" 8 "wpp=1:slices=3:bframes=2:ctu=32"
+          gen amp_aq "$s1" 8 "amp=1:rect=1:aq-mode=2:qg-size=16:cbqpoffs=-2:crqpoffs=3"
+          gen matice_opengop "$s2" 16 "scaling-list=default:keyint=8:open-gop=1:bframes=3"
+          gen bezstratovy "$s2" 3 "lossless=1:bframes=1"
+          gen hd "testsrc2=size=1280x720:rate=25" 10 "bframes=3"
+      - name: Rozbor syntaxe a príprava V4L2 (H0, H1)
+        shell: bash
+        run: |
+          echo "### HEVC – rozbor syntaxe a príprava V4L2 (H0, H1) – ${{ matrix.meno }}" >> "$GITHUB_STEP_SUMMARY"
+          cargo run --locked --release -p orchidea-hevc --example hevc_rozbor -- toky | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Vlastný dekodér – bitová zhoda (H2–H4)
+        shell: bash
+        run: |
+          echo "### HEVC – vlastný dekodér, bitová zhoda MD5 (H2–H4) – ${{ matrix.meno }}" >> "$GITHUB_STEP_SUMMARY"
+          cargo run --locked --release -p orchidea-hevc-dekoder --example hevc_dekoduj -- toky | tee -a "$GITHUB_STEP_SUMMARY"
