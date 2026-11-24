@@ -78,3 +78,5 @@ kernel=kernel_2712.img
 initramfs initramfs8.cpio.gz followkernel
 
 [all]
+# R190: obraz cez vlastný ovládač KLÍČA (KMS, jadro vc4) – súbor spravuje KLÍČ podľa obraz_kms v SKLENIK.TXT
+include sklenik-obraz.txt

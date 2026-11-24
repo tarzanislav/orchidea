@@ -405,7 +405,7 @@ pub fn blok_prepinacov() -> String {
 
 /// R183 – novinky od karty 4edb1db (posledná overená na televízore), ktoré sa dajú vypnúť v SKLENIK.TXT:
 /// (kľúč, čo robí).
-pub const NOVINKY: [(&str, &str); 11] = [
+pub const NOVINKY: [(&str, &str); 13] = [
     ("merac_pamate", "merač toku pamäte DDR (R162, R176)"),
     ("takt_obrazu", "takt obvodu obrazu VPU (R166, R182)"),
     ("merac_taktov", "merač taktov čipu a debugfs (R166)"),
@@ -417,6 +417,11 @@ pub const NOVINKY: [(&str, &str); 11] = [
     ("casovac_budenia", "spoločný časovač budenia – hlboký spánok aj pre cpu0 (R186)"),
     ("straz_hdmi", "strážca linky HDMI – oprava zaseknutého televízora, reštart linky (R185)"),
     ("hdmi_bez_kodovania", "Full HD bez kódovania signálu ako RPi – nie = kóduje ako hlavné jadro (R187)"),
+    ("usb_strom", "celý strom USB spí v pokoji – klávesnica, myš, čip siete, rozbočovače (R191)"),
+    (
+        "obraz_kms",
+        "RPi: obraz cez vlastný ovládač KMS – nie = obrazovka od firmvéru, od ďalšieho štartu (R190)",
+    ),
 ];
 
 impl NastavenieZariadenia {

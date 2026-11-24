@@ -263,6 +263,34 @@ pub fn poistka(n: &Nosic, meno: &str, co: Poistka) -> Result<bool, String> {
     vysledok.map_err(|e| format!("poistka: {e}"))
 }
 
+/// R190: súbor v koreni oddielu nosiča (napr. `sklenik-obraz.txt` vedľa `config.txt`) – prečíta ho a ak sa
+/// líši od `obsah`, prepíše ho. Vráti predošlý obsah (`None` – súbor nebol). Zapisuje sa len pri zmene.
+pub fn subor_v_koreni(n: &Nosic, meno: &str, obsah: &str) -> Result<Option<String>, String> {
+    const BOD: &str = "/run/karta-koren";
+    let _ = fs::create_dir_all(BOD);
+    sys::pripoj_s_volbami(
+        &format!("/dev/{}", n.oddiel),
+        BOD,
+        "vfat",
+        sys::MS_NOSUID | sys::MS_NODEV | sys::MS_NOEXEC | sys::MS_NOATIME,
+        "flush",
+    )
+    .map_err(|e| format!("pripojenie: {e}"))?;
+    let vysledok = (|| -> std::io::Result<Option<String>> {
+        let cesta = Path::new(BOD).join(meno);
+        let stary = fs::read_to_string(&cesta).ok();
+        if stary.as_deref() != Some(obsah) {
+            let mut f = fs::File::create(&cesta)?;
+            f.write_all(obsah.as_bytes())?;
+            f.sync_all()?;
+        }
+        Ok(stary)
+    })();
+    let _ = sys::odpoj(BOD);
+    sys::zapis_vyrovnavacie();
+    vysledok.map_err(|e| format!("{meno}: {e}"))
+}
+
 /// Sériové číslo dosky (RPi: popis hardvéru; Amlogic/Allwinner: SoC; inak /proc/cpuinfo).
 pub fn seriove_cislo() -> Option<String> {
     citaj("/proc/device-tree/serial-number")

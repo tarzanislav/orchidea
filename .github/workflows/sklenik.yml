@@ -93,6 +93,10 @@ jobs:
           for riadok in CONFIG_VFAT_FS=y CONFIG_NLS_CODEPAGE_437=y CONFIG_NLS_ISO8859_1=y; do
             grep -qxF "$riadok" "jadro-vystup/jadro-${{ matrix.id }}.config" || { echo "❌ $riadok chýba v jadre (samomeranie R122)"; exit 1; }
           done
+          # R190: vlastný chladný obraz cez KMS potrebuje ovládač vc4 a CEC priamo v jadre
+          for riadok in CONFIG_DRM_VC4=y CONFIG_DRM_VC4_HDMI_CEC=y; do
+            grep -qxF "$riadok" "jadro-vystup/jadro-${{ matrix.id }}.config" || { echo "❌ $riadok chýba v jadre (obraz R190)"; exit 1; }
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: jadro-${{ matrix.id }}
@@ -546,7 +550,7 @@ jobs:
           done
           # prekrytia popisu hardvéru, ktoré používa config.txt (len tie, nie celý priečinok)
           mkdir -p prekrytia
-          for f in $(grep -oE '^dtoverlay=[a-z0-9-]+' sklenik/boot/config.txt | cut -d= -f2 | sort -u); do
+          for f in $(cat sklenik/boot/config.txt sklenik/boot/sklenik-obraz.txt | grep -oE '^dtoverlay=[a-z0-9-]+' | cut -d= -f2 | sort -u); do
             curl -sSfL -o "prekrytia/$f.dtbo" "https://raw.githubusercontent.com/raspberrypi/firmware/${FIRMVER_TAG}/boot/overlays/$f.dtbo"
           done
           ls -l prekrytia
@@ -555,7 +559,7 @@ jobs:
           mkdir -p boot
           for v in 6 7 8; do python3 nastroje/initramfs.py "klic/klic-v$v/klic" "boot/initramfs$v.cpio.gz"; done
           cp firmver/* jadra/*.dtb jadra/*.img jadra/*.config boot/
-          cp sklenik/boot/config.txt sklenik/boot/cmdline.txt sklenik/boot/sklenik.txt boot/
+          cp sklenik/boot/config.txt sklenik/boot/cmdline.txt sklenik/boot/sklenik.txt sklenik/boot/sklenik-obraz.txt boot/
           mkdir -p boot/overlays && cp prekrytia/*.dtbo boot/overlays/
           # Amlogic S905X3 (Odroid C4, X96 Max Plus): spoločné jadro v amlogic/, popisy hardvéru v dtb/amlogic/
           # (U-Boot si vyberie podľa svojho fdtfile), nastavenie zavádzača U-Boot v extlinux/

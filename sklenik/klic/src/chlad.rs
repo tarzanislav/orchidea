@@ -609,6 +609,76 @@ pub fn cas_spanku_usb(koren: &Path) -> Option<(u64, u64)> {
     nasiel.then_some((spi, bdie))
 }
 
+/// R191: všetky zariadenia USB okrem úložísk (tie riadi R159) – (cesta, je HID, je rozbočovač, je koreňový).
+fn usb_ostatne(koren: &Path) -> Vec<(PathBuf, bool, bool, bool)> {
+    let zar = koren.join("sys/bus/usb/devices");
+    let ulozisko = usb_ulozisko(koren);
+    let mut v: Vec<(PathBuf, bool, bool, bool)> = fs::read_dir(&zar)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|z| {
+            let meno = z.file_name().into_string().ok()?;
+            if meno.contains(':') || !z.path().join("power/control").exists() {
+                return None;
+            }
+            let p = zar.join(&meno);
+            if ulozisko.contains(&p) {
+                return None;
+            }
+            let predpona = format!("{meno}:");
+            let hid = fs::read_dir(&zar).into_iter().flatten().flatten().any(|i| {
+                i.file_name().to_string_lossy().starts_with(&predpona)
+                    && fs::read_to_string(i.path().join("bInterfaceClass")).is_ok_and(|t| t.trim() == "03")
+            });
+            let rozbocovac = fs::read_to_string(p.join("bDeviceClass")).is_ok_and(|t| t.trim() == "09");
+            Some((p, hid, rozbocovac, meno.starts_with("usb")))
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// Oneskorenie uspania HID (klávesnica, myš, ovládač): dlhšie ako pauza pri písaní; stlačenie ho zobudí.
+pub const USB_HID_SPANOK_MS: u32 = 4000;
+/// Oneskorenie uspania ostatných zariadení USB (čip siete, rozbočovače).
+pub const USB_STROM_SPANOK_MS: u32 = 2000;
+
+/// R191: **celý strom USB spí**, keď sa nič nedeje – klávesnica a myš (zobudí ich stlačenie), čip siete
+/// (LAN7515 na RPi 3 B+ – rozbočovač a gigabitový Ethernet v jednom), rozbočovače až po koreň. Keď spia
+/// všetky periodické zariadenia, radič USB prestane plánovať mikrorámce – na RPi 1–3 zmizne 8000 budení
+/// procesora za sekundu (FIQ radiča dwc_otg). `spat` = false vráti pôvodný stav jadra (rozbočovače auto,
+/// ostatné on). Vráti počet nastavených zariadení.
+pub fn nastav_spanok_usb_stromu(koren: &Path, spat: bool) -> usize {
+    let mut n = 0;
+    for (p, hid, rozbocovac, _) in usb_ostatne(koren) {
+        let oneskorenie = if hid { USB_HID_SPANOK_MS } else { USB_STROM_SPANOK_MS };
+        let _ = fs::write(p.join("power/autosuspend_delay_ms"), oneskorenie.to_string());
+        let stav = if spat || rozbocovac { "auto" } else { "on" };
+        if fs::write(p.join("power/control"), stav).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// R191: súčet času v spánku a v činnosti (ms) zariadení stromu USB bez koreňových rozbočovačov a úložísk.
+pub fn cas_spanku_usb_stromu(koren: &Path) -> Option<(u64, u64)> {
+    let (mut spi, mut bdie, mut nasiel) = (0u64, 0u64, false);
+    for (p, _, _, koren_hub) in usb_ostatne(koren) {
+        if koren_hub {
+            continue;
+        }
+        let cislo = |s: &str| fs::read_to_string(p.join("power").join(s)).ok()?.trim().parse::<u64>().ok();
+        if let (Some(s), Some(a)) = (cislo("runtime_suspended_time"), cislo("runtime_active_time")) {
+            spi += s;
+            bdie += a;
+            nasiel = true;
+        }
+    }
+    nasiel.then_some((spi, bdie))
+}
+
 #[cfg(test)]
 mod skusky {
     use super::*;
@@ -800,6 +870,42 @@ mod skusky {
 
     // mená v /sys obsahujú dvojbodky (1-2:1.0) – vo Windows nemožné, skúška len na unixových systémoch
     #[cfg(unix)]
+    #[test]
+    fn usb_strom_spi() {
+        let k = std::env::temp_dir().join(format!("sklenik-usbstrom-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&k);
+        let z = k.join("sys/bus/usb/devices");
+        let zar = |meno: &str, trieda: &str| {
+            fs::create_dir_all(z.join(meno).join("power")).unwrap();
+            fs::write(z.join(meno).join("power/control"), "on").unwrap();
+            fs::write(z.join(meno).join("bDeviceClass"), trieda).unwrap();
+            fs::write(z.join(meno).join("power/runtime_suspended_time"), "3000").unwrap();
+            fs::write(z.join(meno).join("power/runtime_active_time"), "1000").unwrap();
+        };
+        let rozhranie = |meno: &str, trieda: &str| {
+            fs::create_dir_all(z.join(meno)).unwrap();
+            fs::write(z.join(meno).join("bInterfaceClass"), trieda).unwrap();
+        };
+        zar("usb1", "09");
+        zar("1-1", "09");
+        zar("1-1.2", "00");
+        rozhranie("1-1.2:1.0", "03");
+        zar("1-1.3", "00");
+        rozhranie("1-1.3:1.0", "08");
+        assert_eq!(nastav_spanok_usb_stromu(&k, true), 3);
+        assert_eq!(fs::read_to_string(z.join("1-1.2/power/autosuspend_delay_ms")).unwrap(), "4000");
+        assert_eq!(fs::read_to_string(z.join("1-1/power/autosuspend_delay_ms")).unwrap(), "2000");
+        assert_eq!(fs::read_to_string(z.join("1-1.2/power/control")).unwrap(), "auto");
+        // úložisko riadi R159
+        assert_eq!(fs::read_to_string(z.join("1-1.3/power/control")).unwrap(), "on");
+        // bez koreňového rozbočovača a úložiska: 1-1 a 1-1.2
+        assert_eq!(cas_spanku_usb_stromu(&k), Some((6000, 2000)));
+        nastav_spanok_usb_stromu(&k, false);
+        assert_eq!(fs::read_to_string(z.join("1-1.2/power/control")).unwrap(), "on");
+        assert_eq!(fs::read_to_string(z.join("1-1/power/control")).unwrap(), "auto");
+        let _ = fs::remove_dir_all(&k);
+    }
+
     #[test]
     fn usb_ulozisko_spi_a_meria_sa_spanok() {
         let k = std::env::temp_dir().join(format!("sklenik-usb-{}", std::process::id()));

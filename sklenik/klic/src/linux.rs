@@ -778,6 +778,11 @@ fn popis_zataze(s: &StatZataze, max_teplota: Option<f64>) -> String {
     )
 }
 
+/// R190: obsah súboru `sklenik-obraz.txt` na karte RPi (vkladá ho `config.txt`) – obraz cez KMS (vc4) alebo od
+/// firmvéru. Spravuje ho KLÍČ podľa prepínača `obraz_kms` v SKLENIK.TXT, platí od ďalšieho štartu.
+const OBRAZ_KMS: &str = include_str!("../../boot/sklenik-obraz.txt");
+const OBRAZ_FIRMVER: &str = "# SKLENÍK (R190) – obrazovka od firmvéru (prepínač obraz_kms=nie v SKLENIK.TXT). Súbor spravuje KLÍČ –\n# zmena platí od ďalšieho štartu. Ručne neupravovať.\n[all]\n";
+
 /// Značka na karte: krabička sa po dlhom teste vypla (R184).
 const VYPNUTE_PO_TESTE: &str = "VYPNUTE.TXT";
 
@@ -1319,6 +1324,23 @@ pub fn spusti() {
             ));
         }
         hlas(&format!("prepínače (R183): {}", vypnute_novinky(&nastavenie)));
+        // R190: obraz RPi cez KMS alebo od firmvéru – súbor sklenik-obraz.txt na karte podľa prepínača obraz_kms
+        if model.contains("Raspberry Pi") && nastavenie.is_some() {
+            let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
+            let obsah = if novinka(&nastavenie, "obraz_kms") { OBRAZ_KMS } else { OBRAZ_FIRMVER };
+            if let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next() {
+                match zaznam::subor_v_koreni(&n, "sklenik-obraz.txt", obsah) {
+                    Ok(Some(stary)) if stary == obsah => {}
+                    Ok(_) => hlas(&format!(
+                        "obraz (R190): od ďalšieho štartu {} (prepínač obraz_kms)",
+                        if obsah == OBRAZ_KMS { "vlastný ovládač KMS" } else { "obrazovka od firmvéru" }
+                    )),
+                    Err(e) => {
+                        hlas(&format!("obraz (R190): súbor sklenik-obraz.txt sa nepodarilo zapísať ({e})"))
+                    }
+                }
+            }
+        }
         // R184: predošlý beh sa po dlhom teste vypol? (značku zapísal pred vypnutím)
         let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
         if let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next()
@@ -1336,6 +1358,8 @@ pub fn spusti() {
     let profil = Profil::pre_model(&model);
     let mut hw = Sysfs::najdi(smie_parkovat(&model));
     let mut regulator = Regulator::novy(urovne(&hw.takty(), hw.jadier()), profil);
+    // R194: parkovať jadrá sa dá len tam, kde ich platforma vie vypnúť (RPi 1–3 nie, RPi 5 zle)
+    let parkovat_mozno = !hw.vypinatelne.is_empty();
     // R123–R128: odhad okolia, zdroj tepla, predpoveď, úspora v horúcom okolí, tepelný rozpočet
     let mut okolie = if je_tv_krabicka(&model) { Okolie::s_dlhym_startom() } else { Okolie::nove() };
     let mut uspora = false;
@@ -1465,6 +1489,9 @@ pub fn spusti() {
     let mut usb_spanok_od: Option<(u64, u64)> = None;
     let mut usb_nastavene: Vec<String> = Vec::new();
     let mut usb_spanok_zakazany = false;
+    // R191: koľko zariadení stromu USB smie spať a stav času spánku pri zapnutí
+    let mut usb_strom = 0usize;
+    let mut usb_strom_od: Option<(u64, u64)> = None;
     let mut obrazovka_zmenena = false;
     let mut pokus = false;
     let mut pokus_zastaveny = false;
@@ -1774,10 +1801,13 @@ pub fn spusti() {
                 hlas(&novy.riadok());
                 supis = novy;
                 podpatie_bolo |= supis.podpatie == Some(true);
-                // nový USB kľúč tiež spí medzi zápismi (R159)
+                // nový USB kľúč tiež spí medzi zápismi (R159); nové zariadenia stromu USB tiež (R191)
                 if tv && periferie_teraz == Some(true) {
                     usb_nastavene =
                         chlad::nastav_spanok_usb(Path::new("/"), !usb_spanok_zakazany, USB_SPANOK_MS);
+                    if novinka(&nastavenie, "usb_strom") {
+                        usb_strom = chlad::nastav_spanok_usb_stromu(Path::new("/"), true);
+                    }
                 }
                 eee.obnov(&supis);
                 // karta sa môže objaviť až chvíľu po štarte
@@ -1898,7 +1928,8 @@ pub fn spusti() {
                 }
                 // R184: pri záťaži jadier sa jadrá neparkujú – strážca ich pustí naplno, kým to teplota dovolí
                 // (noc 23./24. 11.: s parkovaním počítalo len 1 jadro pri 1 GHz)
-                regulator.nastav_parkovanie(chce_zataz != chlad::Zataz::Jadra && r.periferie);
+                regulator
+                    .nastav_parkovanie(parkovat_mozno && chce_zataz != chlad::Zataz::Jadra && r.periferie);
                 if chce_zataz != chlad::Zataz::Ziadna {
                     zataznik = Some(Zataznik::spusti(chce_zataz, &stat_zataze));
                     hlas(&format!(
@@ -2138,7 +2169,12 @@ pub fn spusti() {
                 let p = r.periferie;
                 usb_nastavene =
                     chlad::nastav_spanok_usb(Path::new("/"), p && !usb_spanok_zakazany, USB_SPANOK_MS);
-                regulator.nastav_parkovanie(p);
+                // R191: celý strom USB (klávesnica, myš, čip siete, rozbočovače) spí, keď sa nič nedeje
+                if novinka(&nastavenie, "usb_strom") {
+                    usb_strom = chlad::nastav_spanok_usb_stromu(Path::new("/"), p);
+                    usb_strom_od = if p { chlad::cas_spanku_usb_stromu(Path::new("/")) } else { None };
+                }
+                regulator.nastav_parkovanie(parkovat_mozno && p);
                 alr = SietPodlaPotreby::nova();
                 alr_vzorka = None;
                 for (meno, k) in kable.drain() {
@@ -2491,6 +2527,23 @@ pub fn spusti() {
                             slovo_stavu(d.map_or(StavObrazu::Zapnuty, |d| d.stav_obrazu())),
                             if d.is_some_and(|d| d.je_kms()) { "áno" } else { "nie – /dev/fb0" }
                         );
+                        if usb_strom > 0 {
+                            text += &format!(
+                                "  strom USB (R191): {} zariadení smie spať · {}{NL}",
+                                usb_strom,
+                                match (usb_strom_od, chlad::cas_spanku_usb_stromu(Path::new("/"))) {
+                                    (Some(od), Some(t)) => {
+                                        let (spi, bdie) =
+                                            (t.0.saturating_sub(od.0), t.1.saturating_sub(od.1));
+                                        format!(
+                                            "spali {:.0} % času",
+                                            spi as f64 * 100.0 / (spi + bdie).max(1) as f64
+                                        )
+                                    }
+                                    _ => "zatiaľ bez merania".into(),
+                                }
+                            );
+                        }
                         let spanok = match (usb_spanok_od, chlad::cas_spanku_usb(Path::new("/"))) {
                             (Some(od), Some(t)) if periferie_teraz == Some(true) => {
                                 let (spi, bdie) = (t.0.saturating_sub(od.0), t.1.saturating_sub(od.1));

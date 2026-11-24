@@ -53,11 +53,12 @@ pub fn je_tv_krabicka(model: &str) -> bool {
     ["X96", "Tanix", "TANIX", "TX68"].iter().any(|m| model.contains(m))
 }
 
-/// R188: dosky s chladnými ovládačmi KLÍČA (R158–R187: vlastný obraz cez KMS, USB spí, sieť v troch stupňoch,
-/// takt VPU, CEC, strážca HDMI, odpojené radiče, spánok jadier, tepelný pokus) – TV krabičky a Odroid C4
-/// (ten istý čip Amlogic S905X3 ako X96 Max Plus, to isté jadro).
+/// R188, R190: dosky s chladnými ovládačmi KLÍČA (R158–R191: vlastný obraz cez KMS, USB spí, sieť v troch
+/// stupňoch, takt VPU, CEC, strážca HDMI, odpojené radiče, spánok jadier, tepelný pokus) – TV krabičky,
+/// Odroid C4 (ten istý čip Amlogic S905X3 ako X96 Max Plus) a Raspberry Pi (obraz cez KMS – jadro vc4).
+/// Časti, ktoré doska nemá (takt VPU, spánok jadier), sa vynechajú samy.
 pub fn ma_chladnu_sadu(model: &str) -> bool {
-    je_tv_krabicka(model) || model.contains("ODROID-C4")
+    je_tv_krabicka(model) || model.contains("ODROID-C4") || model.contains("Raspberry Pi")
 }
 
 /// R194: smú sa jadrá vypínať (CPU hotplug)? RPi 5: firmvér jadro po vypnutí už nespustí („CPU3: failed to

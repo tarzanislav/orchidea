@@ -1,0 +1,17 @@
+# SKLENÍK (R190) – obraz Raspberry Pi riadi vlastný ovládač KLÍČA cez KMS (jadro vc4): chladný obraz Full HD
+# 24 Hz v 16 bitoch so zväčšením v hardvéri, čierny obraz, vypnuté HDMI v pokoji, CEC (televízor sa zapne
+# a uspí spolu s Raspberry Pi), režim podľa monitora. Súbor spravuje KLÍČ podľa prepínača obraz_kms v
+# SKLENIK.TXT (obraz_kms=nie = obrazovka od firmvéru) – zmena platí od ďalšieho štartu. Ručne neupravovať.
+[pi0]
+dtoverlay=vc4-kms-v3d
+[pi1]
+dtoverlay=vc4-kms-v3d
+[pi2]
+dtoverlay=vc4-kms-v3d
+[pi3]
+dtoverlay=vc4-kms-v3d
+[pi4]
+dtoverlay=vc4-kms-v3d
+[pi5]
+dtoverlay=vc4-kms-v3d-pi5
+[all]
