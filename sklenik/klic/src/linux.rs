@@ -1459,6 +1459,8 @@ pub fn spusti() {
     // R170: čip siete bez kábla spí (podľa mena rozhrania)
     let mut kable: std::collections::HashMap<String, chlad::Kabel> = std::collections::HashMap::new();
     let mut kabel_hladani = 0u32;
+    // R191: či je kábel zapojený, kým čip siete spí (zistené pri poslednom overení)
+    let mut kabel_zapojeny: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     let mut periferie_teraz: Option<bool> = None;
     // R178: nepoužité radiče kariet odpojené od ovládača; R167: hlboký spánok jadier
     let mut radice_odpojene: Vec<radice::Radic> = Vec::new();
@@ -1679,13 +1681,27 @@ pub fn spusti() {
                     }
                 }
                 // R170: čip siete bez kábla spí; raz za 30 s sa na chvíľu zobudí a hľadá kábel
+                // R191: sieť zatiaľ nič nepotrebuje (SKLENÍK nemá sieťové služby) – spí aj s káblom
+                let siet_potrebna = !novinka(&nastavenie, "siet_spi");
                 if tv && periferie_teraz == Some(true) && novinka(&nastavenie, "siet") {
                     for r in supis.siet.iter().filter(|r| !r.bezdrotove && !siet_chyby.contains(&r.meno)) {
                         let k = kable.entry(r.meno.clone()).or_insert_with(chlad::Kabel::novy);
                         let spojenie =
                             citaj(format!("/sys/class/net/{}/carrier", r.meno)).as_deref() == Some("1");
-                        let Some(p) = k.krok(dt, spojenie) else { continue };
+                        let Some(p) = k.krok_s_potrebou(dt, spojenie, siet_potrebna) else { continue };
                         let zapnut = matches!(p, chlad::PrechodKabla::Hladaj);
+                        match p {
+                            chlad::PrechodKabla::Najdeny | chlad::PrechodKabla::Overeny => {
+                                kabel_zapojeny.insert(r.meno.clone(), true);
+                            }
+                            chlad::PrechodKabla::Spat => {
+                                kabel_zapojeny.insert(r.meno.clone(), false);
+                            }
+                            chlad::PrechodKabla::Uspi => {
+                                kabel_zapojeny.insert(r.meno.clone(), spojenie);
+                            }
+                            chlad::PrechodKabla::Hladaj => {}
+                        }
                         if p != chlad::PrechodKabla::Najdeny
                             && let Err(e) = sys::nastav_rozhranie(&r.meno, zapnut)
                         {
@@ -1694,11 +1710,19 @@ pub fn spusti() {
                             continue;
                         }
                         match p {
+                            chlad::PrechodKabla::Uspi if spojenie => hlas(&format!(
+                                "sieť {}: kábel zapojený, ale sieť zatiaľ nič nepotrebuje – čip siete spí, kábel sa \
+                                 overí raz za {} min (R191)",
+                                r.meno,
+                                chlad::SPANOK_NEPOTREBNEJ_S as u32 / 60
+                            )),
                             chlad::PrechodKabla::Uspi => hlas(&format!(
                                 "sieť {}: bez kábla – čip siete spí, kábel sa hľadá raz za {} s",
                                 r.meno,
-                                chlad::SPANOK_PHY_S as u32
+                                if siet_potrebna { chlad::SPANOK_PHY_S } else { chlad::SPANOK_NEPOTREBNEJ_S }
+                                    as u32
                             )),
+                            chlad::PrechodKabla::Overeny => {}
                             chlad::PrechodKabla::Najdeny => {
                                 hlas(&format!("sieť {}: kábel pripojený – čip siete zapnutý", r.meno))
                             }
@@ -2272,7 +2296,27 @@ pub fn spusti() {
                         ));
                     }
                 }
-                casti.push(format!("sieť {} podľa potreby", rychlost_siete(alr.mbs)));
+                if kable.values().any(|k| k.riadeny()) {
+                    // R191: čip siete spí (bez kábla alebo sieť zatiaľ nič nepotrebuje)
+                    casti.push(if kabel_zapojeny.values().any(|z| *z) {
+                        "sieť spí – kábel zapojený, zatiaľ ju nič nepotrebuje".to_string()
+                    } else {
+                        "čip siete spí – bez kábla".to_string()
+                    });
+                } else {
+                    casti.push(format!("sieť {} podľa potreby", rychlost_siete(alr.mbs)));
+                }
+                if usb_strom > 0
+                    && let (Some(od), Some(t)) = (usb_strom_od, chlad::cas_spanku_usb_stromu(Path::new("/")))
+                {
+                    let (spi, bdie) = (t.0.saturating_sub(od.0), t.1.saturating_sub(od.1));
+                    if spi + bdie > 10_000 {
+                        casti.push(format!(
+                            "USB spí {:.0} %",
+                            (spi as f64 / (spi + bdie) as f64 * 10.0).round() * 10.0
+                        ));
+                    }
+                }
                 if regulator.zaparkovane() {
                     casti.push("jadrá zaparkované".into());
                 }
@@ -2572,7 +2616,14 @@ pub fn spusti() {
                                 "s gigabitom (pôvodne)".into()
                             },
                             if kable.values().any(|k| k.riadeny()) {
-                                format!("čip spí, hľadaní kábla {kabel_hladani}")
+                                format!(
+                                    "čip spí{}, hľadaní kábla {kabel_hladani}",
+                                    if kabel_zapojeny.values().any(|z| *z) {
+                                        " – kábel zapojený, sieť zatiaľ nič nepotrebuje (R191)"
+                                    } else {
+                                        ""
+                                    }
+                                )
                             } else {
                                 format!("kábel zapojený, hľadaní {kabel_hladani}")
                             },

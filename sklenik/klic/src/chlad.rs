@@ -139,6 +139,8 @@ pub enum PrechodKabla {
     Spat,
     /// Kábel sa našiel – rozhranie ostáva zapnuté (oznámiť).
     Najdeny,
+    /// R191: kábel je zapojený, ale sieť nič nepotrebuje – čip siete znova spí.
+    Overeny,
 }
 
 /// Bez spojenia takto dlho → čip siete spí.
@@ -147,6 +149,8 @@ pub const BEZ_KABLA_S: f64 = 60.0;
 pub const SPANOK_PHY_S: f64 = 30.0;
 /// Ako dlho sa čaká na spojenie pri hľadaní (dohodnutie 10/100 Mb/s trvá 2–3 s).
 pub const HLADANIE_S: f64 = 6.0;
+/// R191: ako dlho spí čip siete, keď sieť nič nepotrebuje (kábel sa len občas overí).
+pub const SPANOK_NEPOTREBNEJ_S: f64 = 300.0;
 
 impl Kabel {
     pub fn novy() -> Kabel {
@@ -159,7 +163,34 @@ impl Kabel {
     }
 
     /// Krok: čas od posledného kroku (s) a či je spojenie (kábel s dohodnutou rýchlosťou).
+    #[cfg(test)]
     pub fn krok(&mut self, dt_s: f64, spojenie: bool) -> Option<PrechodKabla> {
+        self.krok_s_potrebou(dt_s, spojenie, true)
+    }
+
+    /// R191: krok s ohľadom na to, či sieť niečo potrebuje. SKLENÍK zatiaľ nemá sieťové služby (spojenie s PC
+    /// KORENE príde neskôr) – keď sieť nič nepotrebuje, čip siete spí aj so zapojeným káblom a kábel sa overí
+    /// raz za 5 minút (gigabitový čip LAN7515 na RPi 3 B+ je najväčší zdroj tepla v pokoji).
+    pub fn krok_s_potrebou(&mut self, dt_s: f64, spojenie: bool, potrebna: bool) -> Option<PrechodKabla> {
+        if !potrebna {
+            let (novy, prechod) = match *self {
+                Kabel::Zapnute { bez_kabla_s } if bez_kabla_s + dt_s >= BEZ_KABLA_S => {
+                    (Kabel::Spi { s: 0.0 }, Some(PrechodKabla::Uspi))
+                }
+                Kabel::Zapnute { bez_kabla_s } => (Kabel::Zapnute { bez_kabla_s: bez_kabla_s + dt_s }, None),
+                Kabel::Spi { s } if s + dt_s >= SPANOK_NEPOTREBNEJ_S => {
+                    (Kabel::Hlada { s: 0.0 }, Some(PrechodKabla::Hladaj))
+                }
+                Kabel::Spi { s } => (Kabel::Spi { s: s + dt_s }, None),
+                Kabel::Hlada { .. } if spojenie => (Kabel::Spi { s: 0.0 }, Some(PrechodKabla::Overeny)),
+                Kabel::Hlada { s } if s + dt_s >= HLADANIE_S => {
+                    (Kabel::Spi { s: 0.0 }, Some(PrechodKabla::Spat))
+                }
+                Kabel::Hlada { s } => (Kabel::Hlada { s: s + dt_s }, None),
+            };
+            *self = novy;
+            return prechod;
+        }
         let (novy, prechod) = match *self {
             Kabel::Zapnute { .. } if spojenie => (Kabel::novy(), None),
             Kabel::Zapnute { bez_kabla_s } if bez_kabla_s + dt_s >= BEZ_KABLA_S => {
@@ -870,6 +901,26 @@ mod skusky {
 
     // mená v /sys obsahujú dvojbodky (1-2:1.0) – vo Windows nemožné, skúška len na unixových systémoch
     #[cfg(unix)]
+    #[test]
+    fn siet_spi_ked_ju_nic_nepotrebuje() {
+        let mut k = Kabel::novy();
+        // kábel zapojený, sieť nepotrebná: po minúte spí
+        assert_eq!(k.krok_s_potrebou(30.0, true, false), None);
+        assert_eq!(k.krok_s_potrebou(30.0, true, false), Some(PrechodKabla::Uspi));
+        // overenie kábla raz za 5 min, potom znova spí
+        assert_eq!(k.krok_s_potrebou(299.0, false, false), None);
+        assert_eq!(k.krok_s_potrebou(1.0, false, false), Some(PrechodKabla::Hladaj));
+        assert_eq!(k.krok_s_potrebou(3.0, true, false), Some(PrechodKabla::Overeny));
+        assert!(k.riadeny());
+        // bez kábla: hľadanie skončí po 6 s
+        assert_eq!(k.krok_s_potrebou(300.0, false, false), Some(PrechodKabla::Hladaj));
+        assert_eq!(k.krok_s_potrebou(6.0, false, false), Some(PrechodKabla::Spat));
+        // keď sieť zas niečo potrebuje, nájdený kábel ostane zapnutý
+        assert_eq!(k.krok_s_potrebou(30.0, false, true), Some(PrechodKabla::Hladaj));
+        assert_eq!(k.krok_s_potrebou(2.0, true, true), Some(PrechodKabla::Najdeny));
+        assert!(!k.riadeny());
+    }
+
     #[test]
     fn usb_strom_spi() {
         let k = std::env::temp_dir().join(format!("sklenik-usbstrom-{}", std::process::id()));
