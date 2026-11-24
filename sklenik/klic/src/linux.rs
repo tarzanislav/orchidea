@@ -1787,6 +1787,9 @@ pub fn spusti() {
                         popis_zataze(&stat_zataze, max_teplota_zataze)
                     ));
                 }
+                // R184: pri záťaži jadier sa jadrá neparkujú – strážca ich pustí naplno, kým to teplota dovolí
+                // (noc 23./24. 11.: s parkovaním počítalo len 1 jadro pri 1 GHz)
+                regulator.nastav_parkovanie(chce_zataz != chlad::Zataz::Jadra && r.periferie);
                 if chce_zataz != chlad::Zataz::Ziadna {
                     zataznik = Some(Zataznik::spusti(chce_zataz, &stat_zataze));
                     hlas(&format!(

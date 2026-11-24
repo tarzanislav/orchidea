@@ -1279,21 +1279,28 @@ static int skl_stop(struct amvdec_session *sess)
 static void skl_drain(struct amvdec_session *sess)
 {
 	struct skl_hevc *h = sess->priv;
+	bool necinny = false;
 	int i;
 
 	if (!h)
 		return;
-	mutex_lock(&h->zamok);
-	if (h->aktualna && h->lcu_x && h->lcu_y) {
-		u32 posledna = h->lcu_x * h->lcu_y - 1;
-
-		for (i = 0; i < 100; i++) {
-			if ((citaj(h, HEVC_PARSER_LCU_START) & 0xffffff) >= posledna)
-				break;
-			usleep_range(1000, 2000);
-		}
+	/*
+	 * Nechať dekodér dokončiť všetko, čo už má (najviac 500 ms) – zámok sa počas čakania NEDRŽÍ, aby
+	 * vlákno prerušenia mohlo snímky normálne dokončiť a začať ďalšie. Noc 23./24. 11.: s držaným zámkom
+	 * sa posledné snímky PCM vydali nedokončené (spodné riadky nulové, 5/8 a 6/8).
+	 */
+	for (i = 0; i < 250; i++) {
+		mutex_lock(&h->zamok);
+		necinny = !h->aktualna && !atomic_read(&sess->esparser_queued_bufs);
+		mutex_unlock(&h->zamok);
+		if (necinny)
+			break;
 		usleep_range(2000, 3000);
 	}
+	mutex_lock(&h->zamok);
+	if (!necinny)
+		dev_info(jadro(h)->dev, "sklenik-hevc: vyprázdnenie po 500 ms – snímka %s\n",
+			 h->aktualna ? "nedokončená" : "dokončená");
 	dokonci_aktualnu(h);
 	vydavaj(h, true);
 	mutex_unlock(&h->zamok);
