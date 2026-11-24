@@ -34,6 +34,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "orchidea-hevc-dekoder"
+version = "0.1.0"
+dependencies = [
+ "orchidea-hevc",
+ "orchidea-jadro",
+]
+
+[[package]]
 name = "orchidea-jadro"
 version = "0.1.0"
 

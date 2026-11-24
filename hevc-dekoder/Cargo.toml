@@ -1,0 +1,22 @@
+[package]
+name = "orchidea-hevc-dekoder"
+description = "Vlastný softvérový dekodér HEVC Main 8-bit pre Raspberry Pi 3 a Zero 2 W – samostatný voliteľný modul (výnimka vlastníka R214, patentovaný formát)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+# Výnimka R214: HEVC je patentovaný formát. Modul je oddelený od jadra aj ostatných schopností, nič od neho nezávisí
+# a pred zverejnením pre iných ľudí ho vlastník ešte raz posúdi (ORCHIDEA/hevc-na-rpi.md, časť 6).
+vynimka = "R214"
+
+[dependencies]
+orchidea-jadro.workspace = true
+orchidea-hevc.workspace = true
+
+[lints]
+workspace = true
