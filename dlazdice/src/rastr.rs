@@ -101,6 +101,44 @@ impl<T: PrvokSignalu> Rastr<T> {
         d
     }
 
+    /// Obraz z pixelov po riadkoch (kanály za sebou) s menami kanálov – napríklad rozbalený obrázok zo súboru.
+    /// Dlaždice sa vyrežú súbežne; jednoliate dlaždice sa zdieľajú.
+    pub fn z_pixelov(
+        sirka: usize,
+        vyska: usize,
+        mena_kanalov: &[&str],
+        strana: usize,
+        data: &[T],
+    ) -> Vysledok<Rastr<T>> {
+        let kanaly = mena_kanalov.len();
+        let mut r = Rastr::prazdny(sirka, vyska, kanaly, strana)?;
+        if data.len() != sirka * vyska * kanaly {
+            return Err(Chyba::NezhodaTvaru(format!(
+                "obraz {sirka}×{vyska}×{kanaly} má {} hodnôt",
+                data.len()
+            )));
+        }
+        r.os_kanalov = Os::oznacena("kanál", mena_kanalov)?;
+        let n = r.stlpcov * r.riadkov;
+        let kus = (n / (4 * paralel::pocet_vlakien())).max(1);
+        let casti = paralel::mapuj_rozsah(n, kus, |rozsah| {
+            rozsah
+                .map(|i| {
+                    let (x0, y0, w, h) = r.miesto(i);
+                    let mut d = Vec::with_capacity(w * h * kanaly);
+                    for y in y0..y0 + h {
+                        let z = (y * sirka + x0) * kanaly;
+                        d.extend_from_slice(&data[z..z + w * kanaly]);
+                    }
+                    Arc::new(Dlazdica::z_dat(w, h, kanaly, d))
+                })
+                .collect::<Vec<_>>()
+        });
+        r.dlazdice = casti.into_iter().flatten().collect();
+        r.zdielaj_jednoliate();
+        Ok(r)
+    }
+
     /// Obraz zo signálu s osami „y“, „x“ a voliteľne „kanál“ (iné osi nie sú dovolené). Typ hodnôt
     /// signálu musí byť `T`. Mená kanálov, vzorkovanie osí a význam sa zachovajú.
     pub fn zo_signalu(signal: &Signal, strana: usize) -> Vysledok<Rastr<T>> {

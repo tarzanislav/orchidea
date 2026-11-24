@@ -214,6 +214,14 @@
       "kde": "obraz SKLENÍKA pre Allwinner – vnútri zavádzača od 8 KiB karty (u-boot-sunxi-with-spl.bin)",
       "ucel": "Tanix TX68 (H618, R118): bezpečný monitor procesora ARM (PSCI – zapínanie jadier, reštart), ktorý U-Boot pre 64-bit Allwinner vyžaduje",
       "posudenie_charty": "slobodný projekt; samostatný firmvér pred štartom systému, so SKLENÍKOM sa nezlučuje"
+    },
+    {
+      "meno": "rozhodcovia obrazových formátov: imagecodecs (s knižnicami libpng, libjpeg-turbo, libtiff, libjxl, OpenEXR, zlib), Pillow, NumPy",
+      "trieda": "B",
+      "licencia": "BSD-3-Clause (imagecodecs, NumPy, libjxl, OpenEXR), MIT-CMU (Pillow), libpng, IJG a BSD-3 (libjpeg-turbo), libtiff, Zlib",
+      "kde": "len CI – nastroje/over_formaty.py (inštalácia cez pip pri behu), nie je v repozitári ani v programe",
+      "ucel": "nezávislé overenie vlastných čítačiek a zapisovačov balíka formaty (R211): porovnanie s referenčnými knižnicami v oboch smeroch",
+      "posudenie_charty": "slobodné knižnice bez vojenského účelu; použité len ako rozhodcovia správnosti, žiadny ich kód nie je v ORCHIDEI"
     }
   ],
   "triedy": {

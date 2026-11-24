@@ -1,0 +1,67 @@
+//! **Obrazové formáty vlastným kódom** – PNG, JPEG, JPEG XL, TIFF a OpenEXR (E1, krok 3; R207, R211).
+#![forbid(unsafe_code)]
+
+pub mod deflate;
+pub mod exif;
+pub mod huffman;
+pub mod jpeg;
+pub mod kontrola;
+pub mod obraz;
+pub mod png;
+
+pub use obraz::{Cicp, Farba, Limity, Metadata, Model, Obraz, Vzorky};
+
+use orchidea_jadro::{Chyba, Vysledok};
+
+/// Obrazový formát súboru.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Png,
+    Jpeg,
+}
+
+impl Format {
+    pub fn meno(self) -> &'static str {
+        match self {
+            Format::Png => "PNG",
+            Format::Jpeg => "JPEG",
+        }
+    }
+
+    /// Formát podľa prípony súboru (bez bodky, malé aj veľké písmená).
+    pub fn z_pripony(pripona: &str) -> Option<Format> {
+        match pripona.to_ascii_lowercase().as_str() {
+            "png" | "apng" => Some(Format::Png),
+            "jpg" | "jpeg" | "jpe" | "jfif" => Some(Format::Jpeg),
+            _ => None,
+        }
+    }
+}
+
+/// Rozpozná formát podľa podpisu na začiatku údajov (nie podľa prípony – tá môže klamať).
+pub fn rozpoznaj(data: &[u8]) -> Option<Format> {
+    if data.starts_with(&png::PODPIS) {
+        return Some(Format::Png);
+    }
+    if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some(Format::Jpeg);
+    }
+    None
+}
+
+/// Prečíta obrázok ľubovoľného podporovaného formátu.
+pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
+    match rozpoznaj(data) {
+        Some(Format::Png) => png::citaj(data, limity),
+        Some(Format::Jpeg) => jpeg::citaj(data, limity),
+        None => Err(Chyba::NezhodaTypov { popis: "neznámy obrazový formát".into(), navrh: None }),
+    }
+}
+
+/// Zapíše obrázok vo zvolenom formáte s predvoleným nastavením.
+pub fn zapis(obraz: &Obraz, format: Format) -> Vysledok<Vec<u8>> {
+    match format {
+        Format::Png => png::zapis(obraz, &png::NastaveniePng::default()),
+        Format::Jpeg => jpeg::zapis(obraz, &jpeg::NastavenieJpeg::default()),
+    }
+}

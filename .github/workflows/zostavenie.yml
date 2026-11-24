@@ -60,6 +60,7 @@ jobs:
           cargo run --locked --release -p orchidea-neuron --example meranie | tee -a "$GITHUB_STEP_SUMMARY"
           cargo run --locked --release -p orchidea-gpu --example vektor | tee -a "$GITHUB_STEP_SUMMARY"
           cargo run --locked --release -p orchidea-dlazdice --example dlazdice | tee -a "$GITHUB_STEP_SUMMARY"
+          cargo run --locked --release -p orchidea-formaty --example meranie_formatov | tee -a "$GITHUB_STEP_SUMMARY"
 
   slabe:
     name: Skúšky – slabé zariadenie (ARM64, 4 jadrá, 1 GB, bez GPU)
@@ -86,7 +87,7 @@ jobs:
       - name: Meranie v obmedzenom kontajneri
         run: |
           echo "### Meranie – slabé zariadenie (4 jadrá, 1 GB, bez GPU)" >> "$GITHUB_STEP_SUMMARY"
-          for e in meranie vektor dlazdice; do
+          for e in meranie vektor dlazdice meranie_formatov; do
             docker run --rm --memory=1g --memory-swap=1g --cpus=4 -e ORCHIDEA_BEZ_GPU=1 \
               -v "$PWD:$PWD" -w "$PWD" ubuntu:24.04 "target/release/examples/$e" | tee -a "$GITHUB_STEP_SUMMARY"
           done
@@ -441,6 +442,31 @@ jobs:
         with:
           name: sadic-windows-x64
           path: target/release/sadic.exe
+
+  formaty:
+    name: Obrazové formáty – nezávislé overenie a dlhý fuzzer (R211)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Rozhodcovia (libpng, libjpeg-turbo, libtiff, libjxl, OpenEXR cez imagecodecs; Pillow)
+        run: python3 -m pip install --user --break-system-packages numpy Pillow imagecodecs
+      - name: Zostavenie
+        run: cargo build --locked --release -p orchidea-formaty --example formaty
+      - name: Porovnanie s referenčnými knižnicami v oboch smeroch
+        shell: bash
+        run: |
+          echo "### Obrazové formáty – nezávislé overenie" >> "$GITHUB_STEP_SUMMARY"
+          kod=0
+          python3 nastroje/over_formaty.py target/release/examples/formaty overenie > vysledok.md || kod=$?
+          tee -a "$GITHUB_STEP_SUMMARY" < vysledok.md
+          exit $kod
+      - name: Dlhý fuzzer čítačiek (štyri semienka)
+        run: |
+          for s in 1 2 3 4; do
+            ORCHIDEA_FUZZER=200000 ORCHIDEA_FUZZER_SEMIENKO=$s cargo test --locked --release -p orchidea-formaty --test fuzzer
+          done
 
   shadery:
     name: Overenie shaderov – ${{ matrix.meno }}
