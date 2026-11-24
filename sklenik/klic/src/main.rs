@@ -55,6 +55,9 @@ mod radice;
 mod video;
 
 // vlastný ovládač obrazovky cez DRM/KMS (R158 – chladný obraz)
+// strážca linky HDMI – stav televízora cez SCDC, oprava zaseknutia, reštart linky (R185)
+#[cfg(target_os = "linux")]
+mod hdmi;
 // vlastný ovládač CEC – televízor a krabička sa dohovoria cez HDMI (R181)
 #[cfg(target_os = "linux")]
 mod cec;

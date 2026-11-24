@@ -3,6 +3,7 @@
 
 use crate::cec;
 use crate::chlad::{self, Ciel, SietPodlaPotreby, StavObrazu, Zhasinanie};
+use crate::hdmi;
 use crate::kms;
 use crate::obrazovka::{self, Eee, FormatBodu, Jazyk, MeranieKarty, Stav};
 use crate::okolie::{self, Okolie};
@@ -395,6 +396,11 @@ impl Displej {
         matches!(self.vystup, Vystup::Kms(_))
     }
 
+    /// Takt bodov režimu (kHz) – R185 (nad 340 MHz televízor čaká zakódovaný signál).
+    fn takt_khz(&self) -> u32 {
+        self.kms_nastavenie.as_ref().map_or(148_500, |(r, _)| r.takt_khz)
+    }
+
     fn stav_obrazu(&self) -> StavObrazu {
         match &self.vystup {
             Vystup::Kms(k) => k.stav,
@@ -748,6 +754,9 @@ fn popis_zataze(s: &StatZataze, max_teplota: Option<f64>) -> String {
         max_teplota.map_or("–".into(), |t| format!("{t:.1} °C"))
     )
 }
+
+/// Značka na karte: krabička sa po dlhom teste vypla (R184).
+const VYPNUTE_PO_TESTE: &str = "VYPNUTE.TXT";
 
 /// Poistka hlbokého spánku jadier na karte (R167) a ako dlho po zapnutí ostane.
 const POISTKA_JADIER: &str = "JADRA-SPANOK.TXT";
@@ -1265,6 +1274,13 @@ pub fn spusti() {
             ));
         }
         hlas(&format!("prepínače (R183): {}", vypnute_novinky(&nastavenie)));
+        // R184: predošlý beh sa po dlhom teste vypol? (značku zapísal pred vypnutím)
+        let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
+        if let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next()
+            && zaznam::poistka(&n, VYPNUTE_PO_TESTE, zaznam::Poistka::Zmaz) == Ok(true)
+        {
+            hlas("predošlý beh: po dlhom teste hardvéru sa krabička sama vypla (R184) ✓");
+        }
     }
     let mut displej = if len_sledovanie {
         None
@@ -1384,6 +1400,19 @@ pub fn spusti() {
     let mut zataznik: Option<Zataznik> = None;
     let mut max_teplota_zataze: Option<f64> = None;
     let mut vypnutie_po_teste = false;
+    // R185: strážca linky HDMI (SCDC televízora) a ručný reštart linky (5× tlačidlo do 4 s)
+    let mut ddc: Option<hdmi::Ddc> = None;
+    let mut ddc_dalsi_pokus = Instant::now();
+    let mut hdmi_stav: Option<hdmi::StavTv> = None;
+    let mut hdmi_chyba: Option<String> = None;
+    let mut hdmi_kontrola = Instant::now();
+    let mut linka_stav = StavObrazu::Vypnuty;
+    let mut linka_od = Instant::now();
+    let mut restarty_linky: Vec<Instant> = Vec::new();
+    let (mut hdmi_restartov, mut hdmi_oprav) = (0u32, 0u32);
+    let mut stlacenia: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
+    let mut rucny_restart = false;
+    let straz_hdmi = novinka(&nastavenie, "straz_hdmi");
     // R184: človek sa krabičky dotkol (ovládač, klávesnica, ovládač TV) – až potom smie dlhý test zapnúť TV
     let mut clovek_bol = false;
     let mut rusene = [false; chlad::FAZY.len()];
@@ -1928,6 +1957,81 @@ pub fn spusti() {
                 }
                 cec_obraz = Some(r.stav);
             }
+            // R185: strážca linky HDMI – televízor cez SCDC hlási, či signál prijíma; keď sa zasekne, krabička
+            // mu vráti nezakódovaný režim alebo reštartuje linku (vypne a zapne obraz)
+            if pid1
+                && !skuska
+                && straz_hdmi
+                && let Some(d) = displej.as_mut()
+                && d.je_kms()
+            {
+                let teraz = Instant::now();
+                let signal = d.stav_obrazu() != StavObrazu::Vypnuty;
+                if d.stav_obrazu() != linka_stav {
+                    linka_stav = d.stav_obrazu();
+                    linka_od = teraz;
+                }
+                if ddc.is_none() && signal && teraz >= ddc_dalsi_pokus {
+                    match hdmi::Ddc::otvor(Path::new("/")) {
+                        Ok(x) => ddc = Some(x),
+                        Err(e) => {
+                            hdmi_chyba = Some(e.to_string());
+                            ddc_dalsi_pokus = teraz + Duration::from_secs(60);
+                        }
+                    }
+                }
+                let rucny = std::mem::take(&mut rucny_restart);
+                let mut restart = rucny;
+                if signal
+                    && hdmi_kontrola.elapsed() >= Duration::from_secs(5)
+                    && let Some(x) = ddc.as_ref()
+                {
+                    hdmi_kontrola = teraz;
+                    match x.stav() {
+                        Ok(st) => {
+                            if st.caka_kodovanie(d.takt_khz()) {
+                                if x.zrus_kodovanie().is_ok() {
+                                    hdmi_oprav += 1;
+                                    hlas(
+                                        "HDMI: televízor čakal zakódovaný signál (zaseknutý po 4K) – vrátený do Full HD",
+                                    );
+                                    restart = true;
+                                }
+                            } else if !st.zamknuty()
+                                && !tv_spi
+                                && linka_od.elapsed() >= Duration::from_secs(8)
+                            {
+                                hlas(&format!(
+                                    "HDMI: televízor signál nezamkol ({}) – reštart linky",
+                                    st.popis()
+                                ));
+                                restart = true;
+                            }
+                            hdmi_stav = Some(st);
+                            hdmi_chyba = None;
+                        }
+                        Err(e) => {
+                            // monitor cez redukciu alebo televízor HDMI 1.4 – SCDC nemá, skúsi sa až o minútu
+                            hdmi_chyba = Some(format!("televízor bez SCDC alebo neodpovedá ({e})"));
+                            hdmi_kontrola = teraz + Duration::from_secs(55);
+                        }
+                    }
+                }
+                restarty_linky.retain(|t| t.elapsed() < Duration::from_secs(600));
+                if restart && signal && (rucny || restarty_linky.len() < 3) {
+                    let stav = d.stav_obrazu();
+                    d.nastav_stav_obrazu(StavObrazu::Vypnuty);
+                    std::thread::sleep(Duration::from_millis(1500));
+                    d.nastav_stav_obrazu(stav);
+                    restarty_linky.push(Instant::now());
+                    hdmi_restartov += 1;
+                    linka_od = Instant::now();
+                    hlas(&format!(
+                        "HDMI: linka reštartovaná ({})",
+                        if rucny { "ručne – 5× tlačidlo" } else { "strážca" }
+                    ));
+                }
+            }
             if let Some(t) = takt_vpu.as_mut()
                 && t.teraz.is_some_and(|x| ciel_vpu < x)
                 && t.nastav(ciel_vpu)
@@ -2331,6 +2435,16 @@ pub fn spusti() {
                             spanok_jadier.popis()
                         );
                         text += &format!("  prepínače (R183): {}{NL}", vypnute_novinky(&nastavenie));
+                        text += &format!(
+                            "  linka HDMI (R185): {} · opravy kódovania {} · reštarty linky {}{NL}",
+                            match (&hdmi_stav, &hdmi_chyba) {
+                                (_, Some(e)) => e.clone(),
+                                (Some(st), None) => st.popis(),
+                                (None, None) => "zatiaľ nečítaná".into(),
+                            },
+                            hdmi_oprav,
+                            hdmi_restartov
+                        );
                         if dlhy {
                             text += &format!(
                                 "  dlhý test (R184): {}{NL}",
@@ -2539,6 +2653,16 @@ pub fn spusti() {
                 z.zastav();
             }
             hlas("dlhý test hardvéru hotový – televízor ide spať a krabička sa vypína");
+            let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
+            if let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next() {
+                let _ = zaznam::poistka(
+                    &n,
+                    VYPNUTE_PO_TESTE,
+                    zaznam::Poistka::Vytvor(
+                        "Krabička sa po dlhom teste hardvéru (R184) vypla. KLÍČ to pri ďalšom štarte zapíše do záznamu a súbor zmaže.\r\n",
+                    ),
+                );
+            }
             if let Some(c) = cec.as_mut() {
                 c.uspi_tv_hned();
             }
@@ -2577,12 +2701,24 @@ pub fn spusti() {
         udalost = match &udalosti {
             Some(u) => {
                 let ine: Vec<i32> = cec.as_ref().map(|c| vec![c.fd()]).unwrap_or_default();
-                let (bola, vstup, _) = u.cakaj_so_vstupmi(cakat.as_millis() as u64, &vstupy.fds(), &ine);
+                let (bola, vstup, _, stlacene) =
+                    u.cakaj_so_vstupmi(cakat.as_millis() as u64, &vstupy.fds(), &ine);
                 // R158: stlačenie na ovládači, klávesnici alebo pohyb myši prebudí obraz
                 if vstup {
                     posledna_aktivita = Instant::now();
                     tv_spi = false;
                     clovek_bol = true;
+                    // R185: 5× tlačidlo do 4 s = ručný reštart linky HDMI (keď televízor ukazuje „Nie je signál“);
+                    // počítajú sa len stlačenia (nie pohyb myši ani držanie tlačidla)
+                    let t = Instant::now();
+                    stlacenia.extend(std::iter::repeat_n(t, stlacene as usize));
+                    while stlacenia.front().is_some_and(|x| t.duration_since(*x) > Duration::from_secs(4)) {
+                        stlacenia.pop_front();
+                    }
+                    if stlacenia.len() >= 5 {
+                        stlacenia.clear();
+                        rucny_restart = true;
+                    }
                 }
                 // R181: správy z televízora – ovládač TV a výber vstupu krabičky ju zobudia, vypnutý TV ju uspí
                 if let Some(c) = cec.as_mut() {

@@ -462,7 +462,8 @@ impl Udalosti {
     /// Čaká na udalosti jadra aj na vstupné zariadenia (`/dev/input/event*` – klávesnica, myš, diaľkový
     /// ovládač; R158 – prebudenie obrazu). Vráti (udalosť jadra, stlačenie/pohyb na vstupe); všetko sa vyberie.
     /// `ine` sa len sledujú (napr. CEC) – čítanie je na volajúcom; tretia hodnota = niektorý je pripravený.
-    pub fn cakaj_so_vstupmi(&self, ms: u64, vstupy: &[c_int], ine: &[c_int]) -> (bool, bool, bool) {
+    /// Vráti (udalosť jadra, činnosť človeka, iný popisovač pripravený, počet stlačení tlačidiel – R185).
+    pub fn cakaj_so_vstupmi(&self, ms: u64, vstupy: &[c_int], ine: &[c_int]) -> (bool, bool, bool, u32) {
         let mut p: Vec<PollFd> = self
             .fds
             .iter()
@@ -474,7 +475,7 @@ impl Udalosti {
         // SAFETY: p je platné pole struct pollfd s dĺžkou p.len(), žije počas volania.
         let n = unsafe { poll(p.as_mut_ptr(), p.len() as c_ulong, ms) };
         if n <= 0 {
-            return (false, false, false);
+            return (false, false, false, 0);
         }
         let ine_pripravene = p[self.fds.len() + vstupy.len()..].iter().any(|x| x.vratene != 0);
         let mut buf = [0u8; 8192];
@@ -486,6 +487,7 @@ impl Udalosti {
             }
         }
         let mut vstup = false;
+        let mut stlacene = 0u32;
         for (i, &fd) in vstupy.iter().enumerate() {
             if p[self.fds.len() + i].vratene == 0 {
                 continue;
@@ -504,10 +506,16 @@ impl Udalosti {
                     if typ != 0 {
                         vstup = true;
                     }
+                    // EV_KEY s hodnotou 1 = stlačenie (0 pustenie, 2 opakovanie pri držaní sa nepočíta)
+                    let hodnota =
+                        i32::from_ne_bytes([u[dlzka - 4], u[dlzka - 3], u[dlzka - 2], u[dlzka - 1]]);
+                    if typ == 1 && hodnota == 1 {
+                        stlacene += 1;
+                    }
                 }
             }
         }
-        (bolo, vstup, ine_pripravene)
+        (bolo, vstup, ine_pripravene, stlacene)
     }
 }
 
