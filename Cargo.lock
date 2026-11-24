@@ -18,6 +18,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "orchidea-hevc"
+version = "0.1.0"
+dependencies = [
+ "orchidea-jadro",
+]
+
+[[package]]
 name = "orchidea-jadro"
 version = "0.1.0"
 

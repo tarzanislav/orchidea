@@ -32,6 +32,7 @@ zvukom, hudbou, pohybom a diskami. Spája ich jedna gramatika a jedno jadro, nie
 | `zariadenie` | 2 – schopnosť | profil hardvéru (PÔDA): čip, jadrá, inštrukcie, pamäť, napájanie – spoločný pre plánovač ORCHIDEE aj správcu systému SKLENÍK |
 | `teplo` | 2 – schopnosť | tepelný model: odhad teploty okolia a vlastného ohrevu, prostredie, tepelný rozpočet – základ zákona Z14 (cena práce v teple) |
 | `dlazdice` | 2 – schopnosť | **E1:** obraz na zdieľaných dlaždiciach s kopírovaním pri zápise a odtlačkami (R70), pyramída náhľadu s obnovou len zmenenej časti (R71); bitovo rovnaké pri každej veľkosti dlaždice |
+| `hevc` | 2 – schopnosť | rozbor syntaxe HEVC (H.265): jednotky NAL, VPS, SPS, PPS, matice kvantovania, sady referencií, VUI, rozšírenia rozsahu, odtlačky SEI – základ prehrávania HEVC priamo na Raspberry Pi (R214); overené skúšobnými tokmi normy a tokmi x265 |
 
 Skúšky prechádzajú na Linuxe (x86-64, ARM64), Windows, macOS, Androide a vo WebAssembly s bitovo rovnakými
 výsledkami; násobenie matíc na GPU (Vulkan, Direct3D 12, Metal) je bitovo rovnaké ako na procesore.

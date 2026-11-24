@@ -1,0 +1,18 @@
+[package]
+name = "orchidea-hevc"
+description = "Rozbor syntaxe HEVC (H.265) – jednotky NAL, parametrické sady, SEI; spoločný pre hardvérové dekodéry (RPi 4/5, X96, Odroid) aj vlastný softvérový dekodér (R214)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[dependencies]
+orchidea-jadro.workspace = true
+
+[lints]
+workspace = true

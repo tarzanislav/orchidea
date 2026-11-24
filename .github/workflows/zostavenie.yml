@@ -164,6 +164,49 @@ jobs:
           name: orchidea-rpi-32bit-armv6
           path: orchidea-rpi-32bit-armv6
 
+  hevc:
+    name: HEVC – rozbor skúšobných tokov normy (R214, krok H0)
+    # skúšobné toky ITU-T/JCT-VC (Main, Main 10) a toky z kodéra x265 (Main, Main 10 s HDR, 4:4:4) –
+    # každá parametrická sada a odtlačok SEI sa musia prečítať bez chyby
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Skúšobné toky
+        shell: bash
+        run: |
+          sh nastroje/balicky.sh ffmpeg unzip
+          mkdir -p toky/norma toky/x265
+          zaklad=https://www.itu.int/wftp3/av-arch/jctvc-site/bitstream_exchange/draft_conformance/HEVC_v1
+          stiahnute=0
+          for t in AMP_A_Samsung_7 AMVP_A_MTK_4 BUMPING_A_ericsson_1 CAINIT_A_SHARP_4 CIP_A_Panasonic_3 \
+                   CONFWIN_A_Sony_1 DBLK_A_SONY_3 DBLK_A_MAIN10_VIXS_4 DSLICE_A_HHI_5 ENTP_A_QUALCOMM_1 \
+                   EXT_A_ericsson_4 FILLER_A_Sony_1 HRD_A_Fujitsu_3 INITQP_B_Main10_Sony_1 ipcm_A_NEC_3 \
+                   MVCLIP_A_qualcomm_3 NoOutPrior_A_Qualcomm_1 NUT_A_ericsson_5 OPFLAG_A_Qualcomm_1 \
+                   PICSIZE_A_Bossen_1 PMERGE_A_TI_3 RQT_E_HHI_4 SAO_A_MediaTek_4 SAODBLK_A_MainConcept_4 \
+                   SDH_A_Orange_4 SLICES_A_Rovi_3 SLIST_A_Sony_5 SLIST_B_Sony_9; do
+            if curl -sSfL --retry 3 -o "toky/$t.zip" "$zaklad/$t.zip" && unzip -qo "toky/$t.zip" -d "toky/norma/$t"; then
+              stiahnute=$((stiahnute + 1))
+            else
+              echo "::warning::skúšobný tok $t sa nepodarilo stiahnuť"
+            fi
+          done
+          echo "stiahnuté toky normy: $stiahnute"
+          z="-hide_banner -loglevel error -y -f lavfi"
+          ffmpeg $z -i testsrc2=size=1280x720:rate=25 -t 2 -c:v libx265 -pix_fmt yuv420p \
+            -x265-params "log-level=error:hash=1:keyint=25:bframes=3" toky/x265/main.hevc
+          ffmpeg $z -i testsrc2=size=1920x1080:rate=24 -t 1 -c:v libx265 -pix_fmt yuv420p10le \
+            -x265-params "log-level=error:hash=1:wpp=1:scaling-list=default:hdr10=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc" \
+            toky/x265/main10-hdr.hevc
+          ffmpeg $z -i testsrc2=size=352x288:rate=30 -t 1 -c:v libx265 -pix_fmt yuv444p \
+            -x265-params "log-level=error:hash=1:lossless=1" toky/x265/rext-444.hevc
+      - name: Rozbor syntaxe
+        shell: bash
+        run: |
+          echo "### HEVC – rozbor syntaxe (krok H0)" >> "$GITHUB_STEP_SUMMARY"
+          cargo run --locked --release -p orchidea-hevc --example hevc_rozbor -- toky | tee -a "$GITHUB_STEP_SUMMARY"
+
   sadic-iso:
     name: SADIČ – formátovanie a ISO (Linux, nezávislé fsck)
     runs-on: ubuntu-latest
