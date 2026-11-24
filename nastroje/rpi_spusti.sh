@@ -3,7 +3,7 @@
 # Spustenie: sh spusti.sh   – výsledok sa zapíše do súboru vysledky.txt vedľa tohto skriptu.
 cd "$(dirname "$0")"
 # balík z GitHubu (zip) nezachová príznak spustiteľnosti
-chmod +x zariadenia meranie vektor skusky/* 2>/dev/null
+chmod +x zariadenia meranie vektor dlazdice skusky/* 2>/dev/null
 vystup=vysledky.txt
 teplota() {
   t=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null) && echo "teplota: $((t / 1000)).$(((t % 1000) / 100)) °C"
@@ -36,6 +36,10 @@ teplota() {
   echo
   echo "=== Meranie – vektorový vykonávač"
   ./vektor 2>&1
+  teplota
+  echo
+  echo "=== Meranie – dlaždice a pyramída náhľadu (E1)"
+  ./dlazdice 2>&1
   teplota
   echo
   echo "=== Chladnutie po záťaži (60 s, každých 10 s)"

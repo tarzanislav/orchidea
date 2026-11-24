@@ -5,6 +5,6 @@ set -eu
 ciel="$1"; priklady="$2"
 mkdir -p "$ciel/skusky"
 while read -r b; do cp "$b" "$ciel/skusky/"; done
-for e in meranie vektor zariadenia; do cp "$priklady/$e" "$ciel/"; done
+for e in meranie vektor zariadenia dlazdice; do cp "$priklady/$e" "$ciel/"; done
 cp nastroje/rpi_spusti.sh "$ciel/spusti.sh"
 chmod +x "$ciel"/* "$ciel"/skusky/*

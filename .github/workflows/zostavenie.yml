@@ -59,6 +59,7 @@ jobs:
           echo "### Meranie – ${{ matrix.meno }}" >> "$GITHUB_STEP_SUMMARY"
           cargo run --locked --release -p orchidea-neuron --example meranie | tee -a "$GITHUB_STEP_SUMMARY"
           cargo run --locked --release -p orchidea-gpu --example vektor | tee -a "$GITHUB_STEP_SUMMARY"
+          cargo run --locked --release -p orchidea-dlazdice --example dlazdice | tee -a "$GITHUB_STEP_SUMMARY"
 
   slabe:
     name: Skúšky – slabé zariadenie (ARM64, 4 jadrá, 1 GB, bez GPU)
@@ -85,7 +86,7 @@ jobs:
       - name: Meranie v obmedzenom kontajneri
         run: |
           echo "### Meranie – slabé zariadenie (4 jadrá, 1 GB, bez GPU)" >> "$GITHUB_STEP_SUMMARY"
-          for e in meranie vektor; do
+          for e in meranie vektor dlazdice; do
             docker run --rm --memory=1g --memory-swap=1g --cpus=4 -e ORCHIDEA_BEZ_GPU=1 \
               -v "$PWD:$PWD" -w "$PWD" ubuntu:24.04 "target/release/examples/$e" | tee -a "$GITHUB_STEP_SUMMARY"
           done

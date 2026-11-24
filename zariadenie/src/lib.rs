@@ -10,4 +10,4 @@
 
 mod profil;
 
-pub use profil::{ProfilHardveru, nacitaj, rozloz_reviziu};
+pub use profil::{ProfilHardveru, nacitaj, rozloz_reviziu, tohto_zariadenia};

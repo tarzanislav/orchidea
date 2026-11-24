@@ -1,0 +1,19 @@
+[package]
+name = "orchidea-dlazdice"
+description = "Dlaždicový raster s kopírovaním pri zápise a odtlačkami (R70) a pyramída náhľadu (R71) – základ prehliadača obrázkov (Pohľad)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[dependencies]
+orchidea-jadro.workspace = true
+orchidea-zariadenie.workspace = true
+
+[lints]
+workspace = true

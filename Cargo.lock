@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "orchidea-dlazdice"
+version = "0.1.0"
+dependencies = [
+ "orchidea-jadro",
+ "orchidea-zariadenie",
+]
+
+[[package]]
 name = "orchidea-gpu"
 version = "0.1.0"
 dependencies = [

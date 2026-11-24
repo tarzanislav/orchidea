@@ -31,18 +31,21 @@ zvukom, hudbou, pohybom a diskami. Spája ich jedna gramatika a jedno jadro, nie
 | `neuron` | 2 – schopnosť | výpočtový motor MYKORÍZY: tenzor ako signál, presné a rýchle jadrá, 8-bitové a trojhodnotové váhy, učenie |
 | `zariadenie` | 2 – schopnosť | profil hardvéru (PÔDA): čip, jadrá, inštrukcie, pamäť, napájanie – spoločný pre plánovač ORCHIDEE aj správcu systému SKLENÍK |
 | `teplo` | 2 – schopnosť | tepelný model: odhad teploty okolia a vlastného ohrevu, prostredie, tepelný rozpočet – základ zákona Z14 (cena práce v teple) |
+| `dlazdice` | 2 – schopnosť | **E1:** obraz na zdieľaných dlaždiciach s kopírovaním pri zápise a odtlačkami (R70), pyramída náhľadu s obnovou len zmenenej časti (R71); bitovo rovnaké pri každej veľkosti dlaždice |
 
 Skúšky prechádzajú na Linuxe (x86-64, ARM64), Windows, macOS, Androide a vo WebAssembly s bitovo rovnakými
 výsledkami; násobenie matíc na GPU (Vulkan, Direct3D 12, Metal) je bitovo rovnaké ako na procesore.
 ORCHIDEA je pre **všetky zariadenia od Raspberry Pi 1** – CI overuje aj profil slabého zariadenia (4 jadrá, 1 GB,
 bez GPU), 32-bitový ARMv7 a ARMv6 (Raspberry Pi 1 a Zero). Model efektívnosti **FOTOSYNTÉZA**: rýchlosť bez straty kvality odstránením práce,
-ktorá výsledok nemení. Ďalej: **E1 – prehliadač obrázkov (Pohľad)**.
+ktorá výsledok nemení. **Prebieha E1 – prehliadač obrázkov (Pohľad):** dlaždice a pyramída náhľadu hotové,
+ďalej obrazové formáty s fuzzerom.
 
 ```
 cargo test --workspace                                   # všetky skúšky
 cargo run --release -p orchidea-neuron --example meranie  # meranie výkonu
 cargo run -p orchidea-gpu --example zariadenia            # dostupné výpočtové zariadenia
 cargo run --release -p orchidea-gpu --example vektor      # interpret vs. vektorový vykonávač
+cargo run --release -p orchidea-dlazdice --example dlazdice # dlaždice, história a pyramída náhľadu (4K)
 ```
 
 ## SKLENÍK – vlastný systém pre Raspberry Pi

@@ -24,6 +24,8 @@ pub struct ProfilHardveru {
     pub jadier: usize,
     /// Najvyšší takt procesora (MHz).
     pub max_mhz: Option<u32>,
+    /// Vyrovnávacia pamäť L2 (cache) na jedno jadro (kB) – podľa nej sa volí veľkosť dlaždíc (FOTOSYNTÉZA Z11).
+    pub l2_na_jadro_kb: Option<u32>,
     /// Užitočné inštrukcie procesora (NEON, súčin bodov, FP16, AES, …).
     pub instrukcie: Vec<&'static str>,
     /// Pamäť, ktorú vidí jadro systému (kB), a koľko je hneď voľnej.
@@ -150,6 +152,62 @@ fn bcm2712_d0(dt: &Path) -> bool {
     })
 }
 
+/// Veľkosť vo formáte jadra („512K“, „2M“, „1024“) v kB.
+fn velkost_kb(t: &str) -> Option<u32> {
+    let t = t.trim();
+    if let Some(k) = t.strip_suffix('K') {
+        k.parse().ok()
+    } else if let Some(mb) = t.strip_suffix('M') {
+        mb.parse::<u32>().ok()?.checked_mul(1024)
+    } else {
+        t.parse::<u32>().ok().map(|b| b / 1024)
+    }
+}
+
+/// Počet procesorov v zozname jadra („0-3,8-11“ → 8).
+fn pocet_v_zozname(zoznam: &str) -> usize {
+    zoznam
+        .trim()
+        .split(',')
+        .filter(|c| !c.is_empty())
+        .map(|c| match c.split_once('-') {
+            Some((a, b)) => match (a.parse::<usize>(), b.parse::<usize>()) {
+                (Ok(a), Ok(b)) if b >= a => b - a + 1,
+                _ => 1,
+            },
+            None => 1,
+        })
+        .sum()
+}
+
+/// Vyrovnávacia pamäť L2 na jedno jadro: veľkosť / počet jadier, ktoré ju zdieľajú (z popisu cpu0).
+fn l2_na_jadro(koren: &Path) -> Option<u32> {
+    let cache = koren.join("sys/devices/system/cpu/cpu0/cache");
+    (0..8).find_map(|i| {
+        let d = cache.join(format!("index{i}"));
+        if citaj(&d.join("level")).as_deref() != Some("2")
+            || citaj(&d.join("type")).as_deref() == Some("Instruction")
+        {
+            return None;
+        }
+        let kb = velkost_kb(&citaj(&d.join("size"))?)?;
+        let zdielaju = citaj(&d.join("shared_cpu_list")).map_or(1, |z| pocet_v_zozname(&z)).max(1);
+        Some((kb / zdielaju as u32).max(1))
+    })
+}
+
+/// Profil tohto zariadenia: na Linuxe a Androide zo súborov jadra, inde zatiaľ len počet jadier.
+pub fn tohto_zariadenia() -> ProfilHardveru {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let mut p = nacitaj(Path::new("/"));
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let mut p = ProfilHardveru::default();
+    if p.jadier == 0 {
+        p.jadier = std::thread::available_parallelism().map_or(1, |n| n.get());
+    }
+    p
+}
+
 /// Prečíta profil hardvéru zo súborov jadra pod `koren` (na zariadení „/“).
 pub fn nacitaj(koren: &Path) -> ProfilHardveru {
     let mut p = ProfilHardveru::default();
@@ -196,6 +254,7 @@ pub fn nacitaj(koren: &Path) -> ProfilHardveru {
     p.jadier = cpuinfo.lines().filter(|r| r.starts_with("processor")).count();
     p.jadro = z_cpuinfo(&cpuinfo, "CPU part").and_then(jadro_procesora);
     p.instrukcie = instrukcie(z_cpuinfo(&cpuinfo, "Features").unwrap_or(""));
+    p.l2_na_jadro_kb = l2_na_jadro(koren);
     p.max_mhz = citaj(&koren.join("sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq"))
         .and_then(|k| k.parse::<u32>().ok())
         .map(|khz| khz / 1000);
@@ -262,6 +321,9 @@ impl ProfilHardveru {
             self.jadro.unwrap_or("?"),
             self.max_mhz.map(|m| format!(" {m} MHz")).unwrap_or_default()
         ));
+        if let Some(l2) = self.l2_na_jadro_kb {
+            casti.push(format!("L2 {l2} kB na jadro"));
+        }
         if !self.instrukcie.is_empty() {
             casti.push(self.instrukcie.join(" "));
         }
@@ -309,6 +371,17 @@ mod testy {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn velkosti_a_zoznamy_jadra() {
+        assert_eq!(velkost_kb("512K"), Some(512));
+        assert_eq!(velkost_kb("2M"), Some(2048));
+        assert_eq!(velkost_kb("1048576"), Some(1024));
+        assert_eq!(velkost_kb("x"), None);
+        assert_eq!(pocet_v_zozname("0-3,8-11\n"), 8);
+        assert_eq!(pocet_v_zozname("5"), 1);
+        assert!(tohto_zariadenia().jadier >= 1);
     }
 
     #[test]
@@ -373,8 +446,17 @@ cpuid asimdrdm lrcpc dcpop asimddp\nCPU part\t: 0xd0b\n\nprocessor\t: 1\n\nproce
         // RPi 3 B+: kód revízie len v /proc/cpuinfo, 1 GB → zram
         let s = Strom::novy("rpi3")
             .subor("proc/cpuinfo", b"processor\t: 0\nFeatures\t: fp asimd evtstrm crc32 cpuid\nCPU part\t: 0xd03\nRevision\t: a020d3\n")
-            .subor("proc/meminfo", b"MemTotal:         948304 kB\nMemAvailable:     870000 kB\n");
+            .subor("proc/meminfo", b"MemTotal:         948304 kB\nMemAvailable:     870000 kB\n")
+            // L2 512 kB zdieľaná štyrmi jadrami; L1 sa preskočí
+            .subor("sys/devices/system/cpu/cpu0/cache/index0/level", b"1\n")
+            .subor("sys/devices/system/cpu/cpu0/cache/index0/size", b"32K\n")
+            .subor("sys/devices/system/cpu/cpu0/cache/index2/level", b"2\n")
+            .subor("sys/devices/system/cpu/cpu0/cache/index2/type", b"Unified\n")
+            .subor("sys/devices/system/cpu/cpu0/cache/index2/size", b"512K\n")
+            .subor("sys/devices/system/cpu/cpu0/cache/index2/shared_cpu_list", b"0-3\n");
         let p = nacitaj(&s.0);
+        assert_eq!(p.l2_na_jadro_kb, Some(128));
+        assert!(p.riadok().contains("L2 128 kB na jadro"));
         assert_eq!(p.cip.as_deref(), Some("BCM2837"));
         assert_eq!(p.instrukcie, vec!["NEON", "CRC32"]);
         assert!(p.mala_pamat());
