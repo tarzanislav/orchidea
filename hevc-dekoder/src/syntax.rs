@@ -85,8 +85,10 @@ pub struct StavObrazu {
     pub qp_posledny: i32,
     /// zverejňovaný obraz a postup: rekonštruované, odblokované a zverejnené riadky CTB, zverejnený pohyb
     pub ciel: Option<Arc<DekodovanyObraz>>,
-    /// zverejňovať po riadkoch CTB (bez dlaždíc – CTB idú v rastrovom poradí); inak všetko na konci obrazu
-    pub po_riadkoch: bool,
+    /// dekódovaných CTB v každom riadku CTB a počet úvodných celých riadkov (aj s dlaždicami – riadok je celý,
+    /// keď ho dokončí posledný stĺpec dlaždíc)
+    hotove_v_riadku: Vec<u16>,
+    celych_riadkov: usize,
     odblokovanych: usize,
     zverejnenych: usize,
     pohyb_zverejnenych: usize,
@@ -122,7 +124,9 @@ impl StavObrazu {
         self.ulozene_ds = None;
         self.qp_posledny = 26;
         self.ciel = None;
-        (self.odblokovanych, self.zverejnenych, self.pohyb_zverejnenych) = (0, 0, 0);
+        self.hotove_v_riadku.clear();
+        self.hotove_v_riadku.resize(g.vyska_ctb, 0);
+        (self.celych_riadkov, self.odblokovanych, self.zverejnenych, self.pohyb_zverejnenych) = (0, 0, 0, 0);
         true
     }
 
@@ -158,20 +162,28 @@ impl StavObrazu {
             ulozene_ds: None,
             qp_posledny: 26,
             ciel: None,
-            po_riadkoch: false,
+            hotove_v_riadku: vec![0; g.vyska_ctb],
+            celych_riadkov: 0,
             odblokovanych: 0,
             zverejnenych: 0,
             pohyb_zverejnenych: 0,
         }
     }
 
-    /// Je hotových prvých `n` riadkov CTB (rekonštrukcia). Zverejní pohyb týchto riadkov, odblokuje riadky
-    /// do `n − 2` (riadok `r` až po rekonštrukcii riadka `r + 1`: vnútrosnímková predikcia v ňom číta nefiltrovaný
-    /// spodný riadok vzoriek riadka `r`) a po SAO zverejní riadky do `n − 3` (SAO riadka `r` číta odblokovaný
-    /// horný riadok vzoriek riadka `r + 1`).
-    pub fn riadky_hotove(&mut self, n: usize) {
-        if self.po_riadkoch {
-            self.posun(n, false);
+    /// CTB v riadku `ry` je zrekonštruovaný. Keď je celých prvých `n` riadkov CTB, zverejní sa pohyb týchto
+    /// riadkov, odblokujú sa riadky do `n − 2` (riadok `r` až po rekonštrukcii riadka `r + 1`: vnútrosnímková
+    /// predikcia v ňom číta nefiltrovaný spodný riadok vzoriek riadka `r`) a po SAO sa zverejnia riadky do `n − 3`
+    /// (SAO riadka `r` číta odblokovaný horný riadok vzoriek riadka `r + 1`).
+    pub fn ctb_hotovy(&mut self, ry: usize) {
+        let Some(h) = self.hotove_v_riadku.get_mut(ry) else { return };
+        *h = h.saturating_add(1);
+        let sirka = self.info.sirka_ctb;
+        let n0 = self.celych_riadkov;
+        while self.hotove_v_riadku.get(self.celych_riadkov).is_some_and(|&h| usize::from(h) >= sirka) {
+            self.celych_riadkov += 1;
+        }
+        if self.celych_riadkov > n0 {
+            self.posun(self.celych_riadkov, false);
         }
     }
 
@@ -460,10 +472,8 @@ impl<'a> DekoderRezu<'a> {
                     self.c.ladenie()
                 )));
             }
-            if cx + 1 == g.sirka_ctb {
-                // riadok CTB je celý: filtre a zverejnenie predošlých riadkov (iné vlákna na ne môžu čakať)
-                self.s.riadky_hotove(cy + 1);
-            }
+            // po celom riadku CTB filtre a zverejnenie predošlých riadkov (iné vlákna na ne môžu čakať)
+            self.s.ctb_hotovy(cy);
             if koniec == 1 {
                 if self.pps.zavisle_rezy {
                     self.s.ulozene_ds = Some(self.kx);

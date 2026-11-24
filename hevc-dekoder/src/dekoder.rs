@@ -552,7 +552,6 @@ fn dekoduj_obraz(u: &Uloha, rezerva: &mut Option<StavObrazu>) -> Vec<String> {
     stav.info.cr_qp_offset = u.pps.cr_qp_offset;
     stav.info.cez_dlazdice = u.pps.dlazdice.as_ref().is_none_or(|d| d.filter_cez_dlazdice);
     stav.ciel = Some(u.ciel.clone());
-    stav.po_riadkoch = u.pps.dlazdice.is_none();
     let mut chyby = Vec::new();
     for (i, s) in u.segmenty.iter().enumerate() {
         stav.info.rezy.push(RezFiltra {
