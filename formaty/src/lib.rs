@@ -8,6 +8,7 @@ pub mod jpeg;
 pub mod kontrola;
 pub mod obraz;
 pub mod png;
+pub mod tiff;
 
 pub use obraz::{Cicp, Farba, Limity, Metadata, Model, Obraz, Vzorky};
 
@@ -18,6 +19,7 @@ use orchidea_jadro::{Chyba, Vysledok};
 pub enum Format {
     Png,
     Jpeg,
+    Tiff,
 }
 
 impl Format {
@@ -25,6 +27,7 @@ impl Format {
         match self {
             Format::Png => "PNG",
             Format::Jpeg => "JPEG",
+            Format::Tiff => "TIFF",
         }
     }
 
@@ -33,6 +36,7 @@ impl Format {
         match pripona.to_ascii_lowercase().as_str() {
             "png" | "apng" => Some(Format::Png),
             "jpg" | "jpeg" | "jpe" | "jfif" => Some(Format::Jpeg),
+            "tif" | "tiff" => Some(Format::Tiff),
             _ => None,
         }
     }
@@ -46,6 +50,9 @@ pub fn rozpoznaj(data: &[u8]) -> Option<Format> {
     if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return Some(Format::Jpeg);
     }
+    if data.len() >= 4 && matches!(&data[..4], b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+") {
+        return Some(Format::Tiff);
+    }
     None
 }
 
@@ -54,6 +61,7 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
     match rozpoznaj(data) {
         Some(Format::Png) => png::citaj(data, limity),
         Some(Format::Jpeg) => jpeg::citaj(data, limity),
+        Some(Format::Tiff) => tiff::citaj(data, limity),
         None => Err(Chyba::NezhodaTypov { popis: "neznámy obrazový formát".into(), navrh: None }),
     }
 }
@@ -63,5 +71,6 @@ pub fn zapis(obraz: &Obraz, format: Format) -> Vysledok<Vec<u8>> {
     match format {
         Format::Png => png::zapis(obraz, &png::NastaveniePng::default()),
         Format::Jpeg => jpeg::zapis(obraz, &jpeg::NastavenieJpeg::default()),
+        Format::Tiff => tiff::zapis(obraz, &tiff::NastavenieTiff::default()),
     }
 }

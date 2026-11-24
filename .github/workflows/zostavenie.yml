@@ -459,7 +459,7 @@ jobs:
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
       - name: Rozhodcovia (libpng, libjpeg-turbo, libtiff, libjxl, OpenEXR cez imagecodecs; Pillow)
-        run: python3 -m pip install --user --break-system-packages numpy Pillow imagecodecs
+        run: python3 -m pip install --user --break-system-packages numpy Pillow imagecodecs tifffile
       - name: Zostavenie
         run: cargo build --locked --release -p orchidea-formaty --example formaty
       - name: Porovnanie s referenčnými knižnicami v oboch smeroch
@@ -467,7 +467,7 @@ jobs:
         run: |
           echo "### Obrazové formáty – nezávislé overenie" >> "$GITHUB_STEP_SUMMARY"
           kod=0
-          python3 nastroje/over_formaty.py target/release/examples/formaty overenie > vysledok.md || kod=$?
+          python3 formaty/nastroje/over_formaty.py target/release/examples/formaty overenie > vysledok.md || kod=$?
           tee -a "$GITHUB_STEP_SUMMARY" < vysledok.md
           exit $kod
       - name: Dlhý fuzzer čítačiek (štyri semienka)

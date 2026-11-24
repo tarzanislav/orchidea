@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Nezávislé overenie obrazových formátov ORCHIDEE (R211) – len v CI, nie súčasť programu.
 
-Rozhodcami sú cudzie knižnice: libpng a libjpeg-turbo (cez Pillow), libtiff a libjxl (cez imagecodecs)
-a OpenEXR (oficiálny balík Pythonu). Skript vytvorí náhodné obrázky, uloží ich rozhodcom v mnohých
+Rozhodcami sú cudzie knižnice: libpng, libjpeg-turbo, libtiff, libjxl a OpenEXR (cez imagecodecs), Pillow;
+skúšobné súbory TIFF zapisuje tifffile. Skript vytvorí náhodné obrázky, uloží ich rozhodcom v mnohých
 variantoch a porovná s naším dekodérom; potom naopak – naše súbory musí prečítať rozhodca.
 
 Použitie: over_formaty.py <cesta k programu formaty> <pracovný priečinok> [formát…]
@@ -267,9 +267,116 @@ def over_jpeg(rng):
                 zapis_vysledok("JPEG zápis", nazov, False, str(e)[:160])
 
 
+# ---------------------------------------------------------------- TIFF
+def over_tiff(rng):
+    """Čítanie: súbory z tifffile (kompresia cez imagecodecs/zlib) vo všetkých bežných variantoch; pravdu
+    určí libtiff (imagecodecs.tiff_decode). Zápis: náš TIFF musí prečítať libtiff bit po bite."""
+    import imagecodecs
+    import tifffile
+
+    pripady = []
+    for dt, c in [(np.uint8, 1), (np.uint8, 3), (np.uint8, 4), (np.uint16, 1), (np.uint16, 3), (np.float32, 3),
+                  (np.float16, 1), (np.float64, 1), (np.int16, 1)]:
+        for komp in (None, "lzw", "zlib", "packbits"):
+            if komp == "packbits" and np.dtype(dt).itemsize > 2:
+                continue
+            for pred in ((None, "horizontal") if np.issubdtype(dt, np.integer) else (None, "floatingpoint")):
+                if komp is None and pred:
+                    continue
+                pripady.append((dt, c, komp, pred, False, False, "<"))
+    # dlaždice, roviny, big-endian, BigTIFF
+    pripady += [(np.uint8, 3, "zlib", None, True, False, "<"), (np.uint16, 3, "lzw", "horizontal", True, True, ">"),
+                (np.uint8, 3, None, None, False, True, ">"), (np.float32, 1, "zlib", "floatingpoint", True, False, ">"),
+                (np.uint16, 4, "zlib", "horizontal", False, False, "<")]
+    for i, (dt, c, komp, pred, tiled, planar, endian) in enumerate(pripady):
+        nazov = (f"{np.dtype(dt).name} ×{c} {komp or 'bez kompresie'}{' +' + pred if pred else ''}"
+                 f"{' dlaždice' if tiled else ''}{' roviny' if planar else ''}{' BE' if endian == '>' else ''}")
+        cesta = os.path.join(PRAC, f"tiff_{i}.tif")
+        h, w = int(rng.integers(5, 90)), int(rng.integers(5, 90))
+        if np.issubdtype(dt, np.floating):
+            data = (rng.random((h, w, c)) * 4 - 1).astype(dt)
+        else:
+            data = rng.integers(np.iinfo(dt).min, np.iinfo(dt).max, (h, w, c), dtype=np.int64, endpoint=True).astype(dt)
+        try:
+            kwargs = dict(compression=komp, predictor=pred, byteorder=endian, bigtiff=(i % 4 == 3))
+            if tiled:
+                kwargs["tile"] = (16, 32)
+            if planar and c > 1:
+                kwargs["planarconfig"] = "separate"
+                arr = np.moveaxis(data, 2, 0)
+            else:
+                arr = data.squeeze(2) if c == 1 else data
+            if c == 4:
+                kwargs["photometric"] = "rgb"
+                kwargs["extrasamples"] = ["unassalpha"]
+            elif c == 3:
+                kwargs["photometric"] = "rgb"
+            else:
+                kwargs["photometric"] = "minisblack"
+            tifffile.imwrite(cesta, arr, **kwargs)
+            ref = imagecodecs.tiff_decode(open(cesta, "rb").read())
+            if planar and c > 1 and ref.shape[0] == c:
+                ref = np.moveaxis(ref, 0, 2)
+            ref = ref.reshape(h, w, c)
+            nas = nase(cesta)
+            if np.issubdtype(dt, np.floating):
+                ok = np.array_equal(nas.astype(np.float32), ref.astype(np.float32), equal_nan=True)
+            elif dt == np.int16:
+                ok = np.allclose(nas, ref.astype(np.float32) / 32767, atol=1e-6)
+            else:
+                ok = np.array_equal(nas.astype(np.int64), ref.astype(np.int64))
+            zapis_vysledok("TIFF čítanie", nazov, ok, "zhoda s libtiff" if ok else f"tvar {nas.shape} vs {ref.shape}")
+        except Exception as e:  # noqa: BLE001
+            zapis_vysledok("TIFF čítanie", nazov, False, str(e)[:160])
+    # paleta a CMYK (zvláštne fotometrie)
+    try:
+        idx = rng.integers(0, 256, (33, 47), dtype=np.uint8)
+        mapa = rng.integers(0, 65536, (3, 256), dtype=np.uint16)
+        cesta = os.path.join(PRAC, "tiff_paleta.tif")
+        tifffile.imwrite(cesta, idx, photometric="palette", colormap=mapa, compression="lzw")
+        nas = nase(cesta)
+        ref = (mapa[:, idx] >> 8).transpose(1, 2, 0)
+        zapis_vysledok("TIFF čítanie", "paleta 8 b", np.array_equal(nas, ref), "farby z ColorMap")
+        cmyk = rng.integers(0, 256, (21, 30, 4), dtype=np.uint8)
+        cesta = os.path.join(PRAC, "tiff_cmyk.tif")
+        tifffile.imwrite(cesta, cmyk, photometric="separated", compression="zlib")
+        zapis_vysledok("TIFF čítanie", "CMYK 8 b", np.array_equal(nase(cesta), cmyk), "")
+        bity = rng.random((19, 37)) < 0.5
+        cesta = os.path.join(PRAC, "tiff_1bit.tif")
+        tifffile.imwrite(cesta, bity, compression="packbits")
+        # tifffile píše „biela je nula“ (MinIsWhite): bit 1 = čierna
+        zapis_vysledok("TIFF čítanie", "1 bit, biela je nula", np.array_equal(nase(cesta)[:, :, 0], np.where(bity, 0, 255)),
+                       "fotometria 0 obrátená na jas")
+        foto = nahodny_obraz(rng, 70, 90, 3, np.uint8)
+        cesta = os.path.join(PRAC, "tiff_jpeg.tif")
+        tifffile.imwrite(cesta, foto, photometric="rgb", compression="jpeg", compressionargs={"level": 90}, tile=(32, 48))
+        ref = imagecodecs.tiff_decode(open(cesta, "rb").read()).astype(np.int64)
+        r = np.abs(nase(cesta).astype(np.int64) - ref)
+        zapis_vysledok("TIFF čítanie", "JPEG v dlaždiciach (YCbCr)", r.max() <= 4 and r.mean() < 0.3,
+                       f"max odchýlka {r.max()}, priemer {r.mean():.3f} (libtiff + libjpeg)")
+    except Exception as e:  # noqa: BLE001
+        zapis_vysledok("TIFF čítanie", "paleta / CMYK / 1 bit / JPEG", False, str(e)[:160])
+    # zápis
+    for dt, c in [(np.uint8, 3), (np.uint16, 4), (np.float32, 1), (np.uint8, 1)]:
+        nazov = f"{np.dtype(dt).name} ×{c}"
+        try:
+            data = (rng.random((40, 57, c)) * (1 if dt == np.float32 else np.iinfo(dt).max)).astype(dt)
+            zdroj = os.path.join(PRAC, f"tiff_zdroj_{nazov.replace(' ', '')}.tif")
+            tifffile.imwrite(zdroj, data.squeeze(2) if c == 1 else data,
+                             photometric="minisblack" if c == 1 else "rgb",
+                             extrasamples=["unassalpha"] if c == 4 else None)
+            nas_tif = zdroj + ".nase.tif"
+            nas_prevod(zdroj, nas_tif)
+            spat = imagecodecs.tiff_decode(open(nas_tif, "rb").read()).reshape(data.shape)
+            ok = np.array_equal(spat, data)
+            zapis_vysledok("TIFF zápis", nazov, ok, f"libtiff prečíta bit po bite; {os.path.getsize(nas_tif)} B")
+        except Exception as e:  # noqa: BLE001
+            zapis_vysledok("TIFF zápis", nazov, False, str(e)[:160])
+
+
 def main():
     rng = np.random.default_rng(2026)
-    overenia = {"png": over_png, "jpeg": over_jpeg}
+    overenia = {"png": over_png, "jpeg": over_jpeg, "tiff": over_tiff}
     for meno, f in overenia.items():
         if not VYBER or meno in VYBER:
             f(rng)

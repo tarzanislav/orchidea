@@ -3,7 +3,7 @@
 //! skrátenie, zväčšenie rozmerov v hlavičke a zámena úsekov. Semienko je pevné – chyba sa dá zopakovať.
 
 use orchidea_formaty::obraz::{Limity, Model, Obraz, Vzorky};
-use orchidea_formaty::{deflate, jpeg, png};
+use orchidea_formaty::{deflate, jpeg, png, tiff};
 use orchidea_jadro::nahoda::Nahoda;
 
 /// Prísne limity – fuzzer nesmie alokovať veľa pamäte ani pri „platnom“ obrovskom rozmere.
@@ -136,6 +136,37 @@ fn fuzzer_jpeg() {
             let _ = jpeg::citaj_hlavicku(d);
         },
         13,
+    );
+}
+
+#[test]
+fn fuzzer_tiff() {
+    let mut n = Nahoda::zo_semienka(5);
+    let mut zaklady = Vec::new();
+    for (model, alfa) in [(Model::Siva, false), (Model::Rgb, true), (Model::Cmyk, false)] {
+        let mut o = obraz(11, 7, model, alfa, &mut n);
+        o.farba.icc = Some(vec![1; 64]);
+        o.metadata.dpi = Some((72.0, 72.0));
+        for deflate in [false, true] {
+            zaklady.push(tiff::zapis(&o, &tiff::NastavenieTiff { deflate, uroven: 6 }).unwrap());
+        }
+        let v: Vec<u16> = (0..11 * 7 * o.kanaly()).map(|i| (i * 999) as u16).collect();
+        let o16 = Obraz::novy(11, 7, model, alfa, Vzorky::U16(v)).unwrap();
+        zaklady.push(tiff::zapis(&o16, &tiff::NastavenieTiff::default()).unwrap());
+        let f: Vec<f32> = (0..11 * 7 * o.kanaly()).map(|i| i as f32 * 0.01).collect();
+        let of = Obraz::novy(11, 7, model, alfa, Vzorky::F32(f)).unwrap();
+        zaklady.push(tiff::zapis(&of, &tiff::NastavenieTiff::default()).unwrap());
+    }
+    let l = limity();
+    fuzz(
+        "TIFF",
+        &zaklady,
+        |d| {
+            let _ = tiff::citaj(d, &l);
+            let _ = tiff::citaj_hlavicku(d);
+            let _ = tiff::pocet_stran(d);
+        },
+        14,
     );
 }
 
