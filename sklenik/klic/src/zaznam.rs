@@ -263,6 +263,35 @@ pub fn poistka(n: &Nosic, meno: &str, co: Poistka) -> Result<bool, String> {
     vysledok.map_err(|e| format!("poistka: {e}"))
 }
 
+/// R199: súbor v priečinku `MERANIA` – prečíta ho (`append` = None) alebo k nemu pripíše riadok.
+pub fn subor_merani(n: &Nosic, meno: &str, append: Option<&str>) -> Result<Option<String>, String> {
+    const BOD: &str = "/run/karta-pokusy";
+    let _ = fs::create_dir_all(BOD);
+    sys::pripoj_s_volbami(
+        &format!("/dev/{}", n.oddiel),
+        BOD,
+        "vfat",
+        sys::MS_NOSUID | sys::MS_NODEV | sys::MS_NOEXEC | sys::MS_NOATIME,
+        "flush",
+    )
+    .map_err(|e| format!("pripojenie: {e}"))?;
+    let vysledok = (|| -> std::io::Result<Option<String>> {
+        let priecinok = Path::new(BOD).join(PRIECINOK);
+        let cesta = priecinok.join(meno);
+        let stary = fs::read_to_string(&cesta).ok();
+        if let Some(r) = append {
+            fs::create_dir_all(&priecinok)?;
+            let mut f = fs::OpenOptions::new().create(true).append(true).open(&cesta)?;
+            f.write_all(format!("{r}\r\n").as_bytes())?;
+            f.sync_all()?;
+        }
+        Ok(stary)
+    })();
+    let _ = sys::odpoj(BOD);
+    sys::zapis_vyrovnavacie();
+    vysledok.map_err(|e| format!("{meno}: {e}"))
+}
+
 /// R190: súbor v koreni oddielu nosiča (napr. `sklenik-obraz.txt` vedľa `config.txt`) – prečíta ho a ak sa
 /// líši od `obsah`, prepíše ho. Vráti predošlý obsah (`None` – súbor nebol). Zapisuje sa len pri zmene.
 pub fn subor_v_koreni(n: &Nosic, meno: &str, obsah: &str) -> Result<Option<String>, String> {

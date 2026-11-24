@@ -366,7 +366,8 @@ pub struct NastavenieZariadenia {
     pub zhasni_min: Option<u32>,
     /// Po koľkých minútach pokoja sa obraz vypne (0 = nikdy; R158).
     pub vypni_min: Option<u32>,
-    /// Tepelný pokus namiesto bežného samomerania (R160): `Some(false)` = vypnutý.
+    /// Tepelný pokus namiesto bežného samomerania (R160): `Some(false)` = nikdy, `Some(true)` = pri každom
+    /// štarte, `None` (`pokus=raz`, predvolené) = **raz na každom zariadení** pre každú verziu karty (R199).
     pub pokus: Option<bool>,
     /// Skúška hardvérového dekodéra videa pri štarte (R165) – vlastné toky s presne známym obrazom:
     /// `Some(true)` = áno (H.264 a HEVC), inak len zoznam formátov dekodéra.
@@ -391,8 +392,10 @@ pub struct NastavenieZariadenia {
 pub fn blok_prepinacov() -> String {
     let mut t = String::from(
         "\n# --- PREPÍNAČE (ano = zapnuté, nie = vypnuté) ---\n\
-         # tepelný pokus 2 h 15 min a skúška dekodéra videa pri štarte\n\
-         pokus=nie\n\
+         # tepelný pokus 2 h 15 min: raz = sám raz na každom zariadení (s ním aj skúška videa), ano = pri každom\n\
+         # štarte, nie = nikdy (R199)\n\
+         pokus=raz\n\
+         # skúška dekodéra videa pri každom štarte\n\
          video=nie\n\
          # dlhý test hardvéru na noc (~3 h): video, tepelný pokus, záťaž jadier a pamäte, chladnutie\n\
          dlhy_test=nie\n\
@@ -476,9 +479,10 @@ impl NastavenieZariadenia {
                     Some(m) => n.meranie = Some(m),
                     None => upozornenia.push(format!("riadok {}: meranie má byť ano alebo nie", i + 1)),
                 },
+                "pokus" if v.eq_ignore_ascii_case("raz") || v.is_empty() => n.pokus = None,
                 "pokus" => match ano_nie(v) {
                     Some(m) => n.pokus = Some(m),
-                    None => upozornenia.push(format!("riadok {}: pokus má byť ano alebo nie", i + 1)),
+                    None => upozornenia.push(format!("riadok {}: pokus má byť raz, ano alebo nie", i + 1)),
                 },
                 "video" => match ano_nie(v) {
                     Some(m) => n.video = Some(m),
@@ -899,7 +903,8 @@ mod skusky {
         let (z, u) = NastavenieZariadenia::z_textu(&blok_prepinacov());
         assert_eq!(
             (z.pokus, z.video, z.cec.as_deref(), z.novinky, z.dlhy_test, u.len()),
-            (Some(false), Some(false), Some("ano"), Some(true), Some(false), 0)
+            (None, Some(false), Some("ano"), Some(true), Some(false), 0),
+            "R199: pokus raz na každom zariadení"
         );
         assert!(NOVINKY.iter().all(|(k, _)| z.novinka(k)));
         let (z, u) = NastavenieZariadenia::z_textu("novinky=ano\ntakt_obrazu=nie\nsiet=nie\n");

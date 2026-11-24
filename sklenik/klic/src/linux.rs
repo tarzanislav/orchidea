@@ -784,6 +784,9 @@ fn popis_zataze(s: &StatZataze, max_teplota: Option<f64>) -> String {
 const OBRAZ_KMS: &str = include_str!("../../boot/sklenik-obraz.txt");
 const OBRAZ_FIRMVER: &str = "# SKLENÍK (R190) – obrazovka od firmvéru (prepínač obraz_kms=nie v SKLENIK.TXT). Súbor spravuje KLÍČ –\n# zmena platí od ďalšieho štartu. Ručne neupravovať.\n[all]\n";
 
+/// R199: zariadenia, na ktorých už táto verzia karty urobila tepelný pokus (riadok „sériové číslo verzia model“).
+const POKUSY: &str = "POKUSY.TXT";
+
 /// Značka na karte: krabička sa po dlhom teste vypla (R184).
 const VYPNUTE_PO_TESTE: &str = "VYPNUTE.TXT";
 
@@ -1315,6 +1318,11 @@ pub fn spusti() {
             .iter()
             .any(|m| model.contains(m));
     let mut pokoj_stav: Option<(pokoj::Stav, bool, zaznam::Nosic)> = None;
+    // R199: tepelný pokus sám raz na každom zariadení (pre každú verziu karty) – vlastník nič nepíše
+    let pokus_kluc =
+        format!("{} {}", zaznam::seriove_cislo().unwrap_or_else(|| model.replace(' ', "_")), crate::VERZIA);
+    let mut pokus_hotovy_tu = false;
+    let mut pokus_hotovy_text: Option<String> = None;
     // R192: fázy tepelného pokusu podľa zariadenia (RPi: spánok siete zvlášť, bez fáz taktu VPU)
     let je_rpi = model.contains("Raspberry Pi");
     let fazy = chlad::fazy(je_rpi);
@@ -1351,6 +1359,27 @@ pub fn spusti() {
                     }
                 }
             }
+        }
+        // R199: urobila už táto verzia karty tepelný pokus na tomto zariadení?
+        if tv && nastavenie.is_some() {
+            let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
+            if let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next()
+                && let Ok(Some(t)) = zaznam::subor_merani(&n, POKUSY, None)
+            {
+                pokus_hotovy_tu = t.lines().any(|r| r.starts_with(&format!("{pokus_kluc} ")));
+            }
+            let p = nastavenie.as_ref().and_then(|(_, n)| n.pokus);
+            hlas(&format!(
+                "tepelný pokus (R199): {}",
+                match (p, pokus_hotovy_tu) {
+                    (Some(false), _) => "vypnutý (pokus=nie)".to_string(),
+                    (Some(true), _) => "pri každom štarte (pokus=ano)".into(),
+                    (None, true) => "na tomto zariadení s touto kartou už hotový – bežný režim".into(),
+                    (None, false) => "prvý štart tejto karty na zariadení – urobí sa sám (2 h 15 min) aj so \
+                                      skúškou videa"
+                        .into(),
+                }
+            ));
         }
         // R198: chladný pokoj – nižšie napätie v pokoji (RPi 2, 3, Zero 2 W) s poistkou v súbore na karte
         if pokoj_model && nastavenie.is_some() {
@@ -1980,7 +2009,9 @@ pub fn spusti() {
         {
             video_spustene = true;
             let skusat = nastavenie.as_ref().and_then(|(_, n)| n.video) == Some(true)
-                || nastavenie.as_ref().and_then(|(_, n)| n.dlhy_test) == Some(true);
+                || nastavenie.as_ref().and_then(|(_, n)| n.dlhy_test) == Some(true)
+                // R199: pri prvom (automatickom) pokuse na zariadení aj skúška videa
+                || (tv && !pokus_hotovy_tu && nastavenie.as_ref().is_some_and(|(_, n)| n.pokus.is_none()));
             let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
             spusti_skusku_videa(skusat, spustaci, video_riadky.clone());
         }
@@ -2106,6 +2137,22 @@ pub fn spusti() {
                 None => {
                     if faza_teraz.take().is_some() {
                         hlas("tepelný pokus: hotový – ďalej bežný chladný režim");
+                        // R199: zapísať, že toto zariadenie má pokus s touto verziou karty hotový
+                        let spustaci =
+                            nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
+                        if !pokus_hotovy_tu
+                            && let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next()
+                        {
+                            match zaznam::subor_merani(&n, POKUSY, Some(&format!("{pokus_kluc} {model}"))) {
+                                Ok(_) => pokus_hotovy_tu = true,
+                                Err(e) => {
+                                    hlas(&format!("tepelný pokus (R199): značku sa nepodarilo zapísať ({e})"))
+                                }
+                            }
+                        }
+                        pokus_hotovy_text = Some(
+                            "tepelný pokus hotový – výsledok je na karte, zariadenie môžeš vypnúť".into(),
+                        );
                     }
                 }
             }
@@ -2405,17 +2452,19 @@ pub fn spusti() {
             }
             obrazovka::Chlad {
                 text: casti.join(" · "),
-                pokus: faza_teraz.map(|f| {
-                    let koniec = merania.as_ref().and_then(|m| m.zaciatok_s()).unwrap_or(0)
-                        + (f as u64 + 1) * chlad::FAZA_S;
-                    format!(
-                        "pokus {}/{} {} – do {}",
-                        f + 1,
-                        pocet_faz,
-                        fazy[f].nazov,
-                        samomeranie::cas(koniec)
-                    )
-                }),
+                pokus: faza_teraz
+                    .map(|f| {
+                        let koniec = merania.as_ref().and_then(|m| m.zaciatok_s()).unwrap_or(0)
+                            + (f as u64 + 1) * chlad::FAZA_S;
+                        format!(
+                            "pokus {}/{} {} – do {}",
+                            f + 1,
+                            pocet_faz,
+                            fazy[f].nazov,
+                            samomeranie::cas(koniec)
+                        )
+                    })
+                    .or_else(|| pokus_hotovy_text.clone()),
             }
         });
         let stav = (teplota.map_or(-1000, |t| (t * 2.0).round() as i64), regulator.index());
@@ -2445,12 +2494,12 @@ pub fn spusti() {
         // na chvíľu zaťažia) sú hotové, takže meranie teploty neovplyvnia
         let vypnute = nastavenie.as_ref().is_some_and(|(_, n)| n.meranie == Some(false));
         // R160: na TV krabičke s vlastným ovládačom obrazu sa namiesto 30-minútového merania robí tepelný
-        // pokus (6 fáz po 20 min); vypne sa nastavením `pokus=nie`
+        // pokus (9 fáz po 15 min); R199: sám raz na každom zariadení, `pokus=ano` vždy, `pokus=nie` nikdy
         if tv
             && !pokus
             && !vypnute
             && merania.as_ref().is_some_and(|m| m.zaciatok_s().is_none())
-            && (nastavenie.as_ref().and_then(|(_, n)| n.pokus) != Some(false) || dlhy)
+            && (nastavenie.as_ref().and_then(|(_, n)| n.pokus).unwrap_or(!pokus_hotovy_tu) || dlhy)
             && displej.as_ref().is_some_and(|d| d.je_kms())
         {
             merania = Some(zaznam::Riadenie::s_milnikmi(chlad::milniky_pokusu(pocet_faz)));
