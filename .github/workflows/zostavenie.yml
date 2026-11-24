@@ -174,7 +174,7 @@ jobs:
           path: orchidea-rpi-32bit-armv6
 
   hevc:
-    name: HEVC – rozbor skúšobných tokov normy (R214, krok H0)
+    name: HEVC – rozbor skúšobných tokov normy (R214, kroky H0 a H1)
     # skúšobné toky ITU-T/JCT-VC (Main, Main 10) a toky z kodéra x265 (Main, Main 10 s HDR, 4:4:4) –
     # každá parametrická sada a odtlačok SEI sa musia prečítať bez chyby
     runs-on: ubuntu-latest
@@ -213,7 +213,7 @@ jobs:
       - name: Rozbor syntaxe
         shell: bash
         run: |
-          echo "### HEVC – rozbor syntaxe (krok H0)" >> "$GITHUB_STEP_SUMMARY"
+          echo "### HEVC – rozbor syntaxe a príprava V4L2 (kroky H0 a H1)" >> "$GITHUB_STEP_SUMMARY"
           cargo run --locked --release -p orchidea-hevc --example hevc_rozbor -- toky | tee -a "$GITHUB_STEP_SUMMARY"
 
   sadic-iso:

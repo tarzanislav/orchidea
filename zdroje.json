@@ -230,6 +230,23 @@
       "kde": "len skúšky – dáta v repozitári (spolu ≈ 8 kB), nie kód a nie súčasť programu",
       "ucel": "skúška zhody nášho dekodéra JPEG XL s referenčným (kontrolné súčty vzoriek) a semienka fuzzera",
       "posudenie_charty": "obrázky bez obsahu (vzorky a šum); vznikli slobodným nástrojom bez vojenského účelu"
+    },
+    {
+      "meno": "HEVC (H.265) – norma ITU-T H.265 | ISO/IEC 23008-2 a patenty na formát (výnimka vlastníka R214)",
+      "trieda": "B",
+      "licencia": "text normy voľne dostupný (ITU-T); patenty licencujú spoločenstvá Access Advance a Via LA – aj pre softvérové dekodéry",
+      "kde": "len voliteľný balík hevc-dekoder (vlastný kód podľa normy, žiadny cudzí kód); rozbor syntaxe v balíku hevc a hardvérová cesta (licenciu má výrobca čipu) bez výnimky",
+      "ucel": "prehrávanie HEVC priamo na Raspberry Pi 3 a Zero 2 W bez hardvérového dekodéra (R214)",
+      "posudenie_charty": "mierový účel; výnimka z kódexu (patentovaný kodek vo vlastnom kóde) rozhodnutím vlastníka 24. 11. 2026 – modul je oddelený a pred zverejnením pre iných ľudí ho vlastník ešte raz posúdi (ORCHIDEA/hevc-na-rpi.md, časť 6)",
+      "vynimka": "R214"
+    },
+    {
+      "meno": "rozhodcovia HEVC v CI: skúšobné toky normy ITU-T/JCT-VC (HEVC_v1) a FFmpeg s kodérom x265",
+      "trieda": "B",
+      "licencia": "skúšobné toky ITU-T (na skúšky zhody); FFmpeg LGPL-2.1-or-later, x265 GPL-2.0-or-later",
+      "kde": "len CI – sťahujú sa pri behu (toky normy) alebo inštalujú z balíkov Ubuntu (ffmpeg); nie sú v repozitári ani v programe",
+      "ucel": "nezávislé overenie rozboru syntaxe (H0, H1) a bitovej zhody vlastného dekodéra (H2–H6) odtlačkami MD5 každého obrazu",
+      "posudenie_charty": "slobodné nástroje a verejné skúšobné dáta normy; použité len ako rozhodcovia správnosti, žiadny ich kód nie je v ORCHIDEI"
     }
   ],
   "triedy": {

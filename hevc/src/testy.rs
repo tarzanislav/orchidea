@@ -408,3 +408,325 @@ fn poskodene_data_bez_padu() {
     // väčšina poškodení sa musí odhaliť
     assert!(chyb > 10_000, "odhalených len {chyb}");
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// H1 – hlavička rezu, správa obrazov dekodéra, parametre V4L2
+// ---------------------------------------------------------------------------------------------------------
+
+use crate::nal::{HlavickaNal, typ};
+use crate::obrazy::{SpravaObrazov, Udalost};
+use crate::rez::{HlavickaRezu, TypRezu};
+use crate::sady::Sady;
+
+fn sady() -> Sady {
+    let mut s = Sady::nove();
+    s.pridaj(&HlavickaNal { typ: typ::SPS, vrstva: 0, casova_vrstva: 0 }, &sps()).unwrap();
+    s.pridaj(&HlavickaNal { typ: typ::PPS, vrstva: 0, casova_vrstva: 0 }, &pps()).unwrap();
+    s
+}
+
+/// Rez P (nie prvý v obraze) so všetkými voliteľnými časťami pre PPS 5 / SPS 3 z týchto skúšok.
+fn rez_p() -> Vec<u8> {
+    let mut z = Zapis::default();
+    z.u(1, 0); // first_slice_segment_in_pic_flag
+    z.ue(5); // PPS
+    z.u(1, 0); // dependent_slice_segment_flag
+    z.u(9, 31); // slice_segment_address (510 CTB → 9 bitov)
+    z.u(2, 0b10); // slice_reserved_flag
+    z.ue(1); // P
+    z.u(8, 7); // POC lsb
+    z.u(1, 1); // sada zo SPS
+    z.u(1, 1); // short_term_ref_pic_set_idx = 1
+    z.ue(1); // num_long_term_sps
+    z.ue(1); // num_long_term_pics
+    z.u(1, 0); // lt_idx_sps
+    z.u(1, 1);
+    z.ue(2); // delta_poc_msb_cycle_lt
+    z.u(8, 99);
+    z.u(1, 1);
+    z.u(1, 0);
+    z.u(1, 1); // slice_temporal_mvp_enabled_flag
+    z.u(1, 1); // SAO jas
+    z.u(1, 0); // SAO farba
+    z.u(1, 1); // num_ref_idx_active_override_flag
+    z.ue(2);
+    z.u(1, 1); // ref_pic_list_modification_flag_l0
+    for e in [5, 0, 2] {
+        z.u(3, e);
+    }
+    z.u(1, 1); // cabac_init_flag
+    z.ue(2); // collocated_ref_idx
+    // pred_weight_table
+    z.ue(3);
+    z.se(-1);
+    z.u(3, 0b101);
+    z.u(3, 0b010);
+    z.se(-5);
+    z.se(7);
+    z.se(3);
+    z.se(-20);
+    z.se(0);
+    z.se(100);
+    z.se(10);
+    z.se(-128);
+    z.ue(2); // five_minus_max_num_merge_cand
+    z.se(4); // slice_qp_delta
+    z.se(1);
+    z.se(-2);
+    z.u(1, 0); // cu_chroma_qp_offset_enabled_flag (PPS má zoznam posunov QP farby)
+    z.u(1, 1); // deblocking_filter_override_flag
+    z.u(1, 0);
+    z.se(-1);
+    z.se(4);
+    // vstupné body
+    z.ue(2);
+    z.ue(10);
+    z.u(11, 999);
+    z.u(11, 1999);
+    z.koniec()
+}
+
+fn rez_idr() -> Vec<u8> {
+    let mut z = Zapis::default();
+    z.u(1, 1);
+    z.u(1, 1); // no_output_of_prior_pics_flag
+    z.ue(5);
+    z.u(2, 0);
+    z.ue(2); // I
+    z.u(1, 1);
+    z.u(1, 1);
+    z.se(-3);
+    z.se(0);
+    z.se(0);
+    z.u(1, 1); // cu_chroma_qp_offset_enabled_flag
+    z.u(1, 0);
+    z.ue(0);
+    z.koniec()
+}
+
+fn rez_zavisly() -> Vec<u8> {
+    let mut z = Zapis::default();
+    z.u(1, 0);
+    z.u(1, 0); // no_output_of_prior_pics_flag (segment obrazu IDR)
+    z.ue(5);
+    z.u(1, 1); // závislý
+    z.u(9, 100);
+    z.ue(1);
+    z.ue(3);
+    z.u(4, 5);
+    z.koniec()
+}
+
+const NAL_TRAIL_R: HlavickaNal = HlavickaNal { typ: 1, vrstva: 0, casova_vrstva: 0 };
+const NAL_IDR: HlavickaNal = HlavickaNal { typ: typ::IDR_W_RADL, vrstva: 0, casova_vrstva: 0 };
+
+#[test]
+fn hlavicka_rezu_p_presne() {
+    let s = sady();
+    let r = HlavickaRezu::citaj(&rez_p(), NAL_TRAIL_R, &s, None).unwrap();
+    assert_eq!((r.prvy_v_obraze, r.zavisly, r.adresa, r.adresa_rezu), (false, false, 31, 31));
+    assert_eq!((r.typ, r.poc_lsb, r.sada_zo_sps), (TypRezu::P, 7, Some(1)));
+    assert_eq!(r.sada.dozadu, vec![(-1, true), (-2, true), (-4, true)]);
+    assert_eq!(r.dlhodobe.len(), 2);
+    assert_eq!((r.dlhodobe[0].poc_lsb, r.dlhodobe[0].pouzity, r.dlhodobe[0].msb_cyklus), (5, true, Some(2)));
+    assert_eq!((r.dlhodobe[1].poc_lsb, r.dlhodobe[1].pouzity, r.dlhodobe[1].msb_cyklus), (99, true, None));
+    assert_eq!(r.dlhodobe_zo_sps, 1);
+    assert!(r.bity_dlhodobych > 0 && r.bity_sady == 0);
+    assert_eq!(r.pocet_aktualnych, 6);
+    assert!(r.tmvp && r.sao_jas && !r.sao_farba);
+    assert_eq!(r.aktivne, [3, 0]);
+    assert_eq!(r.uprava_zoznamu[0], Some(vec![5, 0, 2]));
+    assert!(r.cabac_init && r.kolokovany_z_l0);
+    assert_eq!(r.kolokovany_ref, 2);
+    let v = r.vahy.as_ref().unwrap();
+    assert_eq!((v.log2_jas, v.log2_farba), (3, 2));
+    assert_eq!(v.jas(0, 0), (8 - 5, 7));
+    assert_eq!(v.jas(0, 1), (8, 0));
+    assert_eq!(v.jas(0, 2), (18, -128));
+    // ChromaOffset = Clip3(−128, 127, 128 + (−20) − ((128 · 7) >> 2)) = −116
+    assert_eq!(v.farba(0, 1, 0), (7, -116));
+    assert_eq!(v.farba(0, 1, 1), (4, 100));
+    assert_eq!(v.farba(0, 0, 0), (4, 0));
+    assert_eq!(r.max_zlucenie, 3);
+    assert_eq!((r.qp_delta, r.qp, r.cb_qp_offset, r.cr_qp_offset), (4, 26, 1, -2));
+    assert!(!r.odblokovanie_vypnute);
+    assert_eq!((r.beta_div2, r.tc_div2), (-1, 4));
+    assert!(!r.filter_cez_rezy);
+    assert_eq!(r.vstupne_body, vec![1000, 2000]);
+    assert_eq!(r.bity_vstupnych_bodov, 11);
+    assert_eq!(r.dlzka_rbsp, rez_p().len());
+}
+
+#[test]
+fn hlavicka_rezu_idr_a_zavisly_segment() {
+    let s = sady();
+    let i = HlavickaRezu::citaj(&rez_idr(), NAL_IDR, &s, None).unwrap();
+    assert!(i.prvy_v_obraze && i.bez_vystupu_predoslych);
+    assert_eq!((i.typ, i.poc_lsb, i.qp), (TypRezu::I, 0, 19));
+    assert!(i.sada.dozadu.is_empty() && i.dlhodobe.is_empty());
+    assert_eq!((i.beta_div2, i.tc_div2), (2, -3), "z PPS");
+    assert!(i.cu_chroma_qp_offset);
+    // závislý segment bez nezávislého je chyba
+    assert!(HlavickaRezu::citaj(&rez_zavisly(), NAL_IDR, &s, None).is_err());
+    let z = HlavickaRezu::citaj(&rez_zavisly(), NAL_IDR, &s, Some(&i)).unwrap();
+    assert!(z.zavisly && !z.prvy_v_obraze);
+    assert_eq!((z.adresa, z.adresa_rezu), (100, 0));
+    assert_eq!(z.vstupne_body, vec![6]);
+    assert_eq!((z.typ, z.qp, z.sao_farba), (TypRezu::I, 19, true));
+    // IRAP s rezom P je chyba
+    assert!(HlavickaRezu::citaj(&rez_p(), NAL_IDR, &s, None).is_err());
+    // neznáme PPS
+    assert!(HlavickaRezu::citaj(&rez_p(), NAL_TRAIL_R, &Sady::nove(), None).is_err());
+}
+
+/// Poškodené hlavičky rezov nesmú spôsobiť pád (R211).
+#[test]
+fn poskodene_hlavicky_rezov_bez_padu() {
+    let s = sady();
+    let vzory = [rez_p(), rez_idr(), rez_zavisly()];
+    let nezavisla = HlavickaRezu::citaj(&rez_idr(), NAL_IDR, &s, None).unwrap();
+    let mut n = Nahoda::zo_semienka(1214);
+    let mut chyb = 0;
+    for kolo in 0..30_000 {
+        let mut d = vzory[kolo % 3].clone();
+        let k = (n.dalsie() as usize) % d.len();
+        match n.dalsie() % 3 {
+            0 => d.truncate(k),
+            1 => d[k] ^= 1 << (n.dalsie() % 8),
+            _ => d[k] = n.dalsie() as u8,
+        }
+        let nal = if kolo % 3 == 0 { NAL_TRAIL_R } else { NAL_IDR };
+        chyb += usize::from(HlavickaRezu::citaj(&d, nal, &s, Some(&nezavisla)).is_err());
+    }
+    assert!(chyb > 8_000, "odhalených len {chyb}");
+}
+
+/// Hlavička rezu na skúšky správy obrazov: typ NAL, typ rezu, POC lsb a krátkodobá sada.
+fn hlavicka(nal_typ: u8, typ_rezu: TypRezu, poc_lsb: u32, dozadu: &[i32], dopredu: &[i32]) -> HlavickaRezu {
+    let s = sady();
+    let mut h = HlavickaRezu::citaj(&rez_p(), NAL_TRAIL_R, &s, None).unwrap();
+    h.nal = HlavickaNal { typ: nal_typ, vrstva: 0, casova_vrstva: 0 };
+    h.prvy_v_obraze = true;
+    h.typ = typ_rezu;
+    h.poc_lsb = poc_lsb;
+    h.sada = SadaReferencii {
+        dozadu: dozadu.iter().map(|&d| (d, true)).collect(),
+        dopredu: dopredu.iter().map(|&d| (d, true)).collect(),
+    };
+    h.dlhodobe.clear();
+    h.uprava_zoznamu = [None, None];
+    h.aktivne = match typ_rezu {
+        TypRezu::I => [0, 0],
+        TypRezu::P => [1, 0],
+        TypRezu::B => [2, 2],
+    };
+    h.vystup = true;
+    h.bez_vystupu_predoslych = false;
+    h
+}
+
+fn sps_dpb() -> Sps {
+    let mut s = Sps::citaj(&sps()).unwrap();
+    for p in s.podvrstvy.iter_mut() {
+        p.max_dec_pic_buffering_minus1 = 4;
+        p.max_num_reorder_pics = 2;
+        p.max_latency_increase_plus1 = 0;
+    }
+    s
+}
+
+fn vystupy(u: &[Udalost], poc: &std::collections::HashMap<u32, i32>) -> Vec<i32> {
+    u.iter().filter_map(|u| if let Udalost::Vystup(id) = u { Some(poc[id]) } else { None }).collect()
+}
+
+/// Hierarchické B: dekódovanie 0, 8, 4, 2, 6 → výstup 0, 2, 4, 6, 8; zoznamy referencií podľa 8.3.4.
+#[test]
+fn sprava_obrazov_poradie_a_zoznamy() {
+    let sps = sps_dpb();
+    let mut m = SpravaObrazov::nova();
+    let mut poc = std::collections::HashMap::new();
+    let mut vystup = Vec::new();
+    type Krok<'a> = (u8, TypRezu, u32, &'a [i32], &'a [i32]);
+    let postup: [Krok; 5] = [
+        (typ::IDR_W_RADL, TypRezu::I, 0, &[], &[]),
+        (1, TypRezu::P, 8, &[-8], &[]),
+        (1, TypRezu::B, 4, &[-4], &[4]),
+        (0, TypRezu::B, 2, &[-2], &[2, 6]),
+        (0, TypRezu::B, 6, &[-2, -6], &[2]),
+    ];
+    for (t, tr, lsb, d, p) in postup {
+        let h = hlavicka(t, tr, lsb, d, p);
+        let z = m.zacni_obraz(&h, &sps).unwrap();
+        assert!(!z.preskocit);
+        assert_eq!(z.poc, lsb as i32);
+        poc.insert(z.id, z.poc);
+        vystup.extend(vystupy(&z.udalosti, &poc));
+        if lsb == 4 {
+            let [l0, l1] = m.zoznamy(&h).unwrap();
+            assert_eq!(l0.iter().map(|i| poc[i]).collect::<Vec<_>>(), vec![0, 8]);
+            assert_eq!(l1.iter().map(|i| poc[i]).collect::<Vec<_>>(), vec![8, 0]);
+        }
+        if lsb == 2 {
+            let mut h3 = h.clone();
+            h3.aktivne = [4, 4];
+            let [l0, l1] = m.zoznamy(&h3).unwrap();
+            assert_eq!(l0.iter().map(|i| poc[i]).collect::<Vec<_>>(), vec![0, 4, 8, 0], "opakovanie zoznamu");
+            assert_eq!(l1.iter().map(|i| poc[i]).collect::<Vec<_>>(), vec![4, 8, 0, 4]);
+        }
+        vystup.extend(vystupy(&m.ukonci_obraz(&sps), &poc));
+    }
+    vystup.extend(vystupy(&m.vyprazdni(), &poc));
+    assert_eq!(vystup, vec![0, 2, 4, 6, 8]);
+}
+
+/// Prechod POC cez 2^8 (log2_max_poc_lsb = 8), CRA na začiatku toku a preskočenie RASL.
+#[test]
+fn sprava_obrazov_poc_a_rasl() {
+    let sps = sps_dpb();
+    let mut m = SpravaObrazov::nova();
+    // CRA s POC 250 na začiatku toku: NoRaslOutputFlag = 1
+    let z = m.zacni_obraz(&hlavicka(typ::CRA_NUT, TypRezu::I, 250, &[], &[]), &sps).unwrap();
+    assert!(z.irap_bez_rasl && z.poc == 250);
+    m.ukonci_obraz(&sps);
+    // RASL pred CRA v poradí zobrazenia – preskočí sa
+    let z = m.zacni_obraz(&hlavicka(typ::RASL_N, TypRezu::B, 248, &[-2], &[2]), &sps).unwrap();
+    assert!(z.preskocit);
+    // ďalší obraz: lsb 2 → POC 258
+    let z = m.zacni_obraz(&hlavicka(1, TypRezu::P, 2, &[-8], &[]), &sps).unwrap();
+    assert_eq!(z.poc, 258);
+    assert_eq!(m.sady.st_pred.len(), 1);
+    m.ukonci_obraz(&sps);
+    let z = m.zacni_obraz(&hlavicka(1, TypRezu::P, 10, &[-8], &[]), &sps).unwrap();
+    assert_eq!(z.poc, 266);
+    // chýbajúca referencia (poškodený tok) sa vytvorí, aby sa obraz dal dekódovať
+    m.ukonci_obraz(&sps);
+    let z = m.zacni_obraz(&hlavicka(1, TypRezu::P, 20, &[-3], &[]), &sps).unwrap();
+    assert!(z.udalosti.iter().any(|u| matches!(u, Udalost::Vytvor { poc: 273, .. })));
+}
+
+#[test]
+fn v4l2_matica_v_rastri_a_posun_dat() {
+    use crate::v4l2::*;
+    assert_eq!(&diagonalny_prechod(4)[..6], &[(0, 0), (0, 1), (1, 0), (0, 2), (1, 1), (2, 0)]);
+    let s = Sps::citaj(&sps()).unwrap();
+    let p = Pps::citaj(&pps()).unwrap();
+    let m = matica_v4l2(&s, &p).unwrap();
+    assert_eq!(m.scaling_list_4x4[0], [8; 16]);
+    assert_eq!(m.scaling_list_dc_coef_16x16, [12; 6]);
+    // predvolená vnútrosnímková matica 8×8: posledná hodnota v poradí prechodu (115) je v rastri vpravo dole
+    assert_eq!(m.scaling_list_8x8[0][63], 115);
+    assert_eq!(m.scaling_list_8x8[0][7 * 8], PREDVOLENA_INTRA_RASTER_7_0);
+    // posun s ochrannými bajtmi: 00 00 03 01 → RBSP 00 00 01
+    assert_eq!(posun_s_ochranou(&[0xAA, 0, 0, 3, 1, 0xBB], 3), 4);
+    assert_eq!(posun_s_ochranou(&[0xAA, 0, 0, 3, 1, 0xBB], 1), 1);
+    let v = sps_v4l2(&s);
+    assert_eq!((v.pic_width_in_luma_samples, v.pic_height_in_luma_samples), (1920, 1088));
+    assert_ne!(v.flags & SPS_FLAG_SCALING_LIST_ENABLED, 0);
+    let w = pps_v4l2(&p);
+    assert_eq!((w.num_tile_columns_minus1, w.column_width_minus1[0], w.column_width_minus1[1]), (2, 8, 9));
+    assert_eq!(w.flags & PPS_FLAG_UNIFORM_SPACING, 0);
+    assert_ne!(w.flags & PPS_FLAG_ENTROPY_CODING_SYNC_ENABLED, 0);
+}
+
+/// Hodnota predvolenej vnútrosnímkovej matice 8×8 (tab. 7-6) na polohe x = 0, y = 7.
+const PREDVOLENA_INTRA_RASTER_7_0: u8 = 24;

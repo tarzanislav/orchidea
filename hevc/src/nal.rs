@@ -5,6 +5,9 @@ use orchidea_jadro::{Chyba, Vysledok};
 /// Typy jednotiek NAL (H.265, tab. 7-1), ktoré rozbor potrebuje.
 pub mod typ {
     pub const TRAIL_N: u8 = 0;
+    pub const RADL_N: u8 = 6;
+    pub const RADL_R: u8 = 7;
+    pub const RASL_N: u8 = 8;
     pub const RASL_R: u8 = 9;
     pub const BLA_W_LP: u8 = 16;
     pub const IDR_W_RADL: u8 = 19;

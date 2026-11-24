@@ -1,12 +1,15 @@
-//! Rozbor tokov HEVC (Annex B): jednotky NAL, parametrické sady, obrazy, odtlačky SEI. V CI prejde skúšobné
-//! toky normy (ITU-T, JCT-VC) – každá parametrická sada sa musí prečítať bez chyby.
+//! Rozbor tokov HEVC (Annex B): jednotky NAL, parametrické sady, obrazy, odtlačky SEI, hlavičky rezov
+//! a príprava parametrov pre hardvérové dekodéry V4L2 *stateless* (krok H1: POC, sady referencií, zoznamy,
+//! poradie výstupu). V CI prejde skúšobné toky normy (ITU-T, JCT-VC) – každá parametrická sada a každá
+//! hlavička rezu sa musí prečítať bez chyby a každý dekódovaný obraz sa musí vydať.
 //!
 //! Spustenie: `cargo run --release -p orchidea-hevc --example hevc_rozbor -- <súbor alebo priečinok>…`
 //! (s premennou ORCHIDEA_HEVC_PODROBNE vypíše celé SPS)
 
 use orchidea_hevc::nal::typ;
 use orchidea_hevc::sei::{self, OdtlacokObrazu};
-use orchidea_hevc::{HlavickaNal, Pps, Sps, Vps, jednotky_annex_b, rbsp};
+use orchidea_hevc::v4l2::UdalostV4l2;
+use orchidea_hevc::{HlavickaNal, Pps, PripravaV4l2, Sps, Vps, jednotky_annex_b, rbsp};
 use std::path::{Path, PathBuf};
 
 fn subory(cesta: &Path, v: &mut Vec<PathBuf>) {
@@ -33,8 +36,8 @@ fn main() {
         println!("Žiadne toky HEVC na rozbor.");
         return;
     }
-    println!("| Tok | NAL | obrazov | SPS | PPS | MD5 SEI | chyby |");
-    println!("|---|---|---|---|---|---|---|");
+    println!("| Tok | NAL | obrazov | SPS | PPS | MD5 SEI | rezov (H1) | dekódovať / vydať (H1) | chyby |");
+    println!("|---|---|---|---|---|---|---|---|---|");
     let mut chyb_spolu = 0;
     for cesta in &zoznam {
         let Ok(data) = std::fs::read(cesta) else { continue };
@@ -42,8 +45,27 @@ fn main() {
         let mut chyby = Vec::new();
         let mut popis_sps = String::from("–");
         let mut zloziek = 3;
+        let mut priprava = PripravaV4l2::nova();
+        let (mut rezov, mut dekodovat, mut vydat) = (0usize, 0usize, 0usize);
+        let spocitaj =
+            |udalosti: Vec<UdalostV4l2>, dekodovat: &mut usize, vydat: &mut usize, rezov: &mut usize| {
+                for u in udalosti {
+                    match u {
+                        UdalostV4l2::Dekoduj(o) => {
+                            *dekodovat += 1;
+                            *rezov += o.parametre.rezy.len();
+                        }
+                        UdalostV4l2::Vystup(_) => *vydat += 1,
+                        _ => {}
+                    }
+                }
+            };
         for j in jednotky_annex_b(&data) {
             nal += 1;
+            match priprava.nal(j) {
+                Ok(u) => spocitaj(u, &mut dekodovat, &mut vydat, &mut rezov),
+                Err(e) => chyby.push(format!("H1: {e}")),
+            }
             let h = match HlavickaNal::citaj(j) {
                 Ok(h) => h,
                 Err(e) => {
@@ -92,10 +114,15 @@ fn main() {
                 _ => {}
             }
         }
+        spocitaj(priprava.koniec(), &mut dekodovat, &mut vydat, &mut rezov);
         let meno = cesta.file_name().map_or_else(String::new, |m| m.to_string_lossy().into_owned());
+        if vydat > dekodovat {
+            chyby.push(format!("H1: vydaných {vydat} obrazov z {dekodovat}"));
+        }
+        chyby.truncate(5);
         chyb_spolu += chyby.len();
         println!(
-            "| {meno} | {nal} | {obrazov} | {popis_sps} | {pps} | {md5} | {} |",
+            "| {meno} | {nal} | {obrazov} | {popis_sps} | {pps} | {md5} | {rezov} | {dekodovat} / {vydat} | {} |",
             if chyby.is_empty() { "–".to_string() } else { chyby.join("; ") }
         );
     }

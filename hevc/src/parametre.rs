@@ -270,6 +270,18 @@ impl SadaReferencii {
         pocet_v_sps: usize,
         max_obrazov: u32,
     ) -> Vysledok<SadaReferencii> {
+        Ok(Self::citaj_so_zdrojom(c, idx, predosle, pocet_v_sps, max_obrazov)?.0)
+    }
+
+    /// Ako [`SadaReferencii::citaj`], navyše vráti RefRpsIdx – index sady, z ktorej sa táto sada predikovala
+    /// (inter_ref_pic_set_prediction_flag = 1), inak `None`.
+    pub fn citaj_so_zdrojom(
+        c: &mut Citac,
+        idx: usize,
+        predosle: &[SadaReferencii],
+        pocet_v_sps: usize,
+        max_obrazov: u32,
+    ) -> Vysledok<(SadaReferencii, Option<usize>)> {
         let predikovana = idx != 0 && c.bit()?;
         if predikovana {
             let delta_idx = if idx == pocet_v_sps {
@@ -277,7 +289,8 @@ impl SadaReferencii {
             } else {
                 1
             };
-            let zdroj = predosle.get(idx - delta_idx).ok_or_else(|| chyba("st_ref_pic_set bez zdroja"))?;
+            let zdroj_idx = idx - delta_idx;
+            let zdroj = predosle.get(zdroj_idx).ok_or_else(|| chyba("st_ref_pic_set bez zdroja"))?;
             let znamienko = c.bit()?;
             let abs = c.ue_najviac((1 << 15) - 1, "abs_delta_rps_minus1")? as i32 + 1;
             let delta_rps = if znamienko { -abs } else { abs };
@@ -327,7 +340,7 @@ impl SadaReferencii {
             if s.pocet() > 16 {
                 return Err(chyba("st_ref_pic_set má viac ako 16 obrazov"));
             }
-            Ok(s)
+            Ok((s, Some(zdroj_idx)))
         } else {
             let neg = c.ue_najviac(max_obrazov.min(16), "num_negative_pics")? as usize;
             let poz = c.ue_najviac(max_obrazov.min(16) - neg as u32, "num_positive_pics")? as usize;
@@ -342,7 +355,7 @@ impl SadaReferencii {
                 poc += c.ue_najviac((1 << 15) - 1, "delta_poc_s1_minus1")? as i32 + 1;
                 s.dopredu.push((poc, c.bit()?));
             }
-            Ok(s)
+            Ok((s, None))
         }
     }
 }
