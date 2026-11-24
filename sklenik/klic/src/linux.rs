@@ -6,10 +6,8 @@ use crate::chlad::{self, Ciel, SietPodlaPotreby, StavObrazu, Zhasinanie};
 use crate::hdmi;
 use crate::kms;
 use crate::obrazovka::{self, Eee, FormatBodu, Jazyk, MeranieKarty, Stav};
-use crate::okolie::{self, Okolie};
 use crate::pamat;
 use crate::periferie::{Supis, Ulozisko};
-use crate::poda::Poda;
 use crate::pokoj;
 use crate::radice;
 use crate::samomeranie::{self, NL, ZNACKA_NOSICA, ZNACKA_PORADIA, nadpis};
@@ -20,6 +18,8 @@ use crate::strazca::{
 use crate::sys;
 use crate::zaznam;
 use orchidea_pismo::{Pismo, Platno};
+use orchidea_teplo::okolie::{self, Okolie};
+use orchidea_zariadenie::ProfilHardveru;
 use sklenik_karta::NastavenieZariadenia;
 use std::fs;
 use std::io::Write;
@@ -1109,7 +1109,7 @@ fn spusti_meranie(u: Ulozisko, meranie: Arc<Mutex<MeranieKarty>>) {
 /// Stlačená pamäť zram na zariadeniach s ≤ 1 GB RAM (R94): stránky, ktoré sa práve nepoužívajú, sa stlačia
 /// v pamäti (lz4 – rýchly a nenáročný, procesor sa nezohreje) – použiteľnej pamäte je zhruba o tretinu viac.
 /// Na kartu sa nič nezapisuje. Vráti veľkosť v MB.
-fn zapni_zram(poda: &Poda) -> Option<u64> {
+fn zapni_zram(poda: &ProfilHardveru) -> Option<u64> {
     if !poda.mala_pamat() {
         return None;
     }
@@ -1152,7 +1152,7 @@ fn zapni_zram(poda: &Poda) -> Option<u64> {
 }
 
 /// Strážca pravdy (R100): každé zapnuté jadro spočíta úlohu so známym výsledkom (súbežne, pár milisekúnd).
-fn test_jadier(poda: &mut Poda) {
+fn test_jadier(poda: &mut ProfilHardveru) {
     let zapnute: Vec<usize> = citaj("/sys/devices/system/cpu/online")
         .map(|s| {
             s.split(',')
@@ -1229,7 +1229,7 @@ pub fn spusti() {
         || std::env::args().any(|a| a == "--skuska");
     let len_sledovanie = !pid1 && !std::env::args().any(|a| a == "--riadit");
     let model = citaj("/proc/device-tree/model").unwrap_or_else(|| "neznáme zariadenie".into());
-    let mut poda = crate::poda::nacitaj(Path::new("/"));
+    let mut poda = orchidea_zariadenie::nacitaj(Path::new("/"));
     test_jadier(&mut poda);
     // R120: skúška pamäte vo vlastnom vlákne (zlomok sekundy) – výsledok sa ukáže, keď dobehne
     let test_pamate: Arc<Mutex<Option<Result<usize, usize>>>> = Arc::new(Mutex::new(None));
@@ -1399,7 +1399,7 @@ pub fn spusti() {
                         let st = pokoj::stav(Some(&novy));
                         pokoj_stav = Some((st, bezi, n));
                         hlas(&format!(
-                            "chladný pokoj (R198): tento štart {} · nastavenie {}",
+                            "podpätie v nečinnosti (chladný pokoj, R198): tento štart {} · nastavenie {}",
                             if bezi {
                                 "s nižším napätím v pokoji (−50 mV)"
                             } else {
@@ -1408,7 +1408,9 @@ pub fn spusti() {
                             st.popis()
                         ));
                     }
-                    Err(e) => hlas(&format!("chladný pokoj (R198): súbor sa nepodarilo upraviť ({e})")),
+                    Err(e) => hlas(&format!(
+                        "podpätie v nečinnosti (chladný pokoj, R198): súbor sa nepodarilo upraviť ({e})"
+                    )),
                 }
             }
         }
@@ -1993,14 +1995,14 @@ pub fn spusti() {
             match zaznam::subor_v_koreni(&n, pokoj::SUBOR, &pokoj::obsah(pokoj::Stav::Overene)) {
                 Ok(_) => {
                     hlas(&format!(
-                        "chladný pokoj (R198): {} min s nižším napätím bez chyby – overený",
+                        "podpätie v nečinnosti (chladný pokoj, R198): {} min s nižším napätím bez chyby – overený",
                         pokoj::OVERENIE_S as u32 / 60
                     ));
                     pokoj_stav = Some((pokoj::Stav::Overene, true, n));
                 }
                 Err(e) => {
                     hlas(&format!(
-                        "chladný pokoj (R198): overenie sa nepodarilo zapísať ({e}) – {}",
+                        "podpätie v nečinnosti (chladný pokoj, R198): overenie sa nepodarilo zapísať ({e}) – {}",
                         st.popis()
                     ));
                     pokoj_stav = None;
@@ -2118,7 +2120,7 @@ pub fn spusti() {
                     hlas(&format!(
                         "pamäť DDR {d:.1} °C: {}",
                         if chran {
-                            "ochrana – chladný obraz, v pokoji čierny"
+                            "ochrana – úsporný displej (chladný obraz), v nečinnosti čierny"
                         } else {
                             "ochrana skončila"
                         }
@@ -2653,7 +2655,7 @@ pub fn spusti() {
                     for r in &opis {
                         text += &format!("  {r}{NL}");
                     }
-                    text += &nadpis("STRÁŽCA TEPLOTY");
+                    text += &nadpis("TEPELNÝ REGULÁTOR (STRÁŽCA)");
                     text += &format!(
                         "  teplota {} · cieľ {:.0} °C, strop {:.0} °C · úroveň {}/{} · jadrá {} · strop taktu {} MHz · výkon {:.0} % · vyťaženie {}{NL}",
                         teplota.map_or("–".into(), |t| format!("{t:.1} °C")),
@@ -2777,7 +2779,7 @@ pub fn spusti() {
                         }
                         if let Some((st, bezi, _)) = pokoj_stav.as_ref() {
                             text += &format!(
-                                "  chladný pokoj (R198): tento štart {} · nastavenie {} (napätie jadra v riadku VideoCore)                                 {NL}",
+                                "  podpätie v nečinnosti (chladný pokoj, R198): tento štart {} · nastavenie {} (napätie jadra v riadku VideoCore)                                 {NL}",
                                 if *bezi {
                                     "s nižším napätím v pokoji (−50 mV)"
                                 } else {
@@ -2893,7 +2895,11 @@ pub fn spusti() {
                         }
                     }
                     text += &format!("  {}{NL}", popis_okolia(&stav_okolia, uspora));
-                    text += &format!("  {}{NL}  SÚPIS – {}{NL}", poda.riadok(), supis.riadok());
+                    text += &format!(
+                        "  {}{NL}  Inventár periférií (SÚPIS) – {}{NL}",
+                        poda.riadok(),
+                        supis.riadok()
+                    );
                     let mut dovetok = nadpis(if minuta == 0 {
                         "VAROVANIA A CHYBY JADRA OD ŠTARTU"
                     } else {
@@ -2955,7 +2961,7 @@ pub fn spusti() {
                                 }
                             );
                             dovetok += &format!(
-                                "  teplota pri plnej záťaži: najviac {} (strop strážcu {:.0} °C){NL}",
+                                "  teplota pri plnej záťaži: najviac {} (strop regulátora {:.0} °C){NL}",
                                 max_teplota_zataze.map_or("–".into(), |t| format!("{t:.1} °C")),
                                 profil.strop
                             );
@@ -3574,7 +3580,7 @@ fn popis_okolia(o: &okolie::StavOkolia, uspora: bool) -> String {
 }
 
 /// Rozpoznal KLÍČ zariadenie? (R122 – riadok správy samomerania)
-fn rozpoznanie(model: &str, poda: &Poda, profil: Profil) -> String {
+fn rozpoznanie(model: &str, poda: &ProfilHardveru, profil: Profil) -> String {
     let rodina = if model.contains("Raspberry Pi") {
         Some("Raspberry Pi")
     } else if model.contains("ODROID-C4") {
@@ -3586,7 +3592,10 @@ fn rozpoznanie(model: &str, poda: &Poda, profil: Profil) -> String {
     } else {
         None
     };
-    let strazca = format!("profil strážcu: cieľ {:.0} °C, strop {:.0} °C", profil.ciel, profil.strop);
+    let strazca = format!(
+        "profil tepelného regulátora (strážcu): cieľ {:.0} °C, strop {:.0} °C",
+        profil.ciel, profil.strop
+    );
     match (rodina, poda.cip.as_deref()) {
         (Some(r), Some(c)) => format!("rozpoznanie: ✓ {r}, čip {c} – {strazca}"),
         (Some(r), None) => format!("rozpoznanie: ⚠ {r}, ale čip nerozpoznaný – {strazca}"),

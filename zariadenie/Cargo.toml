@@ -1,0 +1,15 @@
+[package]
+name = "orchidea-zariadenie"
+description = "Profil zariadenia (PÔDA) – čip, jadrá, inštrukcie, pamäť a napájanie zo súborov systému; spoločný pre ORCHIDEU (plánovač) aj SKLENÍK (správca systému)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[lints]
+workspace = true

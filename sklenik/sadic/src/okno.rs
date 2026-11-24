@@ -578,10 +578,10 @@ fn nakresli_hlavicku(s: &mut Stav, sirka: i32) {
     let podtitul = if s.rozsirene {
         "Rozšírené: ISO, formátovanie a kontrola kariet"
     } else {
-        "Karta SKLENÍK pre každé Raspberry Pi"
+        "Zapisovač kariet SKLENÍK – Raspberry Pi, Odroid, TV krabičky"
     };
     p.text(&s.pismo, podtitul, 24.0 * k, 79.0 * k, 12.0 * k, 1.5 * k, 0xE8F0EA);
-    let heslo = "Chladné RPi";
+    let heslo = "Chladný systém";
     let hw = s.pismo.sirka(heslo, 11.0 * k, 1.3 * k);
     p.text(&s.pismo, heslo, sirka as f32 - 24.0 * k - hw, 52.0 * k, 11.0 * k, 1.3 * k, 0x9DB3A5);
     s.hlavicka = Some(p);
@@ -819,7 +819,7 @@ fn obnov_texty(s: &mut Stav) {
     let nazov = if s.rozsirene {
         "SADIČ – rozšírené: ISO, formátovanie, kontrola"
     } else {
-        "SADIČ – karta SKLENÍK pre Raspberry Pi"
+        "SADIČ – zapisovač kariet SKLENÍK"
     };
     nastav_text(h, nazov);
 }
@@ -1624,7 +1624,7 @@ pub fn spusti(dovol_virtualny: bool) -> i32 {
         let styl = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
         let mut r = Rect { l: 0, t: 0, r: skaluj(SIRKA, dpi), b: skaluj(VYSKA, dpi) };
         AdjustWindowRectExForDpi(&mut r, styl, 0, WS_EX_CONTROLPARENT, dpi);
-        let nazov = w("SADIČ – karta SKLENÍK pre Raspberry Pi");
+        let nazov = w("SADIČ – zapisovač kariet SKLENÍK");
         let hwnd = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             trieda.as_ptr(),

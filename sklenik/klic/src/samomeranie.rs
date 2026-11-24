@@ -201,10 +201,10 @@ pub fn suhrn(body: &[BodKrivky], milniky_min: &[u32]) -> String {
     let (s_min_vykon, min_vykon) =
         body.iter().fold((0, f64::MAX), |a, b| if b.vykon < a.1 { (b.s, b.vykon) } else { a });
     if min_vykon >= 0.995 {
-        t += &format!("  výkon: plný celý čas (strážca nemusel zasiahnuť){NL}");
+        t += &format!("  výkon: plný celý čas (tepelný regulátor nemusel zasiahnuť){NL}");
     } else {
         t += &format!(
-            "  výkon: strážca znížil výkon najviac na {:.0} % (v {}){NL}",
+            "  výkon: tepelný regulátor znížil výkon najviac na {:.0} % (v {}){NL}",
             min_vykon * 100.0,
             cas(s_min_vykon)
         );

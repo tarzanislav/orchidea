@@ -85,7 +85,7 @@ def main() -> int:
         "── OBRAZOVKA",
         "Teplota",
         "Meranie",
-        "── STRÁŽCA TEPLOTY",
+        "── TEPELNÝ REGULÁTOR (STRÁŽCA)",
         "rozpoznanie: ✓ Raspberry Pi",
         "── SNÍMAČE TEPLOTY A SYSTÉM",
         "── IDENTIFIKÁCIA HARDVÉRU",

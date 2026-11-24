@@ -5,8 +5,8 @@
 //! v pamäti; na obrazovku sa zapíšu len riadky, ktoré sa zmenili (časť pre Linux v `linux.rs`).
 
 use crate::periferie::{DruhVstupu, Supis};
-use crate::poda::Poda;
 use orchidea_pismo::{Farba, Pismo, Platno};
+use orchidea_zariadenie::ProfilHardveru;
 use std::cell::RefCell;
 
 const POZADIE: Farba = 0x0F1C15;
@@ -90,7 +90,7 @@ pub struct Stav<'a> {
     /// Meno zariadenia, ktoré sa meria (napr. mmcblk0).
     pub merana_karta: &'a str,
     /// Profil hardvéru (PÔDA).
-    pub poda: &'a Poda,
+    pub poda: &'a ProfilHardveru,
     /// Stlačená pamäť zram (MB), ak je zapnutá.
     pub zram_mb: Option<u64>,
     /// Hardvérový strážny časovač je zapnutý (R99).
@@ -106,7 +106,7 @@ pub struct Stav<'a> {
     /// Samomeranie (R122) – `None`, ak je vypnuté.
     pub samomeranie: Option<&'a Samomeranie>,
     /// Odhad okolia a prostredie (R123, R124) – `None` bez snímača teploty.
-    pub okolie: Option<&'a crate::okolie::StavOkolia>,
+    pub okolie: Option<&'a orchidea_teplo::okolie::StavOkolia>,
     /// Úsporný režim pre horúce okolie (R126).
     pub uspora: bool,
     /// Správca chladu TV krabičky (R158–R161) – `None` na ostatných doskách.
@@ -243,15 +243,19 @@ fn teplota_slovom(t: f64, ciel: f64, strop: f64, j: Jazyk) -> (&'static str, Far
         (j.t("chladné", "chladné", "cool"), ZELENA)
     } else if t < strop - 3.0 {
         (
-            j.t("teplé – strážca drží teplotu", "teplé – strážce drží teplotu", "warm – the guard holds it"),
+            j.t(
+                "teplé – regulátor drží teplotu",
+                "teplé – regulátor drží teplotu",
+                "warm – the governor holds it",
+            ),
             JANTAROVA,
         )
     } else {
         (
             j.t(
-                "horúce – strážca znižuje výkon",
-                "horké – strážce snižuje výkon",
-                "hot – the guard lowers power",
+                "horúce – regulátor znižuje výkon",
+                "horké – regulátor snižuje výkon",
+                "hot – the governor lowers power",
             ),
             CERVENA,
         )
@@ -757,8 +761,8 @@ pub fn nakresli_s_opisom(
 }
 
 /// Časti riadku „Okolie“ (R123, R124, R131) s farbami.
-fn riadok_okolia(o: &crate::okolie::StavOkolia, uspora: bool, j: Jazyk) -> Vec<(String, Farba)> {
-    use crate::okolie::{Prostredie, Zdroj};
+fn riadok_okolia(o: &orchidea_teplo::okolie::StavOkolia, uspora: bool, j: Jazyk) -> Vec<(String, Farba)> {
+    use orchidea_teplo::okolie::{Prostredie, Zdroj};
     let mut v = Vec::new();
     match (o.okolie, o.studeny_start) {
         (Some(t), _) => {
@@ -978,7 +982,7 @@ mod skusky {
             bezi_s: 754,
             meranie_karty: &MeranieKarty::Hotovo(22.4, 1830.0),
             merana_karta: "mmcblk0",
-            poda: Box::leak(Box::new(Poda {
+            poda: Box::leak(Box::new(ProfilHardveru {
                 cip: Some("BCM2837".into()),
                 jadro: Some("Cortex-A53"),
                 jadier: 4,
@@ -986,7 +990,7 @@ mod skusky {
                 ram_dosky_mb: Some(1024),
                 pamat_kb: 948_304,
                 dostupna_kb: 870_000,
-                ..Poda::default()
+                ..ProfilHardveru::default()
             })),
             zram_mb: Some(474),
             strazny_casovac: true,
@@ -1037,7 +1041,7 @@ mod skusky {
         slabe.podpatie = Some(true);
         assert!(ma(&nakresli(&pismo, 800, 480, &slabe, Jazyk::Sk), CERVENA));
         assert_ne!(a, nakresli(&pismo, 800, 480, &stav(&s, None), Jazyk::Sk));
-        assert_eq!(teplota_slovom(62.0, 60.0, 70.0, Jazyk::En).0, "warm – the guard holds it");
+        assert_eq!(teplota_slovom(62.0, 60.0, 70.0, Jazyk::En).0, "warm – the governor holds it");
         assert_eq!(Jazyk::Cs.cislo(48.54, 1), "48,5");
         assert_eq!(Jazyk::z_kodu(Some("en")), Jazyk::En);
         assert_eq!(Jazyk::z_kodu(None), Jazyk::Sk);
@@ -1170,7 +1174,7 @@ mod skusky {
 
     #[test]
     fn okolie_na_obrazovke() {
-        use crate::okolie::{Prostredie, StavOkolia, Zdroj};
+        use orchidea_teplo::okolie::{Prostredie, StavOkolia, Zdroj};
         let pismo = Pismo::stonka();
         let s = supis();
         let mut st = stav(&s, Some(45.0));

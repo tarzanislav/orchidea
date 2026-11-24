@@ -9,6 +9,11 @@ on:
       - "nastroje/kontrola_karty.py"
       - "nastroje/kontrola_obrazovky.py"
       - "pismo/**"
+      - "zariadenie/**"
+      - "teplo/**"
+      - "nastroje/kontrola_merania.py"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/workflows/sklenik.yml"
   workflow_dispatch:
 
@@ -128,7 +133,8 @@ jobs:
           T=$(echo "${{ matrix.ciel }}" | tr 'a-z-' 'A-Z_')
           export "CARGO_TARGET_${T}_RUNNER=${{ matrix.qemu }} -cpu ${{ matrix.cpu }}"
           if [ -n "${{ matrix.linker }}" ]; then export "CARGO_TARGET_${T}_LINKER=${{ matrix.linker }}"; fi
-          cargo test --locked --release -p sklenik-klic --target ${{ matrix.ciel }}
+          # spoločné schopnosti ORCHIDEE (R204) sa skúšajú aj na procesoroch karty
+          cargo test --locked --release -p sklenik-klic -p orchidea-zariadenie -p orchidea-teplo --target ${{ matrix.ciel }}
           cargo build --locked --release -p sklenik-klic --target ${{ matrix.ciel }}
           b="target/${{ matrix.ciel }}/release/klic"
           file "$b"
@@ -715,11 +721,11 @@ jobs:
           else
             echo "❌ KLÍČ neprečítal nastavenie z karty" | tee -a "$GITHUB_STEP_SUMMARY"; grep -iE "mmc|nastavenie" qemu-rpi3.log | head -20; chyby=$((chyby+1))
           fi
-          # PÔDA (R92) a stlačená pamäť zram (R94, RPi 3 má 1 GB)
-          if grep -q "KLÍČ: PÔDA – .*čip BCM2837" qemu-rpi3.log; then
-            echo "✅ $(grep -o 'KLÍČ: PÔDA – .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
+          # Profil hardvéru (PÔDA, R92) a stlačená pamäť zram (R94, RPi 3 má 1 GB)
+          if grep -q "KLÍČ: Profil hardvéru (PÔDA) – .*čip BCM2837" qemu-rpi3.log; then
+            echo "✅ $(grep -o 'KLÍČ: Profil hardvéru (PÔDA) – .*' qemu-rpi3.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            echo "❌ KLÍČ neprečítal PÔDU" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "pôda" qemu-rpi3.log | head; chyby=$((chyby+1))
+            echo "❌ KLÍČ neprečítal profil hardvéru (PÔDA)" | tee -a "$GITHUB_STEP_SUMMARY"; grep -i "pôda" qemu-rpi3.log | head; chyby=$((chyby+1))
           fi
           # strážca pravdy (R100) a strážny časovač (R99)
           if grep -q "KLÍČ: test jadier: 4/4 v poriadku" qemu-rpi3.log; then

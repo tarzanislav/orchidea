@@ -1,4 +1,4 @@
-//! PÔDA – presný profil hardvéru (R92). KLÍČ ho prečíta pri štarte len zo súborov jadra (/proc, /sys,
+//! Profil hardvéru (PÔDA, R92). Správca systému (KLÍČ) ho prečíta pri štarte len zo súborov jadra (/proc, /sys,
 //! strom popisu hardvéru) a podľa neho sa nastaví: koľko pamäte, aký čip a jeho verzia, aké jadrá procesora
 //! a ich inštrukcie, úseky pamäte NUMA, zdroj napájania. Nič sa nemeria ani nezapisuje – trvá to milisekundy.
 
@@ -7,7 +7,7 @@ use std::path::Path;
 
 /// Profil hardvéru.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Poda {
+pub struct ProfilHardveru {
     /// Kód revízie dosky Raspberry Pi (napr. 0xc04170); iné dosky ho nemajú.
     pub revizia: Option<u32>,
     /// RAM dosky podľa kódu revízie (MB).
@@ -151,8 +151,8 @@ fn bcm2712_d0(dt: &Path) -> bool {
 }
 
 /// Prečíta profil hardvéru zo súborov jadra pod `koren` (na zariadení „/“).
-pub fn nacitaj(koren: &Path) -> Poda {
-    let mut p = Poda::default();
+pub fn nacitaj(koren: &Path) -> ProfilHardveru {
+    let mut p = ProfilHardveru::default();
     let dt = koren.join("proc/device-tree");
     let cpuinfo = citaj(&koren.join("proc/cpuinfo")).unwrap_or_default();
 
@@ -226,7 +226,7 @@ pub fn nacitaj(koren: &Path) -> Poda {
     p
 }
 
-impl Poda {
+impl ProfilHardveru {
     /// Celková pamäť na zobrazenie (MB): podľa kódu dosky, inak podľa jadra.
     /// RAM dosky (MB): na RPi podľa kódu revízie; inde (Odroid) z pamäte, ktorú vidí jadro, zaokrúhlenej
     /// na veľkosť čipov – jadro si časť RAM nechá pre seba a firmvér (3,7 GB na doske so 4 GB).
@@ -282,7 +282,7 @@ impl Poda {
                 }
             ));
         }
-        format!("PÔDA – {}", casti.join("; "))
+        format!("Profil hardvéru (PÔDA) – {}", casti.join("; "))
     }
 }
 
@@ -403,7 +403,7 @@ cpuid asimdrdm lrcpc dcpop asimddp\nCPU part\t: 0xd0b\n\nprocessor\t: 1\n\nproce
             assert_eq!(nacitaj(&s.0).cip.as_deref(), Some(cip));
         }
         // 3,7 GB, ktoré vidí jadro = doska so 4 GB; 0,9 GB = 1 GB; nezvyčajné množstvo zostane
-        let ram = |kb| Poda { pamat_kb: kb, ..Poda::default() }.ram_mb();
+        let ram = |kb| ProfilHardveru { pamat_kb: kb, ..ProfilHardveru::default() }.ram_mb();
         assert_eq!((ram(3_880_000), ram(948_304), ram(1_400_000), ram(0)), (4096, 1024, 1367, 0));
     }
 }

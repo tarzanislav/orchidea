@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["jadro", "gpu", "neuron", "pismo", "sklenik/karta", "sklenik/klic", "sklenik/korene", "sklenik/sadic"]
+members = ["jadro", "gpu", "neuron", "pismo", "zariadenie", "teplo", "sklenik/karta", "sklenik/klic", "sklenik/korene", "sklenik/sadic"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,6 +16,8 @@ authors = ["autori projektu ORCHIDEA"]
 orchidea-jadro = { path = "jadro" }
 orchidea-gpu = { path = "gpu" }
 orchidea-pismo = { path = "pismo" }
+orchidea-zariadenie = { path = "zariadenie" }
+orchidea-teplo = { path = "teplo" }
 sklenik-karta = { path = "sklenik/karta" }
 
 [workspace.lints.rust]

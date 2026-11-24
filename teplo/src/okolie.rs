@@ -1,4 +1,4 @@
-//! OKOLIE (R123, R124) – odhad teploty vzduchu okolo zariadenia len zo snímača v čipe a zistenie,
+//! Odhad teploty okolia (R123, R124) – teplota vzduchu okolo zariadenia len zo snímača v čipe a zistenie,
 //! že je zariadenie pri zdroji tepla (radiátor, slnko, iné zariadenie) alebo že sa teplota vymyká.
 //!
 //! Vychádza z poznatkov automobilov (teplota okolia riadiacej jednotky sa modeluje ako porucha, ktorá sa

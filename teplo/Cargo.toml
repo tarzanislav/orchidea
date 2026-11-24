@@ -1,0 +1,15 @@
+[package]
+name = "orchidea-teplo"
+description = "Tepelný model – odhad okolia a vlastného ohrevu, prostredie, tepelný rozpočet; spoločný pre ORCHIDEU (plánovač, zákon Z14) aj SKLENÍK (regulátor teploty)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[lints]
+workspace = true

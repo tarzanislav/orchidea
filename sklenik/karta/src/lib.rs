@@ -424,7 +424,10 @@ pub const NOVINKY: [(&str, &str); 15] = [
     ("spanok_jadier", "hlboký spánok jadier (R167)"),
     ("radice", "odpojenie eMMC a Wi-Fi (R178)"),
     ("casovac_budenia", "spoločný časovač budenia – hlboký spánok aj pre cpu0 (R186)"),
-    ("straz_hdmi", "strážca linky HDMI – oprava zaseknutého televízora, reštart linky (R185)"),
+    (
+        "straz_hdmi",
+        "monitor linky HDMI (strážca linky) – oprava zaseknutého televízora, reštart linky (R185)",
+    ),
     ("hdmi_bez_kodovania", "Full HD bez kódovania signálu ako RPi – nie = kóduje ako hlavné jadro (R187)"),
     ("usb_strom", "celý strom USB spí v pokoji – klávesnica, myš, čip siete, rozbočovače (R191)"),
     ("siet_spi", "čip siete spí aj s káblom, kým sieť nič nepotrebuje – kábel sa overí raz za 5 min (R191)"),

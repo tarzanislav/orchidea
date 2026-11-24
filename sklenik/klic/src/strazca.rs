@@ -462,14 +462,14 @@ mod skusky {
         zataz: impl Fn(f64) -> f64,
         sekund: u32,
         predpoved: bool,
-    ) -> (f64, f64, f64, crate::okolie::StavOkolia) {
+    ) -> (f64, f64, f64, orchidea_teplo::okolie::StavOkolia) {
         let mut d = doska(okolie(0.0));
         (d.t, d.cip) = (okolie(0.0), okolie(0.0));
         let mut r = Regulator::novy(
             urovne(&[600_000, 1_400_000], 4),
             Profil::pre_model("Raspberry Pi 3 Model B Plus"),
         );
-        let mut o = crate::okolie::Okolie::nove();
+        let mut o = orchidea_teplo::okolie::Okolie::nove();
         let (mut maximum, mut prace, mut pracovnych, mut sucet_t) = (0.0f64, 0.0, 0u32, 0.0);
         for s in 0..sekund {
             let sf = s as f64;
