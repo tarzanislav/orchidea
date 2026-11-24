@@ -1,4 +1,4 @@
-//! # SADIČ – zapisovač obrazov SKLENÍKA
+//! # ORCHIDEA Zapisovač (SADIČ) – zápis kariet ORCHIDEA OS
 //!
 //! Zapíše obraz na SD kartu alebo USB disk, overí ho spätným čítaním (odtlačok BLAKE3), pripraví
 //! nastavenie zariadenia (meno, Wi-Fi, jazyk) a vie kartu zálohovať a obnoviť. Ponúkne len vymeniteľné
@@ -60,7 +60,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::process::ExitCode;
 
-const POMOC: &str = "SADIČ – zapisovač obrazov SKLENÍKA
+const POMOC: &str = "ORCHIDEA Zapisovač (SADIČ) – zápis kariet ORCHIDEA OS, formátovanie a ISO
 
   sadic zoznam                                   disky, na ktoré sa smie zapisovať
   sadic                                          okno (rovnaké ako dvojklik)
@@ -133,7 +133,7 @@ fn main() -> ExitCode {
     match spusti() {
         Ok(()) => ExitCode::SUCCESS,
         Err(Chyba(kod, sprava)) => {
-            eprintln!("SADIČ: {sprava}");
+            eprintln!("ORCHIDEA Zapisovač: {sprava}");
             ExitCode::from(kod)
         }
     }

@@ -293,7 +293,7 @@ pub fn formatuj(
     // rozvrh súborového systému sa overí ešte pred prvým zápisom
     let zvazok = navrhni(system, oddiel.sektory, sektor, oddiel.zaciatok, zarovnanie, f.klaster, &f.menovka)?;
     if oddiel.meno.is_empty() {
-        oddiel.meno = "SADIČ".into();
+        oddiel.meno = "ORCHIDEA".into();
     }
     let chyba = |e: std::io::Error| format!("zápis na disk: {e}");
     // 1. vymazanie: celý disk, alebo začiatok (staré MBR/GPT/ISO) a posledný MiB (záloha GPT)

@@ -88,7 +88,7 @@ def main() -> int:
     if text / n < 0.005:
         chyby.append("na obrazovke takmer nie je text")
     if zelena_hore < 20:
-        chyby.append("chýba zelený nadpis SKLENÍK hore")
+        chyby.append("chýba zelený nadpis ORCHIDEA OS hore")
     print(f"obrazovka {w}×{h}: pozadie {100 * pozadie / n:.1f} %, text {100 * text / n:.1f} %, "
           f"zelená {100 * zelena / n:.2f} % (snímka zmazaná)")
     for c in chyby:

@@ -1,4 +1,4 @@
-name: SKLENÍK – univerzálna karta pre Raspberry Pi
+name: ORCHIDEA OS – univerzálna karta (Raspberry Pi, Odroid C4, TV krabičky)
 
 on:
   push:
@@ -65,7 +65,7 @@ jobs:
         with:
           path: jadro-vystup
           key: jadro-${{ matrix.id }}-${{ env.JADRO_TAG }}-${{ hashFiles('sklenik/jadro.config') }}
-      - name: Jadro Raspberry Pi (oficiálne zdrojové kódy + nastavenie SKLENÍKA)
+      - name: Jadro Raspberry Pi (oficiálne zdrojové kódy + nastavenie ORCHIDEA OS)
         if: steps.pamat.outputs.cache-hit != 'true'
         run: |
           sh nastroje/balicky.sh bc bison flex libssl-dev make gcc ${CROSS_COMPILE:+gcc-arm-linux-gnueabihf}
@@ -177,7 +177,7 @@ jobs:
         with:
           path: jadro-vystup
           key: jadro-s905x3-${{ env.ODROID_JADRO }}-${{ hashFiles('sklenik/jadro.config', 'sklenik/jadro-odroid.config', 'sklenik/jadro-ovladace/*') }}
-      - name: Jadro Linux z kernel.org + nastavenie SKLENÍKA pre Odroid C4
+      - name: Jadro Linux z kernel.org + nastavenie ORCHIDEA OS pre Odroid C4
         if: steps.pamat.outputs.cache-hit != 'true'
         run: |
           sh nastroje/balicky.sh bc bison flex libssl-dev make gcc xz-utils
@@ -359,7 +359,7 @@ jobs:
         with:
           path: jadro-vystup
           key: jadro-h618-${{ env.ODROID_JADRO }}-${{ hashFiles('sklenik/jadro.config', 'sklenik/jadro-allwinner.config') }}
-      - name: Jadro Linux z kernel.org + nastavenie SKLENÍKA pre Allwinner H618
+      - name: Jadro Linux z kernel.org + nastavenie ORCHIDEA OS pre Allwinner H618
         if: steps.pamat.outputs.cache-hit != 'true'
         run: |
           sh nastroje/balicky.sh bc bison flex libssl-dev make gcc xz-utils
@@ -488,7 +488,7 @@ jobs:
           for u in usb@5310000 usb@5310400 usb@5311000 usb@5311400; do fdtput -t s "$f" "/soc/$u" status okay; done
           fdtput -t s "$f" /soc/mmc@4021000 status disabled
           echo "$f: $(fdtget "$f" / model)"
-          printf 'SKLENÍK %s – karta pre Tanix TX68 (Allwinner H618)\njadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-allwinner.config (allwinner/jadro-h618.config)\nzavádzač (od 8 KiB, pred oddielom): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+, transpeed-8k618-t_defconfig) + https://github.com/ARM-software/arm-trusted-firmware/tree/%s (BSD-3-Clause, BL31)\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
+          printf 'ORCHIDEA OS %s – karta pre Tanix TX68 (Allwinner H618)\njadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-allwinner.config (allwinner/jadro-h618.config)\nzavádzač (od 8 KiB, pred oddielom): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+, transpeed-8k618-t_defconfig) + https://github.com/ARM-software/arm-trusted-firmware/tree/%s (BSD-3-Clause, BL31)\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
             "$GITHUB_SHA" "$ODROID_JADRO" "$UBOOT_TAG" "$TFA_TAG" > boot/ZDROJE.txt
           ls -lR boot | head -40
       - name: Obraz karty
@@ -514,14 +514,14 @@ jobs:
             -initrd boot/initramfs8.cpio.gz -nographic -no-reboot \
             -append "earlycon=pl011,0x9000000 console=ttyAMA0 rdinit=/init sklenik.skuska=1 loglevel=7" > qemu-h618.log 2>&1 &
           q=$!
-          for i in $(seq 1 120); do grep -q "SKLENÍK pripravený" qemu-h618.log && break; kill -0 $q 2>/dev/null || break; sleep 2; done
+          for i in $(seq 1 120); do grep -q "ORCHIDEA OS pripravený" qemu-h618.log && break; kill -0 $q 2>/dev/null || break; sleep 2; done
           kill $q 2>/dev/null || true
           echo "#### Jadro Allwinner H618 na procesore Cortex-A53 (nie celý TX68)" >> "$GITHUB_STEP_SUMMARY"
           grep "KLÍČ" qemu-h618.log | sed 's/^/    /' | tee -a "$GITHUB_STEP_SUMMARY"
-          grep -q "SKLENÍK pripravený" qemu-h618.log || { tail -40 qemu-h618.log; exit 1; }
+          grep -q "ORCHIDEA OS pripravený" qemu-h618.log || { tail -40 qemu-h618.log; exit 1; }
           grep -q "KLÍČ: test pamäte: .* v poriadku" qemu-h618.log && echo "✅ $(grep -o 'KLÍČ: test pamäte: .*' qemu-h618.log | head -1)" | tee -a "$GITHUB_STEP_SUMMARY" || { echo "❌ test pamäte"; exit 1; }
           if grep -q "KLÍČ: bez obrazovky – stav na kontrolkách klávesnice" qemu-h618.log; then
-            echo "✅ bez obrazovky hovorí SKLENÍK kontrolkami klávesnice (R119)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "✅ bez obrazovky hovorí ORCHIDEA OS kontrolkami klávesnice (R119)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "❌ slepý režim sa nezapol" | tee -a "$GITHUB_STEP_SUMMARY"; exit 1
           fi
@@ -648,7 +648,7 @@ jobs:
           echo "$f: reset MDIO $(fdtget -t x "$f" "$m" reset-gpios), čip bez adresy: $(fdtget "$f" "$c" reg 2>&1 | head -1)"
           # pôvodný zavádzač krabičky hľadá skripty a u-boot.ext v koreni karty
           cp uboot/x96/aml_autoscript uboot/x96/s905_autoscript uboot/x96/u-boot.ext boot/
-          printf 'SKLENÍK %s – univerzálna karta pre Raspberry Pi 1, 2, 3, 4, 5, Zero, Zero W, Zero 2 W, Odroid C4 a X96 Max Plus\njadro: https://github.com/raspberrypi/linux/tree/%s + sklenik/jadro.config (úplné nastavenie v jadro-*.config)\nfirmvér: https://github.com/raspberrypi/firmware/tree/%s/boot (LICENCE.broadcom)\nAmlogic S905X3 (Odroid C4, X96 Max Plus) – jadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-odroid.config (amlogic/jadro-s905x3.config)\nfirmvér dekodéra videa (amlogic/vdec/, samostatne – nie v jadre): https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/meson/vdec (licencia amlogic/vdec/licencia.txt)\nOdroid C4 – zavádzač (prvé 4 MiB karty): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+) a podpísané časti Amlogic https://github.com/LibreELEC/amlogic-boot-fip/tree/%s/odroid-c4\nX96 Max Plus – u-boot.ext: https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+, bananapi-m5_defconfig + popis X96 Air), skripty sklenik/boot/amlogic/\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
+          printf 'ORCHIDEA OS %s – univerzálna karta pre Raspberry Pi 1, 2, 3, 4, 5, Zero, Zero W, Zero 2 W, Odroid C4 a X96 Max Plus\njadro: https://github.com/raspberrypi/linux/tree/%s + sklenik/jadro.config (úplné nastavenie v jadro-*.config)\nfirmvér: https://github.com/raspberrypi/firmware/tree/%s/boot (LICENCE.broadcom)\nAmlogic S905X3 (Odroid C4, X96 Max Plus) – jadro: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-%s.tar.xz + sklenik/jadro.config + sklenik/jadro-odroid.config (amlogic/jadro-s905x3.config)\nfirmvér dekodéra videa (amlogic/vdec/, samostatne – nie v jadre): https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/tree/meson/vdec (licencia amlogic/vdec/licencia.txt)\nOdroid C4 – zavádzač (prvé 4 MiB karty): https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+) a podpísané časti Amlogic https://github.com/LibreELEC/amlogic-boot-fip/tree/%s/odroid-c4\nX96 Max Plus – u-boot.ext: https://github.com/u-boot/u-boot/tree/%s (GPL-2.0+, bananapi-m5_defconfig + popis X96 Air), skripty sklenik/boot/amlogic/\nKLÍČ a ORCHIDEA: https://github.com/tarzanislav/orchidea\n' \
             "$GITHUB_SHA" "$JADRO_TAG" "$FIRMVER_TAG" "$ODROID_JADRO" "$UBOOT_TAG" "$FIP_COMMIT" "$UBOOT_TAG" > boot/ZDROJE.txt
           ls -l boot
           du -sh boot
@@ -676,7 +676,7 @@ jobs:
         run: |
           echo "### Odroid C4 a X96 Max Plus" >> "$GITHUB_STEP_SUMMARY"
           python3 nastroje/kontrola_odroid.py obraz/sklenik-rpi.img uboot/u-boot.bin.sd.bin boot | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: Karta s nastavením od SADIČA (meno a jazyk) pre skúšku
+      - name: Karta s nastavením od ORCHIDEA Zapisovača (meno a jazyk) pre skúšku
         run: |
           rustup toolchain install
           cargo build --locked --release -p sklenik-sadic
@@ -691,12 +691,12 @@ jobs:
             "$@" -nographic -no-reboot -monitor "unix:$sock,server,nowait" > "$log" 2>&1 &
             q=$!
             for i in $(seq 1 150); do
-              grep -q "SKLENÍK pripravený" "$log" && break
+              grep -q "ORCHIDEA OS pripravený" "$log" && break
               kill -0 $q 2>/dev/null || break
               sleep 2
             done
             echo "#### $meno" >> "$GITHUB_STEP_SUMMARY"
-            if grep -q "SKLENÍK pripravený" "$log"; then
+            if grep -q "ORCHIDEA OS pripravený" "$log"; then
               grep "KLÍČ" "$log" | sed 's/^/    /' | tee -a "$GITHUB_STEP_SUMMARY"
               rozmer=$(grep -o "obrazovka: [0-9]*×[0-9]*" "$log" | head -1 | grep -o "[0-9]*×[0-9]*" || true)
               if [ -n "$rozmer" ]; then
@@ -722,7 +722,7 @@ jobs:
             -drive if=sd,format=raw,file=karta.img \
             -append "earlycon=pl011,mmio32,0x3f201000 console=ttyAMA0,115200 $spolocne" || chyby=$((chyby+1))
           if grep -q "nastavenie z /dev/mmcblk0: meno skuska-qemu, jazyk sk" qemu-rpi3.log; then
-            echo "✅ KLÍČ prečítal z karty nastavenie od SADIČA (meno, jazyk)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "✅ KLÍČ prečítal z karty nastavenie od ORCHIDEA Zapisovača (meno, jazyk)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "❌ KLÍČ neprečítal nastavenie z karty" | tee -a "$GITHUB_STEP_SUMMARY"; grep -iE "mmc|nastavenie" qemu-rpi3.log | head -20; chyby=$((chyby+1))
           fi
@@ -794,13 +794,13 @@ jobs:
             "$@" -nographic -no-reboot > "$log" 2>&1 &
             q=$!
             for i in $(seq 1 150); do
-              grep -q "SKLENÍK pripravený" "$log" && break
+              grep -q "ORCHIDEA OS pripravený" "$log" && break
               kill -0 $q 2>/dev/null || break
               sleep 2
             done
             kill $q 2>/dev/null || true
             echo "#### $meno" >> "$GITHUB_STEP_SUMMARY"
-            grep -q "SKLENÍK pripravený" "$log" && { grep "KLÍČ" "$log" | sed 's/^/    /' | tee -a "$GITHUB_STEP_SUMMARY"; echo "✅ $meno"; return 0; }
+            grep -q "ORCHIDEA OS pripravený" "$log" && { grep "KLÍČ" "$log" | sed 's/^/    /' | tee -a "$GITHUB_STEP_SUMMARY"; echo "✅ $meno"; return 0; }
             tail -30 "$log"; return 1
           }
           skusaj_bez_obrazovky "Jadro RPi 5 na procesore Cortex-A76 (nie celé RPi 5)" qemu-rpi5.log qemu-system-aarch64 \

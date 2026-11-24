@@ -453,6 +453,7 @@ mod skusky {
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
     }
 
+    /// Skúšobné dáta – presné bajty, z ktorých sú vypočítané skúšobné toky DEFLATE nižšie (text je historický).
     fn zmes() -> Vec<u8> {
         let mut v: Vec<u8> = (0..3).flat_map(|_| 0..=255u8).collect();
         v.extend(std::iter::repeat_n(0u8, 5000));

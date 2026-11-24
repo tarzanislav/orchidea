@@ -1662,7 +1662,7 @@ mod skusky {
     #[test]
     fn naformatovany_zvazok() {
         let mut p = Pamat::nova(64 << 20, 512);
-        let n = Ntfs::navrhni((64 << 20) / 512, 512, 0, "SADIČ").unwrap();
+        let n = Ntfs::navrhni((64 << 20) / 512, 512, 0, "ORCHIDEA").unwrap();
         n.naformatuj(&mut p, 0, &mut |_, _| {}, &AtomicBool::new(false)).unwrap();
         assert_eq!(&p.data[3..11], b"NTFS    ");
         let posledny = p.data.len() - 512;

@@ -488,7 +488,7 @@ mod skusky {
         for sektor in [512u32, 4096] {
             let velkost = 64 * MIB;
             let n = velkost / sektor as u64;
-            let o = jeden_oddiel(velkost, sektor, Schema::Gpt, Typ::ExFat, "SADIČ").unwrap();
+            let o = jeden_oddiel(velkost, sektor, Schema::Gpt, Typ::ExFat, "ORCHIDEA").unwrap();
             assert_eq!(o.zaciatok * sektor as u64, MIB, "malý disk: zarovnanie 1 MiB");
             assert!(o.zaciatok + o.sektory <= n - gpt_koniec(sektor));
             let (zac, zaloha_od, zaloha) = gpt(n, sektor, std::slice::from_ref(&o), novy_guid());
@@ -496,7 +496,7 @@ mod skusky {
             assert_eq!(p.len(), 1);
             assert_eq!(p[0].prvy, o.zaciatok);
             assert_eq!(p[0].posledny, o.zaciatok + o.sektory - 1);
-            assert_eq!(p[0].meno, "SADIČ");
+            assert_eq!(p[0].meno, "ORCHIDEA");
             assert_eq!(guid_text(&p[0].typ), GUID_ZAKLADNE_DATA);
             assert_eq!(zaloha_od + zaloha.len() as u64, velkost, "záloha končí na poslednom sektore");
             // ochranný MBR

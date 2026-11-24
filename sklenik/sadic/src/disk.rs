@@ -64,7 +64,7 @@ pub fn posud(d: &InfoDisku, dovol_virtualny: bool) -> Result<(), String> {
     match d.zbernica {
         Zbernica::Usb | Zbernica::Sd | Zbernica::Mmc => {}
         Zbernica::Virtualna if dovol_virtualny => {}
-        z => return Err(format!("{} – SADIČ zapisuje len na SD karty a USB disky", z.popis())),
+        z => return Err(format!("{} – ORCHIDEA Zapisovač zapisuje len na SD karty a USB disky", z.popis())),
     }
     if d.velkost == 0 {
         return Err("nie je vložené médium (veľkosť 0)".into());

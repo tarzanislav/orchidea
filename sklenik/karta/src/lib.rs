@@ -128,7 +128,9 @@ fn najdi_nastavenie(z: &mut (impl Read + Seek), f: &Fat32) -> Result<(Vec<u64>, 
         let blok = citaj_na(z, f.klaster(c), f.velkost_klastra() as usize).map_err(|e| e.to_string())?;
         for zaznam in blok.chunks_exact(32) {
             match zaznam[0] {
-                0x00 => return Err("obraz neobsahuje súbor SKLENIK.TXT (nie je to obraz SKLENÍKA?)".into()),
+                0x00 => {
+                    return Err("obraz neobsahuje súbor SKLENIK.TXT (nie je to obraz ORCHIDEA OS?)".into());
+                }
                 0xE5 => continue,
                 _ => {}
             }
@@ -326,7 +328,7 @@ impl Nastavenie {
 
     /// Text súboru `SKLENIK.TXT`. Heslo Wi-Fi sa neukladá – len odvodený kľúč WPA (PSK).
     pub fn text(&self) -> String {
-        let mut t = String::from("# SKLENÍK – nastavenie zariadenia (zapísal SADIČ)\n");
+        let mut t = String::from("# ORCHIDEA OS – nastavenie zariadenia (zapísal ORCHIDEA Zapisovač)\n");
         if let Some(m) = &self.meno {
             t += &format!("meno={m}\n");
         }

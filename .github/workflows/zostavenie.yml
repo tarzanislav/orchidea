@@ -217,7 +217,7 @@ jobs:
           cargo run --locked --release -p orchidea-hevc --example hevc_rozbor -- toky | tee -a "$GITHUB_STEP_SUMMARY"
 
   sadic-iso:
-    name: SADIČ – formátovanie a ISO (Linux, nezávislé fsck)
+    name: ORCHIDEA Zapisovač – formátovanie a ISO (Linux, nezávislé fsck)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -241,7 +241,7 @@ jobs:
             /mnt/sadic/win.iso
 
   sadic:
-    name: SADIČ – zápis na virtuálny disk (Windows)
+    name: ORCHIDEA Zapisovač – zápis na virtuálny disk (Windows)
     runs-on: windows-latest
     needs: sadic-iso
     env:
@@ -442,10 +442,10 @@ jobs:
           Remove-Item Env:SADIC_SKUSKA_ROZSIRENE
           Write-Output $vystup
           if ($kod -or $vystup -notmatch 'okno: ✅ Rozbalené') { throw "okno: napálenie ISO zlyhalo (kód $kod)" }
-          Write-Output "✅ SADIČ rozšírený: ISO (bit po bite aj rozbalením), FAT32/exFAT, MBR/GPT, kontrola karty, okno"
+          Write-Output "✅ ORCHIDEA Zapisovač rozšírený: ISO (bit po bite aj rozbalením), FAT32/exFAT, MBR/GPT, kontrola karty, okno"
           "select vdisk file=`"$vhd`"`r`ndetach vdisk" | Out-File -Encoding ascii "$t\dp2.txt"
           diskpart /s "$t\dp2.txt" | Out-Null
-          Write-Output "✅ SADIČ: zápis s overením, poistky, nastavenie, záloha, obnova a okno (obraz zo ZIP)"
+          Write-Output "✅ ORCHIDEA Zapisovač: zápis s overením, poistky, nastavenie, záloha, obnova a okno (obraz zo ZIP)"
       - uses: actions/upload-artifact@v4
         with:
           name: sadic-windows-x64

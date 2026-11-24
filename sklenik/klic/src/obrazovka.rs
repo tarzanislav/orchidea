@@ -289,15 +289,15 @@ pub fn nakresli_s_opisom(
     let r = Rozmery::pre(sirka, vyska);
     let Rozmery { v, h, m, mv, pravy } = r;
 
-    // hlavička: SKLENÍK a model
+    // hlavička: ORCHIDEA OS a model
     let mut y = r.hlavicka();
-    let koniec = p.text(pismo, "SKLENÍK", m, y, 1.6 * v, (v * 0.17).max(2.0), ZELENA);
+    let koniec = p.text(pismo, "ORCHIDEA OS", m, y, 1.6 * v, (v * 0.17).max(2.0), ZELENA);
     let model = pismo.skrat(s.model, pravy - koniec - 2.0 * v, 0.8 * v, h * 0.8);
     let w = pismo.sirka(&model, 0.8 * v, h * 0.8);
     p.text(pismo, &model, pravy - w, y, 0.8 * v, h * 0.8, TLMENY);
     // verzia karty pod modelom – aby bolo hneď vidieť, ktorá karta beží
     let verzia = format!("{} {}", j.t("verzia", "verze", "version"), s.verzia);
-    opis.borrow_mut().push(format!("SKLENÍK · {} · {verzia} · {}", s.model, hodiny_text(s.bezi_s, j)));
+    opis.borrow_mut().push(format!("ORCHIDEA OS · {} · {verzia} · {}", s.model, hodiny_text(s.bezi_s, j)));
     let wv = pismo.sirka(&verzia, 0.65 * v, h * 0.7);
     p.text(pismo, &verzia, pravy - wv, y + 1.2 * v, 0.65 * v, h * 0.7, TLMENY);
     // hodiny od zapnutia – každú sekundu sa prekreslí len ich obdĺžnik (R109)
@@ -317,9 +317,9 @@ pub fn nakresli_s_opisom(
         }
         None => {
             let t = j.t(
-                "bez mena – meno nastavíte SADIČOM",
-                "bez jména – jméno nastavíte SADIČEM",
-                "no name – set it with SADIČ",
+                "bez mena – meno nastavíte v ORCHIDEA Zapisovači",
+                "bez jména – jméno nastavíte v ORCHIDEA Zapisovači",
+                "no name – set it with ORCHIDEA Zapisovač",
             );
             opis.borrow_mut().push(t.to_string());
             let (velkost, hrubka) = zmesti(pismo, t, sirka_mena, v, h, 0.6);
@@ -723,9 +723,9 @@ pub fn nakresli_s_opisom(
     let yp = vyska as f32 - mv;
     p.text(pismo, &pismo.skrat(paticka, pravy - m, maly, h * 0.8), m, yp, maly, h * 0.8, farba_paticky);
     let co_dalej = j.t(
-        "SKLENÍK beží správne. Programy ORCHIDEA pribudnú v ďalšej verzii.",
-        "SKLENÍK běží správně. Programy ORCHIDEA přibudou v další verzi.",
-        "SKLENÍK is running. ORCHIDEA programs will come in a later version.",
+        "ORCHIDEA OS beží správne. Programy ORCHIDEA pribudnú v ďalšej verzii.",
+        "ORCHIDEA OS běží správně. Programy ORCHIDEA přibudou v další verzi.",
+        "ORCHIDEA OS is running. ORCHIDEA programs will come in a later version.",
     );
     p.text(
         pismo,

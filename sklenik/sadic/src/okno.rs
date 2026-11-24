@@ -527,7 +527,7 @@ fn text(h: Hwnd) -> String {
 }
 
 fn sprava(hwnd: Hwnd, text: &str, typ: u32) -> i32 {
-    let (t, n) = (w(text), w("SADIČ"));
+    let (t, n) = (w(text), w("ORCHIDEA Zapisovač"));
     // SAFETY: reťazce sú ukončené nulou; MessageBoxW je modálne okno (stav sa počas neho nepožičiava).
     unsafe { MessageBoxW(hwnd, t.as_ptr(), n.as_ptr(), typ) }
 }
@@ -574,11 +574,11 @@ fn nakresli_hlavicku(s: &mut Stav, sirka: i32) {
     let v = skaluj(HLAVICKA, s.dpi);
     let k = s.dpi as f32 / 96.0;
     let mut p = Platno::nove(sirka.max(1) as usize, v.max(1) as usize, 0x0F1C15);
-    p.text(&s.pismo, "SADIČ", 24.0 * k, 52.0 * k, 30.0 * k, 3.8 * k, 0x6FD08C);
+    p.text(&s.pismo, "ORCHIDEA Zapisovač", 24.0 * k, 52.0 * k, 30.0 * k, 3.8 * k, 0x6FD08C);
     let podtitul = if s.rozsirene {
         "Rozšírené: ISO, formátovanie a kontrola kariet"
     } else {
-        "Zapisovač kariet SKLENÍK – Raspberry Pi, Odroid, TV krabičky"
+        "Karta ORCHIDEA OS – Raspberry Pi, Odroid, TV krabičky"
     };
     p.text(&s.pismo, podtitul, 24.0 * k, 79.0 * k, 12.0 * k, 1.5 * k, 0xE8F0EA);
     let heslo = "Chladný systém";
@@ -673,7 +673,7 @@ fn nacitaj_disky(s: &mut Stav) {
             nastav_text(stav, "Pripravené. Skontrolujte disk a možnosti.");
         } else if s.obraz.is_none() {
             FARBA_STAVU.store(0x0050_6070, Ordering::Relaxed);
-            nastav_text(stav, "Vyberte obraz SKLENÍK (súbor .img alebo stiahnutý .zip).");
+            nastav_text(stav, "Vyberte obraz ORCHIDEA OS (súbor .img alebo stiahnutý .zip).");
         } else {
             FARBA_STAVU.store(0x0030_3030, Ordering::Relaxed);
             nastav_text(stav, "Pripravené. Skontrolujte kartu a stlačte Zapísať.");
@@ -817,9 +817,9 @@ fn obnov_texty(s: &mut Stav) {
     );
     nastav_text(prvok(h, ID_ZAPIS), text_tlacidla(s));
     let nazov = if s.rozsirene {
-        "SADIČ – rozšírené: ISO, formátovanie, kontrola"
+        "ORCHIDEA Zapisovač – rozšírené: ISO, formátovanie, kontrola"
     } else {
-        "SADIČ – zapisovač kariet SKLENÍK"
+        "ORCHIDEA Zapisovač – karta ORCHIDEA OS"
     };
     nastav_text(h, nazov);
 }
@@ -909,7 +909,7 @@ struct Priprava {
 }
 
 fn priprav(s: &Stav) -> Result<Priprava, String> {
-    let obraz = s.obraz.clone().ok_or("Najprv vyberte obraz SKLENÍK (tlačidlo Vybrať…).")?;
+    let obraz = s.obraz.clone().ok_or("Najprv vyberte obraz ORCHIDEA OS (tlačidlo Vybrať…).")?;
     let disk = vybrany_disk(s).ok_or("Vložte SD kartu alebo USB disk a vyberte ho v zozname.")?;
     let meno_text = text(prvok(s.hwnd, ID_MENO));
     let meno = navrhni_meno(&meno_text);
@@ -930,7 +930,7 @@ fn priprav(s: &Stav) -> Result<Priprava, String> {
     let nastavenie =
         Nastavenie::z_argumentov(arg.iter().map(String::as_str)).map_err(|e| format!("Nastavenie: {e}"))?;
     let mut zhrnutie = format!(
-        "Na kartu „{}“ sa zapíše SKLENÍK.\nVšetko, čo je teraz na karte, sa zmaže.\n\nMeno zariadenia: {}",
+        "Na kartu „{}“ sa zapíše ORCHIDEA OS.\nVšetko, čo je teraz na karte, sa zmaže.\n\nMeno zariadenia: {}",
         popis_disku(&disk),
         if meno.is_empty() { "–" } else { &meno }
     );
@@ -1330,8 +1330,8 @@ extern "system" fn okno_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize 
                 (ID_VYBER, 0) => {
                     if let Some(p) = vyber_subor(
                         hwnd,
-                        "Obraz SKLENÍK (*.img, *.zip)\0*.img;*.zip\0Všetky súbory\0*.*\0\0",
-                        "Vyberte obraz SKLENÍK",
+                        "Obraz ORCHIDEA OS (*.img, *.zip)\0*.img;*.zip\0Všetky súbory\0*.*\0\0",
+                        "Vyberte obraz ORCHIDEA OS",
                     ) {
                         s_stavom(|s| {
                             nastav_obraz(s, Some(p));
@@ -1624,7 +1624,7 @@ pub fn spusti(dovol_virtualny: bool) -> i32 {
         let styl = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
         let mut r = Rect { l: 0, t: 0, r: skaluj(SIRKA, dpi), b: skaluj(VYSKA, dpi) };
         AdjustWindowRectExForDpi(&mut r, styl, 0, WS_EX_CONTROLPARENT, dpi);
-        let nazov = w("SADIČ – zapisovač kariet SKLENÍK");
+        let nazov = w("ORCHIDEA Zapisovač – karta ORCHIDEA OS");
         let hwnd = CreateWindowExW(
             WS_EX_CONTROLPARENT,
             trieda.as_ptr(),
@@ -1640,7 +1640,7 @@ pub fn spusti(dovol_virtualny: bool) -> i32 {
             std::ptr::null_mut(),
         );
         if hwnd == 0 {
-            eprintln!("SADIČ: okno sa nepodarilo vytvoriť");
+            eprintln!("ORCHIDEA Zapisovač: okno sa nepodarilo vytvoriť");
             return 1;
         }
         let dpi = GetDpiForWindow(hwnd).max(96);

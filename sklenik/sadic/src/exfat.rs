@@ -489,7 +489,7 @@ mod skusky {
     #[test]
     fn naformatovany_zvazok() {
         let mut p = Pamat::nova(64 * MIB, 512);
-        let f = ExFat::navrhni(64 * MIB / 512, 512, 0, MIB, None, "SADIČ").unwrap();
+        let f = ExFat::navrhni(64 * MIB / 512, 512, 0, MIB, None, "ORCHIDEA").unwrap();
         f.naformatuj(&mut p, 0, &mut |_, _| {}, &AtomicBool::new(false)).unwrap();
         let d = &p.data;
         assert_eq!(&d[..512 * 12], &d[512 * 12..512 * 24], "záložná oblasť");

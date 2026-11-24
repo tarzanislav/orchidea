@@ -85,5 +85,5 @@ fn main() {
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
-    eprintln!("KLÍČ je prvý program systému SKLENÍK a beží len na Linuxe.");
+    eprintln!("Správca systému (KLÍČ) je prvý program ORCHIDEA OS a beží len na Linuxe.");
 }

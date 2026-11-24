@@ -3,7 +3,7 @@ use orchidea_pismo::{Pismo, Platno};
 
 fn main() {
     let mut a = std::env::args().skip(1);
-    let text = a.next().unwrap_or_else(|| "SKLENÍK – Žltý kôň úpel ďábelské ódy".into());
+    let text = a.next().unwrap_or_else(|| "ORCHIDEA OS – Žltý kôň úpel ďábelské ódy".into());
     let velkost: f32 = a.next().and_then(|v| v.parse().ok()).unwrap_or(20.0);
     let hrubka = (velkost * 0.12).max(1.2);
     let pismo = Pismo::stonka();

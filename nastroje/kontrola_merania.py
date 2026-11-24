@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kontrola samomerania SKLENÍKA (R122) po skúške v emulátore QEMU – bez uchovania obrázka.
+"""Kontrola samomerania ORCHIDEA OS (R122) po skúške v emulátore QEMU – bez uchovania obrázka.
 
 Priečinok MERANIA skopírovaný z karty emulátora: overí textovú správu (hlavička, poradové číslo, nosič,
 oddiely, žiadne nedoplnené značky), súbor SPOLU.TXT a snímku PNG – podpis, CRC kusov, rozbalenie
@@ -79,7 +79,7 @@ def main() -> int:
     text = surovy.decode("utf-8")
     print(f"- súbory: {texty[0].name} ({len(text.encode())} B), {obrazky[0].name} ({obrazky[0].stat().st_size} B), SPOLU.TXT")
     for musi in [
-        "SKLENÍK – samomeranie č. 01 · záznam 0. minúty",
+        "ORCHIDEA OS – samomeranie č. 01 · záznam 0. minúty",
         "zapísané na: SD karta (mmcblk0p1)",
         "Raspberry Pi 3",
         "── OBRAZOVKA",

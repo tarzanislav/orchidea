@@ -542,7 +542,7 @@ mod skusky {
     fn sirka_skratenie_a_pamat() {
         let pismo = Pismo::stonka();
         let a = pismo.sirka("SKLENÍK", 20.0, 2.0);
-        assert!(a > 0.0 && pismo.sirka("SKLENÍK pripravený", 20.0, 2.0) > a);
+        assert!(a > 0.0 && pismo.sirka("ORCHIDEA OS pripravený", 20.0, 2.0) > a);
         assert!((pismo.sirka("SKLENÍK", 40.0, 4.0) - 2.0 * a).abs() < 0.5, "šírka rastie s veľkosťou");
         let s = pismo.skrat("Raspberry Pi 3 Model B Plus Rev 1.3", 120.0, 20.0, 2.0);
         assert!(s.ends_with('…') && pismo.sirka(&s, 20.0, 2.0) <= 120.0, "{s}");

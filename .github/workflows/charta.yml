@@ -1,4 +1,4 @@
-name: Charta a zdroje
+name: Charta, zdroje a pojmy
 
 on:
   push:
@@ -20,6 +20,9 @@ jobs:
 
       - name: Vrstvy a neutralita jadra
         run: python3 -I nastroje/kontrola_vrstiev.py
+
+      - name: Pojmy (ORCHIDEA/terminologia.md)
+        run: python3 -I nastroje/kontrola_pojmov.py
 
       - name: Podpis príspevkov (DCO)
         if: github.event_name == 'pull_request'

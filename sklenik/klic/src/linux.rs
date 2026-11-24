@@ -785,7 +785,7 @@ fn popis_zataze(s: &StatZataze, max_teplota: Option<f64>) -> String {
 /// R190: obsah súboru `sklenik-obraz.txt` na karte RPi (vkladá ho `config.txt`) – obraz cez KMS (vc4) alebo od
 /// firmvéru. Spravuje ho KLÍČ podľa prepínača `obraz_kms` v SKLENIK.TXT, platí od ďalšieho štartu.
 const OBRAZ_KMS: &str = include_str!("../../boot/sklenik-obraz.txt");
-const OBRAZ_FIRMVER: &str = "# SKLENÍK (R190) – obrazovka od firmvéru (prepínač obraz_kms=nie v SKLENIK.TXT). Súbor spravuje KLÍČ –\n# zmena platí od ďalšieho štartu. Ručne neupravovať.\n[all]\n";
+const OBRAZ_FIRMVER: &str = "# ORCHIDEA OS (R190) – obrazovka od firmvéru (prepínač obraz_kms=nie v SKLENIK.TXT). Súbor spravuje KLÍČ –\n# zmena platí od ďalšieho štartu. Ručne neupravovať.\n[all]\n";
 
 /// R199: zariadenia, na ktorých už táto verzia karty urobila tepelný pokus (riadok „sériové číslo verzia model“).
 const POKUSY: &str = "POKUSY.TXT";
@@ -1199,7 +1199,7 @@ fn ukaz_stav(model: &str, teplota: Option<f64>, r: &Regulator, cas_startu: Durat
     let t = teplota.map_or("bez snímača".to_string(), |t| format!("{t:.1} °C"));
     let u = r.uroven();
     let text = format!(
-        "\x1b[2J\x1b[H  SKLENIK - KLIC\n\n  {model}\n  start: {:.1} s\n\n  teplota: {t}  (ciel {:.0}, strop {:.0})\n  vykon: uroven {}/{}  jadra {}  takt {} MHz\n",
+        "\x1b[2J\x1b[H  ORCHIDEA OS - spravca systemu\n\n  {model}\n  start: {:.1} s\n\n  teplota: {t}  (ciel {:.0}, strop {:.0})\n  vykon: uroven {}/{}  jadra {}  takt {} MHz\n",
         cas_startu.as_secs_f64(),
         r.profil().ciel,
         r.profil().strop,
@@ -2638,10 +2638,11 @@ pub fn spusti() {
                     };
                     let posledna = minuta == *m.milniky().last().unwrap_or(&30);
                     let mut text = format!("{}{NL}", "═".repeat(66));
-                    text +=
-                        &format!("SKLENÍK – samomeranie č. {ZNACKA_PORADIA} · záznam {minuta}. minúty{NL}");
                     text += &format!(
-                        "zariadenie: {model} · meno: {} · verzia SKLENÍKA {}{NL}",
+                        "ORCHIDEA OS – samomeranie č. {ZNACKA_PORADIA} · záznam {minuta}. minúty{NL}"
+                    );
+                    text += &format!(
+                        "zariadenie: {model} · meno: {} · verzia ORCHIDEA OS {}{NL}",
                         st.meno.unwrap_or("–"),
                         crate::VERZIA
                     );
@@ -3098,7 +3099,7 @@ pub fn spusti() {
             && (!(meranie_bezi || pamat_bezi || zaznam_bezi) || start.elapsed() > Duration::from_secs(150))
         {
             hlas(&format!(
-                "SKLENÍK pripravený (štart KLÍČA {:.2} s, verzia {})",
+                "ORCHIDEA OS pripravený (štart správcu systému {:.2} s, verzia {})",
                 cas_startu.as_secs_f64(),
                 crate::VERZIA
             ));
