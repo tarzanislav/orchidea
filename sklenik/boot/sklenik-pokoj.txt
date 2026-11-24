@@ -1,0 +1,11 @@
+# SKLENÍK – chladný pokoj (R198): nižšie napätie čipu len v pokoji (RPi 2, 3, Zero 2 W). Súbor spravuje
+# KLÍČ podľa prepínača pokoj_napatie v SKLENIK.TXT – zmena platí od ďalšieho štartu. Ručne neupravovať;
+# zmazanie súboru poistku vynuluje.
+# stav=nove
+[pi2]
+over_voltage_min=-2
+[pi3]
+over_voltage_min=-2
+[pi02]
+over_voltage_min=-2
+[all]

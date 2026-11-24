@@ -266,6 +266,16 @@ pub fn poistka(n: &Nosic, meno: &str, co: Poistka) -> Result<bool, String> {
 /// R190: súbor v koreni oddielu nosiča (napr. `sklenik-obraz.txt` vedľa `config.txt`) – prečíta ho a ak sa
 /// líši od `obsah`, prepíše ho. Vráti predošlý obsah (`None` – súbor nebol). Zapisuje sa len pri zmene.
 pub fn subor_v_koreni(n: &Nosic, meno: &str, obsah: &str) -> Result<Option<String>, String> {
+    uprav_v_koreni(n, meno, |_| obsah.to_string()).map(|(stary, _)| stary)
+}
+
+/// R198: súbor v koreni oddielu nosiča – nový obsah sa určí z doterajšieho (`None` – súbor nebol); zapíše
+/// sa len pri zmene. Vráti (predošlý, nový) obsah.
+pub fn uprav_v_koreni(
+    n: &Nosic,
+    meno: &str,
+    uprav: impl FnOnce(Option<&str>) -> String,
+) -> Result<(Option<String>, String), String> {
     const BOD: &str = "/run/karta-koren";
     let _ = fs::create_dir_all(BOD);
     sys::pripoj_s_volbami(
@@ -276,15 +286,16 @@ pub fn subor_v_koreni(n: &Nosic, meno: &str, obsah: &str) -> Result<Option<Strin
         "flush",
     )
     .map_err(|e| format!("pripojenie: {e}"))?;
-    let vysledok = (|| -> std::io::Result<Option<String>> {
+    let vysledok = (|| -> std::io::Result<(Option<String>, String)> {
         let cesta = Path::new(BOD).join(meno);
         let stary = fs::read_to_string(&cesta).ok();
-        if stary.as_deref() != Some(obsah) {
+        let obsah = uprav(stary.as_deref());
+        if stary.as_deref() != Some(obsah.as_str()) {
             let mut f = fs::File::create(&cesta)?;
             f.write_all(obsah.as_bytes())?;
             f.sync_all()?;
         }
-        Ok(stary)
+        Ok((stary, obsah))
     })();
     let _ = sys::odpoj(BOD);
     sys::zapis_vyrovnavacie();

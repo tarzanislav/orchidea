@@ -411,7 +411,7 @@ pub fn blok_prepinacov() -> String {
 
 /// R183 – novinky od karty 4edb1db (posledná overená na televízore), ktoré sa dajú vypnúť v SKLENIK.TXT:
 /// (kľúč, čo robí).
-pub const NOVINKY: [(&str, &str); 14] = [
+pub const NOVINKY: [(&str, &str); 15] = [
     ("merac_pamate", "merač toku pamäte DDR (R162, R176)"),
     ("takt_obrazu", "takt obvodu obrazu VPU (R166, R182)"),
     ("merac_taktov", "merač taktov čipu a debugfs (R166)"),
@@ -428,6 +428,10 @@ pub const NOVINKY: [(&str, &str); 14] = [
     (
         "obraz_kms",
         "RPi: obraz cez vlastný ovládač KMS – nie = obrazovka od firmvéru, od ďalšieho štartu (R190)",
+    ),
+    (
+        "pokoj_napatie",
+        "RPi 2/3, Zero 2 W: nižšie napätie čipu len v pokoji (−50 mV) s poistkou, od ďalšieho štartu (R198)",
     ),
 ];
 

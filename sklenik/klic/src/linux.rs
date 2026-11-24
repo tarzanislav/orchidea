@@ -10,6 +10,7 @@ use crate::okolie::{self, Okolie};
 use crate::pamat;
 use crate::periferie::{Supis, Ulozisko};
 use crate::poda::Poda;
+use crate::pokoj;
 use crate::radice;
 use crate::samomeranie::{self, NL, ZNACKA_NOSICA, ZNACKA_PORADIA, nadpis};
 use crate::strazca::{
@@ -1307,6 +1308,16 @@ pub fn spusti() {
     let pismo = Pismo::stonka();
     // R158–R161: správca chladu na TV krabičkách – vlastný ovládač obrazu, USB, sieť, jadrá, tepelný pokus
     let tv = ma_chladnu_sadu(&model) && pid1 && !skuska;
+    // R198: nižšie napätie v pokoji len na RPi 2, 3 a Zero 2 W (na RPi 4/5 riadi napätie DVFS firmvéru)
+    let pokoj_model = pid1
+        && !skuska
+        && ["Raspberry Pi 2", "Raspberry Pi 3", "Raspberry Pi Zero 2", "Compute Module 3"]
+            .iter()
+            .any(|m| model.contains(m));
+    let mut pokoj_stav: Option<(pokoj::Stav, bool, zaznam::Nosic)> = None;
+    // R192: fázy tepelného pokusu podľa zariadenia (RPi: spánok siete zvlášť, bez fáz taktu VPU)
+    let je_rpi = model.contains("Raspberry Pi");
+    let fazy = chlad::fazy(je_rpi);
     // R169: časovače KLÍČA smú meškať až 50 ms – jadro ich zlúči s inými budeniami
     if tv && novinka(&nastavenie, "casovace") {
         sys::tolerancia_casovacov(50_000_000);
@@ -1338,6 +1349,34 @@ pub fn spusti() {
                     Err(e) => {
                         hlas(&format!("obraz (R190): súbor sklenik-obraz.txt sa nepodarilo zapísať ({e})"))
                     }
+                }
+            }
+        }
+        // R198: chladný pokoj – nižšie napätie v pokoji (RPi 2, 3, Zero 2 W) s poistkou v súbore na karte
+        if pokoj_model && nastavenie.is_some() {
+            let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
+            if let Some(n) = zaznam::najdi_nosice(spustaci.as_deref()).into_iter().next() {
+                let zapnute = novinka(&nastavenie, "pokoj_napatie");
+                let mut bezi = false;
+                match zaznam::uprav_v_koreni(&n, pokoj::SUBOR, |t| {
+                    let (novy, b) = pokoj::pri_starte(pokoj::stav(t), zapnute);
+                    bezi = b;
+                    pokoj::obsah(novy)
+                }) {
+                    Ok((_, novy)) => {
+                        let st = pokoj::stav(Some(&novy));
+                        pokoj_stav = Some((st, bezi, n));
+                        hlas(&format!(
+                            "chladný pokoj (R198): tento štart {} · nastavenie {}",
+                            if bezi {
+                                "s nižším napätím v pokoji (−50 mV)"
+                            } else {
+                                "s pôvodným napätím"
+                            },
+                            st.popis()
+                        ));
+                    }
+                    Err(e) => hlas(&format!("chladný pokoj (R198): súbor sa nepodarilo upraviť ({e})")),
                 }
             }
         }
@@ -1499,8 +1538,12 @@ pub fn spusti() {
     // R191: koľko zariadení stromu USB smie spať a stav času spánku pri zapnutí
     let mut usb_strom = 0usize;
     let mut usb_strom_od: Option<(u64, u64)> = None;
+    // R192: zariadenia priamo na koreňovom porte – keď spia, radič USB neposiela mikrorámce
+    let mut usb_zbernica_od: Option<(u64, u64)> = None;
     let mut obrazovka_zmenena = false;
     let mut pokus = false;
+    // R192: fáza pokusu dovoľuje spánok siete s káblom (mimo pokusu vždy)
+    let mut siet_spi_faza = true;
     let mut pokus_zastaveny = false;
     let mut faza_teraz: Option<usize> = None;
     let mut zobrazeny_chlad: Option<obrazovka::Chlad> = None;
@@ -1687,7 +1730,7 @@ pub fn spusti() {
                 }
                 // R170: čip siete bez kábla spí; raz za 30 s sa na chvíľu zobudí a hľadá kábel
                 // R191: sieť zatiaľ nič nepotrebuje (SKLENÍK nemá sieťové služby) – spí aj s káblom
-                let siet_potrebna = !novinka(&nastavenie, "siet_spi");
+                let siet_potrebna = !(novinka(&nastavenie, "siet_spi") && siet_spi_faza);
                 if tv && periferie_teraz == Some(true) && novinka(&nastavenie, "siet") {
                     for r in supis.siet.iter().filter(|r| !r.bezdrotove && !siet_chyby.contains(&r.meno)) {
                         let k = kable.entry(r.meno.clone()).or_insert_with(chlad::Kabel::novy);
@@ -1906,6 +1949,28 @@ pub fn spusti() {
         // R165: dekodér videa – zoznam formátov vždy; s nastavením video=ano aj skúška vlastnými tokmi s presne
         // známym obrazom (H.264 a HEVC). Raz, 20 s po štarte (po načítaní nastavenia, najneskôr po minúte).
         let hore = uptime().unwrap_or(0.0);
+        // R198: štart s nižším napätím bežal 5 min – overený
+        if let Some((st @ pokoj::Stav::Skuska(_), true, n)) = pokoj_stav.as_ref()
+            && hore >= pokoj::OVERENIE_S
+        {
+            let (st, n) = (*st, n.clone());
+            match zaznam::subor_v_koreni(&n, pokoj::SUBOR, &pokoj::obsah(pokoj::Stav::Overene)) {
+                Ok(_) => {
+                    hlas(&format!(
+                        "chladný pokoj (R198): {} min s nižším napätím bez chyby – overený",
+                        pokoj::OVERENIE_S as u32 / 60
+                    ));
+                    pokoj_stav = Some((pokoj::Stav::Overene, true, n));
+                }
+                Err(e) => {
+                    hlas(&format!(
+                        "chladný pokoj (R198): overenie sa nepodarilo zapísať ({e}) – {}",
+                        st.popis()
+                    ));
+                    pokoj_stav = None;
+                }
+            }
+        }
         if pid1
             && !skuska
             && !video_spustene
@@ -1944,7 +2009,8 @@ pub fn spusti() {
             let n = nastavenie.as_ref().map(|(_, n)| n);
             let zh = Zhasinanie::pre_tv(n.and_then(|n| n.zhasni_min), n.and_then(|n| n.vypni_min));
             let necinnost = posledna_aktivita.elapsed().as_secs();
-            let mut r = chlad::rozhodni(pokus_s, pocet_faz, necinnost, ciel_obrazu(&nastavenie), &zh);
+            let mut r = chlad::rozhodni(pokus_s, pocet_faz, fazy, necinnost, ciel_obrazu(&nastavenie), &zh);
+            siet_spi_faza = r.siet_spi;
             // R184: záťaž podľa fázy dlhého testu – vlákna sa spustia a zastavia pri zmene fázy
             let chce_zataz = if pid1 && !skuska { r.zataz } else { chlad::Zataz::Ziadna };
             if zataznik.as_ref().map_or(chlad::Zataz::Ziadna, |z| z.druh) != chce_zataz {
@@ -2034,12 +2100,7 @@ pub fn spusti() {
                     if faza_teraz != Some(f) {
                         faza_teraz = Some(f);
                         pamat_fazy.push((f, pamat::SumaToku::default()));
-                        hlas(&format!(
-                            "tepelný pokus: fáza {}/{} – {}",
-                            f + 1,
-                            pocet_faz,
-                            chlad::FAZY[f].nazov
-                        ));
+                        hlas(&format!("tepelný pokus: fáza {}/{} – {}", f + 1, pocet_faz, fazy[f].nazov));
                     }
                 }
                 None => {
@@ -2202,6 +2263,7 @@ pub fn spusti() {
                 if novinka(&nastavenie, "usb_strom") {
                     usb_strom = chlad::nastav_spanok_usb_stromu(Path::new("/"), p);
                     usb_strom_od = if p { chlad::cas_spanku_usb_stromu(Path::new("/")) } else { None };
+                    usb_zbernica_od = if p { chlad::cas_spanku_zbernice_usb(Path::new("/")) } else { None };
                 }
                 regulator.nastav_parkovanie(parkovat_mozno && p);
                 alr = SietPodlaPotreby::nova();
@@ -2316,8 +2378,16 @@ pub fn spusti() {
                 {
                     let (spi, bdie) = (t.0.saturating_sub(od.0), t.1.saturating_sub(od.1));
                     if spi + bdie > 10_000 {
+                        let zbernica = match (usb_zbernica_od, chlad::cas_spanku_zbernice_usb(Path::new("/")))
+                        {
+                            (Some(od), Some(t)) => {
+                                let (s, b) = (t.0.saturating_sub(od.0), t.1.saturating_sub(od.1));
+                                format!(" (zbernica {:.0} %)", s as f64 * 100.0 / (s + b).max(1) as f64)
+                            }
+                            _ => String::new(),
+                        };
                         casti.push(format!(
-                            "USB spí {:.0} %",
+                            "USB spí {:.0} %{zbernica}",
                             (spi as f64 / (spi + bdie) as f64 * 10.0).round() * 10.0
                         ));
                     }
@@ -2342,7 +2412,7 @@ pub fn spusti() {
                         "pokus {}/{} {} – do {}",
                         f + 1,
                         pocet_faz,
-                        chlad::FAZY[f].nazov,
+                        fazy[f].nazov,
                         samomeranie::cas(koniec)
                     )
                 }),
@@ -2592,6 +2662,33 @@ pub fn spusti() {
                                     _ => "zatiaľ bez merania".into(),
                                 }
                             );
+                            // R192: zbernica – port na koreni uspaný = bez mikrorámcov (RPi 1–3: bez 8000 FIQ/s)
+                            let bdiace = chlad::usb_bdiace(Path::new("/"));
+                            text += &format!(
+                                "  zbernica USB (R192): koreňový port uspaný {} · teraz bdejú: {}{NL}",
+                                match (usb_zbernica_od, chlad::cas_spanku_zbernice_usb(Path::new("/"))) {
+                                    (Some(od), Some(t)) => {
+                                        let (s, b) = (t.0.saturating_sub(od.0), t.1.saturating_sub(od.1));
+                                        format!(
+                                            "{:.0} % času (vtedy radič neposiela mikrorámce)",
+                                            s as f64 * 100.0 / (s + b).max(1) as f64
+                                        )
+                                    }
+                                    _ => "– zatiaľ bez merania".into(),
+                                },
+                                if bdiace.is_empty() { "nič".to_string() } else { bdiace.join(", ") }
+                            );
+                        }
+                        if let Some((st, bezi, _)) = pokoj_stav.as_ref() {
+                            text += &format!(
+                                "  chladný pokoj (R198): tento štart {} · nastavenie {} (napätie jadra v riadku VideoCore)                                 {NL}",
+                                if *bezi {
+                                    "s nižším napätím v pokoji (−50 mV)"
+                                } else {
+                                    "s pôvodným napätím"
+                                },
+                                st.popis()
+                            );
                         }
                         let spanok = match (usb_spanok_od, chlad::cas_spanku_usb(Path::new("/"))) {
                             (Some(od), Some(t)) if periferie_teraz == Some(true) => {
@@ -2689,10 +2786,9 @@ pub fn spusti() {
                                         f,
                                         f + 1,
                                         pocet_faz,
-                                        chlad::FAZY[f].nazov
+                                        fazy[f].nazov
                                     ),
-                                    Some(f) =>
-                                        format!("fáza {}/{} – {}", f + 1, pocet_faz, chlad::FAZY[f].nazov),
+                                    Some(f) => format!("fáza {}/{} – {}", f + 1, pocet_faz, fazy[f].nazov),
                                     None if minuta == 0 => "začína".into(),
                                     None => "hotový".into(),
                                 },
@@ -2775,7 +2871,7 @@ pub fn spusti() {
                             dovetok += &nadpis("TEPELNÝ POKUS (R160)");
                             let krivka: Vec<(u64, f64)> =
                                 m.krivka().iter().filter_map(|b| Some((b.s, b.teplota?))).collect();
-                            dovetok += &chlad::vysledok_pokusu(&krivka, &rusene, pocet_faz, NL);
+                            dovetok += &chlad::vysledok_pokusu(&krivka, &rusene, pocet_faz, je_rpi, NL);
                             // R162: tok pamäte v každej fáze
                             if merac_pamate_je {
                                 dovetok += &format!("  tok pamäte po fázach (MB/s, okná 2 s):{NL}");
@@ -2783,7 +2879,7 @@ pub fn spusti() {
                                     dovetok += &format!(
                                         "    {} {:<26} {}{NL}",
                                         f + 1,
-                                        chlad::FAZY[*f].nazov,
+                                        fazy[*f].nazov,
                                         suma.priemer()
                                             .map_or("nemerané – plný obraz (R176)".to_string(), |t| t
                                                 .popis())

@@ -226,6 +226,8 @@ pub struct Faza {
     pub zataz: Zataz,
     /// R184: hlboký spánok jadier (R167) smie byť zapnutý.
     pub spanok: bool,
+    /// R192: čip siete spí aj s káblom (R191) – na RPi zvlášť fáza, lebo LAN7515 hreje najviac.
+    pub siet_spi: bool,
 }
 
 /// R184: čo počas fázy dlhého testu pracuje.
@@ -253,7 +255,24 @@ pub const VPU_STREDNY: u32 = 500;
 pub const VPU_PARKOVANY: u32 = 51;
 
 const fn f(nazov: &'static str, obraz: Ciel, stav: StavObrazu, periferie: bool, vpu_mhz: u32) -> Faza {
-    Faza { nazov, obraz, stav, periferie, vpu_mhz, radice: false, zataz: Zataz::Ziadna, spanok: false }
+    Faza {
+        nazov,
+        obraz,
+        stav,
+        periferie,
+        vpu_mhz,
+        radice: false,
+        zataz: Zataz::Ziadna,
+        spanok: false,
+        siet_spi: periferie,
+    }
+}
+
+/// R192: fáza RPi – takt VPU sa nemení (RPi nemá uzol VPU SKLENÍKA), sieť spí len kde sa povie.
+const fn f_rpi(nazov: &'static str, obraz: Ciel, stav: StavObrazu, periferie: bool, siet_spi: bool) -> Faza {
+    let mut z = f(nazov, obraz, stav, periferie, VPU_PLNY);
+    z.siet_spi = siet_spi;
+    z
 }
 
 /// R184: fáza dlhého testu – vypnutý obraz, úsporné periférie, odpojené radiče, zaparkované VPU.
@@ -267,6 +286,7 @@ const fn test_hw(nazov: &'static str, zataz: Zataz, spanok: bool) -> Faza {
         radice: true,
         zataz,
         spanok,
+        siet_spi: true,
     }
 }
 
@@ -301,6 +321,57 @@ pub const FAZY: [Faza; 12] = [
     test_hw("záťaž – pamäť RAM", Zataz::Pamat, false),
     test_hw("chladnutie + spánok jadier", Zataz::Ziadna, true),
 ];
+
+/// R192: fázy pokusu na Raspberry Pi – čo hreje najviac, každé opatrenie zvlášť:
+/// čip USB a siete (LAN7515 na RPi 3 B+, LAN9514 na RPi 3 B) je najväčší ovplyvniteľný spotrebič, preto má
+/// spánok siete vlastnú fázu; takt VPU na RPi neriadi SKLENÍK (firmvér), namiesto fáz VPU sú fázy s vypnutým
+/// obrazom a pôvodnými perifériami a opakovanie vypnutého obrazu – rozdiel dvoch rovnakých fáz ukáže presnosť
+/// merania (Wi-Fi a Bluetooth sú na RPi vypnuté už prekrytím v `config.txt`, R112).
+pub const FAZY_RPI: [Faza; 12] = [
+    f_rpi("pôvodne (ako doteraz)", Ciel::Povodny, StavObrazu::Zapnuty, false, false),
+    f_rpi("úsporné periférie", Ciel::Povodny, StavObrazu::Zapnuty, true, false),
+    f_rpi("+ sieť spí aj s káblom", Ciel::Povodny, StavObrazu::Zapnuty, true, true),
+    f_rpi("chladný obraz", Ciel::Chladny, StavObrazu::Zapnuty, true, true),
+    f_rpi("čierny obraz", Ciel::Chladny, StavObrazu::Cierny, true, true),
+    f_rpi("obraz vypnutý", Ciel::Chladny, StavObrazu::Vypnuty, true, true),
+    f_rpi("vypnutý, periférie pôvodné", Ciel::Chladny, StavObrazu::Vypnuty, false, false),
+    s_radicmi(f_rpi("", Ciel::Chladny, StavObrazu::Vypnuty, true, true), "obraz vypnutý – opakovanie"),
+    f_rpi("pôvodne – kontrola", Ciel::Povodny, StavObrazu::Zapnuty, false, false),
+    test_hw("záťaž – všetky jadrá", Zataz::Jadra, false),
+    test_hw("záťaž – pamäť RAM", Zataz::Pamat, false),
+    test_hw("chladnutie + spánok jadier", Zataz::Ziadna, true),
+];
+
+/// Fázy pokusu pre zariadenie: RPi alebo TV krabička / Odroid (s taktom VPU).
+pub fn fazy(rpi: bool) -> &'static [Faza; 12] {
+    if rpi { &FAZY_RPI } else { &FAZY }
+}
+
+/// R192: rozbor „čo hreje“ – (opatrenie, fáza bez neho, fáza s ním); úspora = rozdiel ustálených teplôt.
+fn rozbor(rpi: bool) -> &'static [(&'static str, usize, usize)] {
+    if rpi {
+        &[
+            ("USB strom spí, jadrá zaparkované, sieť 100 Mb/s", ZAKLAD, 1),
+            ("čip siete spí aj s káblom", 1, 2),
+            ("chladný obraz (24 Hz, 16 b, 960×540)", 2, 3),
+            ("čierny obraz", 3, 4),
+            ("obraz vypnutý (HDMI bez signálu)", 4, 5),
+            ("úsporné periférie pri vypnutom obraze", 6, 7),
+            ("všetko spolu", ZAKLAD, 7),
+        ]
+    } else {
+        &[
+            ("úsporné periférie", ZAKLAD, 1),
+            ("chladný obraz", 1, 2),
+            ("takt VPU 500 MHz pri obraze", 2, 3),
+            ("čierny obraz", 2, 4),
+            ("obraz vypnutý", 4, 5),
+            ("VPU zaparkovaný", 5, 6),
+            ("eMMC a Wi-Fi odpojené", 6, 7),
+            ("všetko spolu", ZAKLAD, 7),
+        ]
+    }
+}
 
 /// Takt VPU mimo pokusu (R182): **len vypnutý obraz → zaparkovaný**, inak vždy plný takt. Televízor (HDMI
 /// s YCbCr) je na takt obvodu obrazu citlivejší ako monitor cez redukciu do VGA – kým sa nižší takt pri
@@ -341,6 +412,8 @@ pub struct Rozhodnutie {
     pub jadra_spia: bool,
     /// R184: záťaž dlhého testu hardvéru.
     pub zataz: Zataz,
+    /// R192: čip siete smie spať aj s káblom (mimo pokusu vždy – podľa prepínača `siet_spi`).
+    pub siet_spi: bool,
 }
 
 /// Ako dlho po stlačení ostane obraz zapnutý aj vo fáze pokusu, ktorá ho zhasína.
@@ -350,12 +423,13 @@ pub const PREBUDENIE_S: u64 = 60;
 pub fn rozhodni(
     pokus_s: Option<u64>,
     pocet: usize,
+    fazy: &[Faza; 12],
     necinnost_s: u64,
     obraz: Ciel,
     z: &Zhasinanie,
 ) -> Rozhodnutie {
     if let Some(i) = pokus_s.and_then(|s| faza(s, pocet)) {
-        let f = FAZY[i];
+        let f = fazy[i];
         let rusi = f.stav != StavObrazu::Zapnuty && necinnost_s < PREBUDENIE_S;
         return Rozhodnutie {
             obraz: f.obraz,
@@ -369,6 +443,7 @@ pub fn rozhodni(
             radice: f.radice,
             jadra_spia: f.spanok,
             zataz: f.zataz,
+            siet_spi: f.siet_spi,
         };
     }
     Rozhodnutie {
@@ -381,6 +456,7 @@ pub fn rozhodni(
         radice: true,
         jadra_spia: true,
         zataz: Zataz::Ziadna,
+        siet_spi: true,
     }
 }
 
@@ -494,8 +570,9 @@ fn c(x: f64) -> String {
 /// nižšia ako v rovnakej fáze 6 (+4,4 °C pri izbe stálej 24,5–24,9 °C). Lineárna oprava „posunu okolia“ by
 /// preto skresľovala. Základom je **fáza 6** (rovnaký stav ako fáza 1, ale so zohriatou krabičkou ako
 /// ostatné fázy) a vedľa je **zmena oproti predošlej fáze** – tá je najspoľahlivejšia.
-pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], pocet: usize, nl: &str) -> String {
-    let n = pocet.min(FAZY.len());
+pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], pocet: usize, rpi: bool, nl: &str) -> String {
+    let fazy = fazy(rpi);
+    let n = pocet.min(fazy.len());
     let zakl = ZAKLAD.min(n - 1);
     let odhady: Vec<Option<Odhad>> = (0..n)
         .map(|i| {
@@ -512,12 +589,12 @@ pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], pocet: usize, nl:
         FAZA_S / 60
     );
     t += &format!(
-        "  {:<26} {:>8} {:>8} {:>12} {:>7} {:>10} {:>12}{nl}",
+        "  {:<33} {:>8} {:>8} {:>12} {:>7} {:>10} {:>12}{nl}",
         "fáza", "začiatok", "koniec", "ustálila by", "τ", "krok", "oproti pôv.*"
     );
-    for (i, f) in FAZY.iter().enumerate().take(n) {
+    for (i, f) in fazy.iter().enumerate().take(n) {
         let Some(o) = odhady[i] else {
-            t += &format!("  {:<26} {:>8}{nl}", format!("{} {}", i + 1, f.nazov), "nemerané");
+            t += &format!("  {:<33} {:>8}{nl}", format!("{} {}", i + 1, f.nazov), "nemerané");
             continue;
         };
         let krok = match (i, i.checked_sub(1).and_then(|p| odhady[p])) {
@@ -533,7 +610,7 @@ pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], pocet: usize, nl:
             None => "–".into(),
         };
         t += &format!(
-            "  {:<26} {:>8} {:>8} {:>12} {:>7} {:>10} {:>12}{}{}{nl}",
+            "  {:<33} {:>8} {:>8} {:>12} {:>7} {:>10} {:>12}{}{}{nl}",
             format!("{} {}", i + 1, f.nazov),
             format!("{} °C", c(o.zaciatok)),
             format!("{} °C", c(o.koniec)),
@@ -558,6 +635,39 @@ pub fn vysledok_pokusu(krivka: &[(u64, f64)], rusene: &[bool], pocet: usize, nl:
         );
     }
     t += &format!("  krok = zmena oproti predošlej fáze · ≈ = fáza krátka na spoľahlivý odhad{nl}");
+    // R192: čo hreje – úspora každého opatrenia, od najväčšej
+    let mut uspory: Vec<(&str, f64, bool)> = rozbor(rpi)
+        .iter()
+        .filter(|(_, bez, s)| *bez < n && *s < n)
+        .filter_map(|&(popis, bez, s)| {
+            let (a, b) = (odhady[bez]?, odhady[s]?);
+            let rus = rusene.get(bez).copied().unwrap_or(false) || rusene.get(s).copied().unwrap_or(false);
+            Some((popis, a.ustalena - b.ustalena, rus || !a.spolahlivy || !b.spolahlivy))
+        })
+        .collect();
+    if !uspory.is_empty() {
+        let spolu = uspory.iter().position(|u| u.0 == "všetko spolu").map(|i| uspory.remove(i));
+        uspory.sort_by(|a, b| b.1.total_cmp(&a.1));
+        t += &format!("  čo hreje – úspora opatrení (fáza bez − fáza s ním), od najväčšej:{nl}");
+        for (popis, d, neiste) in uspory.iter().chain(spolu.iter()) {
+            t += &format!(
+                "    {:<48} {:>9}{}{nl}",
+                popis,
+                znamienko(-d),
+                if *neiste { " (neisté)" } else { "" }
+            );
+        }
+    }
+    // R192: RPi – fázy 6 a 8 sú rovnaké; ich rozdiel je presnosť merania
+    if rpi
+        && n > 7
+        && let (Some(a), Some(b)) = (odhady[5], odhady[7])
+    {
+        t += &format!(
+            "  presnosť: rovnaký stav (fázy 6 a 8) sa líši o {} °C – menšie úspory sú v rámci chyby merania{nl}",
+            c((a.ustalena - b.ustalena).abs())
+        );
+    }
     if n > ZAKLADNE_FAZY {
         t += &format!(
             "  fázy {}–{n}: dlhý test hardvéru (R184) – záťaž jadier a pamäte pri vypnutom obraze, potom chladnutie{nl}",
@@ -695,9 +805,46 @@ pub fn nastav_spanok_usb_stromu(koren: &Path, spat: bool) -> usize {
 
 /// R191: súčet času v spánku a v činnosti (ms) zariadení stromu USB bez koreňových rozbočovačov a úložísk.
 pub fn cas_spanku_usb_stromu(koren: &Path) -> Option<(u64, u64)> {
+    cas_spanku_stromu(koren, false)
+}
+
+/// R192: čas v spánku a v činnosti (ms) zariadení **priamo na koreňovom porte** (1-1, 2-1 …) – keď spia,
+/// port je uspaný a radič neposiela mikrorámce: na RPi 1–3 zmizne 8000 prerušení FIQ za sekundu a čip USB
+/// a siete (LAN7515/LAN9514 – je to ten rozbočovač na porte 1-1) je v najúspornejšom stave.
+pub fn cas_spanku_zbernice_usb(koren: &Path) -> Option<(u64, u64)> {
+    cas_spanku_stromu(koren, true)
+}
+
+/// Zariadenie USB `1-1` je priamo na koreňovom porte (nie `usb1`, nie `1-1.3`).
+fn na_koreni(p: &Path) -> bool {
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.split_once('-'))
+        .is_some_and(|(zb, port)| !zb.starts_with("usb") && !port.contains('.'))
+}
+
+/// R192: zariadenia stromu USB, ktoré práve bdejú (meno a výrobok) – čo drží zbernicu hore.
+pub fn usb_bdiace(koren: &Path) -> Vec<String> {
+    usb_ostatne(koren)
+        .into_iter()
+        .filter(|(p, _, _, koren_hub)| {
+            !koren_hub
+                && fs::read_to_string(p.join("power/runtime_status")).is_ok_and(|s| s.trim() == "active")
+        })
+        .map(|(p, _, _, _)| {
+            let meno = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            match fs::read_to_string(p.join("product")) {
+                Ok(v) if !v.trim().is_empty() => format!("{meno} {}", v.trim()),
+                _ => meno,
+            }
+        })
+        .collect()
+}
+
+fn cas_spanku_stromu(koren: &Path, len_koren: bool) -> Option<(u64, u64)> {
     let (mut spi, mut bdie, mut nasiel) = (0u64, 0u64, false);
     for (p, _, _, koren_hub) in usb_ostatne(koren) {
-        if koren_hub {
+        if koren_hub || (len_koren && !na_koreni(&p)) {
             continue;
         }
         let cislo = |s: &str| fs::read_to_string(p.join("power").join(s)).ok()?.trim().parse::<u64>().ok();
@@ -812,32 +959,67 @@ mod skusky {
         assert_eq!(milniky_pokusu(ZAKLADNE_FAZY), vec![0, 15, 30, 45, 60, 75, 90, 105, 120, 135]);
         assert_eq!(milniky_pokusu(pocet_faz(true)).last(), Some(&180));
         assert_eq!(
-            rozhodni(Some(FAZA_S * 6 + 1), ZAKLADNE_FAZY, 10_000, Ciel::Chladny, &z).vpu_mhz,
+            rozhodni(Some(FAZA_S * 6 + 1), ZAKLADNE_FAZY, &FAZY, 10_000, Ciel::Chladny, &z).vpu_mhz,
             Some(VPU_PARKOVANY)
         );
         assert_eq!(
-            rozhodni(Some(FAZA_S * 6 + 1), ZAKLADNE_FAZY, 5, Ciel::Chladny, &z).vpu_mhz,
+            rozhodni(Some(FAZA_S * 6 + 1), ZAKLADNE_FAZY, &FAZY, 5, Ciel::Chladny, &z).vpu_mhz,
             Some(VPU_STREDNY)
         );
         assert_eq!(
-            rozhodni(Some(FAZA_S * 3 + 1), ZAKLADNE_FAZY, 10_000, Ciel::Chladny, &z).vpu_mhz,
+            rozhodni(Some(FAZA_S * 3 + 1), ZAKLADNE_FAZY, &FAZY, 10_000, Ciel::Chladny, &z).vpu_mhz,
             Some(VPU_STREDNY)
         );
         assert_eq!(takt_vpu(StavObrazu::Zapnuty), VPU_PLNY, "pri obraze plný – R182");
         assert_eq!(takt_vpu(StavObrazu::Cierny), VPU_PLNY);
         assert_eq!(takt_vpu(StavObrazu::Vypnuty), VPU_PARKOVANY);
-        let r = rozhodni(Some(FAZA_S * 4 + 10), ZAKLADNE_FAZY, 10_000, Ciel::Chladny, &z);
+        let r = rozhodni(Some(FAZA_S * 4 + 10), ZAKLADNE_FAZY, &FAZY, 10_000, Ciel::Chladny, &z);
         assert_eq!((r.stav, r.faza, r.rusi), (StavObrazu::Cierny, Some(4), false));
         // ovládač stlačený pred 20 s – obraz sa zapne, fáza je rušená
-        let r = rozhodni(Some(FAZA_S * 4 + 10), ZAKLADNE_FAZY, 20, Ciel::Chladny, &z);
+        let r = rozhodni(Some(FAZA_S * 4 + 10), ZAKLADNE_FAZY, &FAZY, 20, Ciel::Chladny, &z);
         assert_eq!((r.stav, r.rusi), (StavObrazu::Zapnuty, true));
-        let r = rozhodni(Some(10), ZAKLADNE_FAZY, 0, Ciel::Chladny, &z);
+        let r = rozhodni(Some(10), ZAKLADNE_FAZY, &FAZY, 0, Ciel::Chladny, &z);
         assert_eq!((r.obraz, r.periferie, r.rusi), (Ciel::Povodny, false, false));
         // po pokuse bežná politika
-        let r = rozhodni(Some(FAZA_S * 9), ZAKLADNE_FAZY, 700, Ciel::Chladny, &z);
+        let r = rozhodni(Some(FAZA_S * 9), ZAKLADNE_FAZY, &FAZY, 700, Ciel::Chladny, &z);
         assert_eq!((r.obraz, r.stav, r.faza), (Ciel::Chladny, StavObrazu::Vypnuty, None));
-        let r = rozhodni(None, ZAKLADNE_FAZY, 0, Ciel::Chladny, &z);
+        let r = rozhodni(None, ZAKLADNE_FAZY, &FAZY, 0, Ciel::Chladny, &z);
         assert!(r.periferie);
+    }
+
+    #[test]
+    fn fazy_rpi_kazde_opatrenie_zvlast() {
+        let z = Zhasinanie::pre_tv(None, None);
+        let f = fazy(true);
+        // fáza 2 = úsporné periférie bez spánku siete, fáza 3 = len navyše spánok siete
+        assert!(f[1].periferie && !f[1].siet_spi && f[2].periferie && f[2].siet_spi);
+        assert_eq!((f[1].obraz, f[1].stav), (f[2].obraz, f[2].stav));
+        assert!(f.iter().take(ZAKLADNE_FAZY).all(|x| x.vpu_mhz == VPU_PLNY), "RPi takt VPU nemení");
+        assert!(f[7].radice && f.iter().take(ZAKLADNE_FAZY).filter(|x| x.radice).count() == 1);
+        assert!(!f[6].periferie && f[6].stav == StavObrazu::Vypnuty);
+        assert_eq!(f[ZAKLAD].nazov, FAZY[ZAKLAD].nazov);
+        let r = rozhodni(Some(FAZA_S + 5), ZAKLADNE_FAZY, f, 10_000, Ciel::Chladny, &z);
+        assert!(r.periferie && !r.siet_spi);
+        let r = rozhodni(Some(FAZA_S * 2 + 5), ZAKLADNE_FAZY, f, 10_000, Ciel::Chladny, &z);
+        assert!(r.periferie && r.siet_spi);
+        assert!(rozhodni(None, ZAKLADNE_FAZY, f, 0, Ciel::Chladny, &z).siet_spi);
+        // TV krabička: sieť spí vždy s úspornými perifériami (ako doteraz)
+        assert!(FAZY.iter().all(|x| x.siet_spi == x.periferie || x.zataz != Zataz::Ziadna || x.spanok));
+        // rozbor zoradí úspory od najväčšej
+        let ciele = [52.0, 50.0, 46.0, 45.0, 44.5, 43.5, 46.5, 43.3, 52.0];
+        let mut krivka = Vec::new();
+        for (i, &c) in ciele.iter().enumerate() {
+            // ustálené fázy (bez bodov na hraniciach – tie patria obom)
+            for k in 1..(FAZA_S / 30) {
+                krivka.push((i as u64 * FAZA_S + k * 30, c));
+            }
+        }
+        let v = vysledok_pokusu(&krivka, &[false; 12], ZAKLADNE_FAZY, true, "\n");
+        let riadky: Vec<&str> = v.lines().skip_while(|l| !l.contains("čo hreje")).skip(1).collect();
+        assert!(riadky[0].contains("čip siete") && riadky[0].contains("-4,0 °C"), "{v}");
+        assert!(riadky.iter().any(|l| l.contains("všetko spolu") && l.contains("-8,7 °C")), "{v}");
+        assert!(riadky.iter().any(|l| l.contains("pri vypnutom obraze") && l.contains("-3,2 °C")), "{v}");
+        assert!(v.contains("líši o 0,2 °C"), "{v}");
     }
 
     #[test]
@@ -887,6 +1069,7 @@ mod skusky {
             &krivka,
             &[false, false, false, false, true, false, false, false, false],
             ZAKLADNE_FAZY,
+            false,
             "\n",
         );
         let riadok = |z: &str| r.lines().find(|l| l.contains(z)).unwrap_or_default().to_string();
@@ -951,6 +1134,12 @@ mod skusky {
         assert_eq!(fs::read_to_string(z.join("1-1.3/power/control")).unwrap(), "on");
         // bez koreňového rozbočovača a úložiska: 1-1 a 1-1.2
         assert_eq!(cas_spanku_usb_stromu(&k), Some((6000, 2000)));
+        // R192: zbernica = len 1-1 (priamo na koreňovom porte)
+        assert_eq!(cas_spanku_zbernice_usb(&k), Some((3000, 1000)));
+        fs::write(z.join("1-1/power/runtime_status"), "suspended").unwrap();
+        fs::write(z.join("1-1.2/power/runtime_status"), "active").unwrap();
+        fs::write(z.join("1-1.2/product"), "USB Keyboard\n").unwrap();
+        assert_eq!(usb_bdiace(&k), vec!["1-1.2 USB Keyboard".to_string()]);
         nastav_spanok_usb_stromu(&k, false);
         assert_eq!(fs::read_to_string(z.join("1-1.2/power/control")).unwrap(), "on");
         assert_eq!(fs::read_to_string(z.join("1-1/power/control")).unwrap(), "auto");

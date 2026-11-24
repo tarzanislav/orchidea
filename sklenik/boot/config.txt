@@ -80,3 +80,5 @@ initramfs initramfs8.cpio.gz followkernel
 [all]
 # R190: obraz cez vlastný ovládač KLÍČA (KMS, jadro vc4) – súbor spravuje KLÍČ podľa obraz_kms v SKLENIK.TXT
 include sklenik-obraz.txt
+# R198: chladný pokoj – nižšie napätie čipu len v pokoji (RPi 2, 3, Zero 2 W) s poistkou; spravuje KLÍČ
+include sklenik-pokoj.txt

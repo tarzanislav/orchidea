@@ -75,6 +75,9 @@ mod zaznam;
 // vlastný klient schránky firmvéru Raspberry Pi – takty, napätia, škrtenie VideoCore (R193)
 #[cfg(target_os = "linux")]
 mod vcio;
+// R198: chladný pokoj – nižšie napätie čipu RPi 2/3 len v pokoji, s poistkou
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod pokoj;
 
 /// Verzia SKLENÍKA (dátum a odtlačok zostavenia z CI) – na obrazovke, aby bolo vidieť, ktorá karta beží.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
