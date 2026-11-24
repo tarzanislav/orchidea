@@ -11,6 +11,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "orchidea-farba"
+version = "0.1.0"
+dependencies = [
+ "orchidea-jadro",
+]
+
+[[package]]
 name = "orchidea-formaty"
 version = "0.1.0"
 dependencies = [

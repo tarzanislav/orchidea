@@ -224,6 +224,30 @@
       "posudenie_charty": "slobodné knižnice bez vojenského účelu; použité len ako rozhodcovia správnosti, žiadny ich kód nie je v ORCHIDEI"
     },
     {
+      "meno": "rozhodcovia farby: colour-science, OpenColorIO (PyOpenColorIO), Little CMS (cez Pillow ImageCms), NumPy",
+      "trieda": "B",
+      "licencia": "BSD-3-Clause (colour-science, OpenColorIO, NumPy), MIT (Little CMS), MIT-CMU (Pillow)",
+      "kde": "len CI – farba/nastroje/over_farbu.py (inštalácia cez pip pri behu), nie je v repozitári ani v programe",
+      "ucel": "nezávislé overenie balíka farba: prenosové funkcie a matice (colour-science), prevody ICC (Little CMS), výstup ACES 1.x RRT + ODT (vstavaná transformácia OpenColorIO)",
+      "posudenie_charty": "slobodné knižnice bez vojenského účelu; použité len ako rozhodcovia správnosti, žiadny ich kód nie je v ORCHIDEI"
+    },
+    {
+      "meno": "profily ICC na skúšky: icc-profiles-free a profily Ghostscriptu (libgs-common) z balíkov Ubuntu",
+      "trieda": "B",
+      "licencia": "slobodné licencie balíkov Debianu/Ubuntu (icc-profiles-free: zlib, public domain a podobné; Ghostscript: AGPL-3.0 – len dáta profilov, nič sa neprepája)",
+      "kde": "len CI – inštalácia cez apt pri behu, nie je v repozitári ani v programe",
+      "ucel": "skúšobné profily rôznych druhov (matica + TRC, sivé, Lab, CMYK s tabuľkami lut16 a lutAtoB/BtoA) pre porovnanie čítačky ICC s Little CMS",
+      "posudenie_charty": "dáta profilov bez vojenského účelu; použité len ako vstup skúšok"
+    },
+    {
+      "meno": "ACES 1.3 – transformácie Akadémie (aces-dev, CTL) a bulletiny TB-2014-002, TB-2014-012, S-2014-003, S-2016-001",
+      "trieda": "B",
+      "licencia": "licencia ACES (Academy of Motion Picture Arts and Sciences): bezplatné používanie, úpravy a odvodené diela",
+      "kde": "nie je v repozitári – text normy, z ktorého je napísaný farba/src/aces.rs (konštanty a postup RRT/ODT)",
+      "ucel": "ACES 1.x definuje RRT a ODT normatívne textom transformácií; balík farba ich počíta vlastným kódom z matematického popisu",
+      "posudenie_charty": "otvorená norma filmového priemyslu bez vojenského účelu"
+    },
+    {
       "meno": "skúšobné súbory JPEG XL z libjxl (formaty/tests/data/*.jxl a výstupy libjxl v *.png)",
       "trieda": "B",
       "licencia": "BSD-3-Clause (libjxl, nástroj, ktorý ich vytvoril)",

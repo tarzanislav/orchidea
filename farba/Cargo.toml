@@ -1,0 +1,18 @@
+[package]
+name = "orchidea-farba"
+description = "Farba vlastným kódom – prenosové funkcie, základné farby a adaptácia, ICC v2/v4 (čítanie, zápis, prevody), ACES"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[dependencies]
+orchidea-jadro.workspace = true
+
+[lints]
+workspace = true

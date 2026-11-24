@@ -437,6 +437,34 @@ jobs:
             ORCHIDEA_FUZZER=100000 ORCHIDEA_FUZZER_SEMIENKO=$s cargo test --locked --release -p orchidea-formaty --test fuzzer
           done
 
+  farba:
+    name: Farba – nezávislé overenie (colour-science, Little CMS, OpenColorIO) a fuzzer ICC (R211)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Rozhodcovia (colour-science, OpenColorIO, Little CMS cez Pillow) a profily ICC (icc-profiles-free, Ghostscript)
+        run: |
+          python3 -m pip install --user --break-system-packages numpy Pillow colour-science opencolorio
+          sh nastroje/balicky.sh icc-profiles-free libgs-common
+      - name: Zostavenie
+        run: cargo build --locked --release -p orchidea-farba --example rozhodca
+      - name: Porovnanie s rozhodcami
+        shell: bash
+        run: |
+          echo "### Farba – nezávislé overenie" >> "$GITHUB_STEP_SUMMARY"
+          kod=0
+          python3 farba/nastroje/over_farbu.py target/release/examples/rozhodca /usr/share/color/icc > vysledok.md || kod=$?
+          { echo '```'; cat vysledok.md; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat vysledok.md
+          exit $kod
+      - name: Dlhý fuzzer čítačky ICC (štyri semienka)
+        run: |
+          for s in 1 2 3 4; do
+            ORCHIDEA_FUZZER=200000 ORCHIDEA_FUZZER_SEMIENKO=$s cargo test --locked --release -p orchidea-farba --test fuzzer
+          done
+
   shadery:
     name: Overenie shaderov – ${{ matrix.meno }}
     strategy:

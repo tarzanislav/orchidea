@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["jadro", "gpu", "neuron", "pismo", "zariadenie", "teplo", "dlazdice", "formaty", "hevc", "hevc-dekoder", "sklenik/karta", "sklenik/klic", "sklenik/korene", "sklenik/sadic"]
+members = ["jadro", "gpu", "neuron", "pismo", "zariadenie", "teplo", "dlazdice", "farba", "formaty", "hevc", "hevc-dekoder", "sklenik/karta", "sklenik/klic", "sklenik/korene", "sklenik/sadic"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,6 +19,7 @@ orchidea-pismo = { path = "pismo" }
 orchidea-zariadenie = { path = "zariadenie" }
 orchidea-teplo = { path = "teplo" }
 orchidea-dlazdice = { path = "dlazdice" }
+orchidea-farba = { path = "farba" }
 orchidea-formaty = { path = "formaty" }
 orchidea-hevc = { path = "hevc" }
 orchidea-hevc-dekoder = { path = "hevc-dekoder" }
