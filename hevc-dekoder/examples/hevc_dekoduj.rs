@@ -53,7 +53,10 @@ fn odtlacky_pri_toku(tok: &Path) -> Odtlacky {
         }
         let velkost = std::fs::metadata(&k).map_or(0, |m| m.len());
         if !male.contains("md5") || velkost > 1 << 20 {
-            o.opis.push(format!("{meno} ({velkost} B)"));
+            // na diagnostiku len súbory, ktoré môžu niesť odtlačok výstupu (nie ďalšie toky v priečinku)
+            if [".yuv", ".txt", ".sha1", ".crc"].iter().any(|p| male.ends_with(p)) {
+                o.opis.push(format!("{meno} ({velkost} B)"));
+            }
             continue;
         }
         let Ok(t) = std::fs::read(&k) else { continue };
@@ -89,6 +92,7 @@ fn main() {
     println!("| Tok | obrazov | MD5 SEI zhoda | nezhoda | bez SEI | výstup YUV | obr./s | poznámka |");
     println!("|---|---|---|---|---|---|---|---|");
     let (mut presnych, mut zlych, mut mimo, mut neoverenych) = (0usize, 0usize, 0usize, 0usize);
+    let (mut obrazov_spolu, mut cas_spolu) = (0usize, 0f64);
     for cesta in &zoznam {
         let Ok(data) = std::fs::read(cesta) else { continue };
         let meno = cesta.file_name().map_or_else(String::new, |m| m.to_string_lossy().into_owned());
@@ -100,7 +104,11 @@ fn main() {
         // varianty pre diagnostiku nezhody celého výstupu: 16-bitové vzorky a obraz bez orezania
         let mut md5_16 = Md5::novy();
         let mut md5_cely = Md5::novy();
-        let ocakavane = odtlacky_pri_toku(cesta);
+        let ocakavane = if rychlost {
+            Odtlacky { cele: Vec::new(), zoznamy: Vec::new(), opis: Vec::new() }
+        } else {
+            odtlacky_pri_toku(cesta)
+        };
         let diagnostika = !(ocakavane.cele.is_empty() && ocakavane.zoznamy.is_empty()) && !rychlost;
         // MD5 každého vydaného obrazu a každej jeho roviny (pre zoznamy odtlačkov po obrazoch)
         let (mut po_obrazoch, mut po_rovinach) = (Vec::new(), Vec::new());
@@ -158,6 +166,8 @@ fn main() {
         spracuj(o);
         let cas = start.elapsed().as_secs_f64();
         let s = &d.statistika;
+        obrazov_spolu += s.obrazov;
+        cas_spolu += cas;
         let vystup_md5 = hex(&md5.vysledok());
         let (v16, vcely) = (hex(&md5_16.vysledok()), hex(&md5_cely.vysledok()));
         let tok_md5 = {
@@ -236,13 +246,22 @@ fn main() {
         );
     }
     println!();
-    println!(
-        "**Tokov: {}, bitovo presných: {presnych}, s chybou: {zlych}, bez odtlačku na overenie: {neoverenych}, \
-         mimo profilu Main 8-bit: {mimo}**",
-        zoznam.len()
-    );
+    if rychlost {
+        println!(
+            "**Tokov: {}, obrazov: {obrazov_spolu}, spolu {:.1} obr./s, s chybou: {zlych}, mimo profilu Main 8-bit: {mimo}** \
+             (meranie rýchlosti bez overovania)",
+            zoznam.len(),
+            obrazov_spolu as f64 / cas_spolu.max(1e-9)
+        );
+    } else {
+        println!(
+            "**Tokov: {}, bitovo presných: {presnych}, s chybou: {zlych}, bez odtlačku na overenie: {neoverenych}, \
+             mimo profilu Main 8-bit: {mimo}**",
+            zoznam.len()
+        );
+    }
     // prísne (CI): každý tok v profile musí byť bitovo presný a overený (SEI alebo MD5 celého výstupu)
-    if prisne && (zlych > 0 || neoverenych > 0) {
+    if prisne && (zlych > 0 || (neoverenych > 0 && !rychlost)) {
         std::process::exit(1);
     }
 }

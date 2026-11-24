@@ -128,3 +128,28 @@ jobs:
             ORCHIDEA_HEVC_VLAKNA=$n cargo run --locked --release -q -p orchidea-hevc-dekoder --example hevc_dekoduj -- \
               $vyber | grep -E '^\|' | cut -d'|' -f1-3,8,10 | tee -a "$GITHUB_STEP_SUMMARY"
           done
+      - name: Balík na meranie na Raspberry Pi (64-bit – RPi 3, 4, 5, Zero 2 W)
+        if: matrix.os == 'ubuntu-24.04-arm'
+        shell: bash
+        run: |
+          b=orchidea-hevc-rpi-64bit
+          mkdir -p "$b/toky"
+          z="-hide_banner -loglevel error -y -f lavfi"
+          film() {
+            ffmpeg $z -i "testsrc2=size=$2:rate=24" -frames:v 96 -c:v libx265 -preset fast -crf 23 -pix_fmt yuv420p \
+              -x265-params "log-level=error:hash=1" "$b/toky/$1.hevc"
+          }
+          film film720 1280x720
+          film film1080 1920x1080
+          for d in toky/norma/AMP_D* toky/norma/TILES_A* toky/norma/WPP_D_ericsson_MAIN_*; do
+            if [ -d "$d" ]; then cp -r "$d" "$b/toky/"; fi
+          done
+          cp target/release/examples/hevc_dekoduj hevc-dekoder/rpi/meraj_hevc.sh "$b/"
+          chmod +x "$b/hevc_dekoduj" "$b/meraj_hevc.sh"
+          du -sh "$b"
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-24.04-arm'
+        with:
+          name: orchidea-hevc-rpi-64bit
+          path: orchidea-hevc-rpi-64bit
+          retention-days: 30
