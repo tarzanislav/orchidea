@@ -374,9 +374,91 @@ def over_tiff(rng):
             zapis_vysledok("TIFF zápis", nazov, False, str(e)[:160])
 
 
+# ---------------------------------------------------------------- OpenEXR
+def over_exr(rng):
+    """Čítanie: súbory z knižnice OpenEXR (oficiálny balík Pythonu) so všetkými kompresiami, ktoré vieme,
+    riadky aj dlaždice; porovnanie bit po bite s jej čítaním. Zápis: náš súbor prečíta OpenEXR."""
+    import OpenEXR
+
+    kompresie = [("NONE", OpenEXR.NO_COMPRESSION), ("RLE", OpenEXR.RLE_COMPRESSION), ("ZIPS", OpenEXR.ZIPS_COMPRESSION),
+                 ("ZIP", OpenEXR.ZIP_COMPRESSION), ("PIZ", OpenEXR.PIZ_COMPRESSION), ("PXR24", OpenEXR.PXR24_COMPRESSION),
+                 ("B44", OpenEXR.B44_COMPRESSION), ("B44A", OpenEXR.B44A_COMPRESSION)]
+    for meno, k in kompresie:
+        for typ in ("half", "float", "zmes", "uint"):
+            for dlazdice in (False, True):
+                h, w = int(rng.integers(3, 80)), int(rng.integers(3, 80))
+                obr = (np.exp(rng.normal(0, 2, (h, w, 4))) * (rng.random((h, w, 4)) < 0.95)).astype(np.float32)
+                if meno in ("B44", "B44A"):
+                    obr[: h // 2, : w // 2] = 0.25  # ploché bloky (B44A ich ukladá 3 bajtmi)
+                ch = {}
+                for i, c in enumerate("RGBA"):
+                    kanal = np.ascontiguousarray(obr[:, :, i])
+                    if typ == "half" or (typ == "zmes" and c != "B"):
+                        ch[c] = kanal.astype(np.float16)
+                    elif typ == "uint":
+                        ch[c] = (kanal * 1000).astype(np.uint32)
+                    else:
+                        ch[c] = kanal
+                hdr = {"compression": k, "type": OpenEXR.tiledimage if dlazdice else OpenEXR.scanlineimage}
+                if dlazdice:
+                    td = OpenEXR.TileDescription()
+                    td.xSize, td.ySize = 16, 8
+                    hdr["tiles"] = td
+                nazov = f"{meno} {typ}{' dlaždice' if dlazdice else ''}"
+                cesta = os.path.join(PRAC, f"exr_{meno}_{typ}_{int(dlazdice)}.exr")
+                try:
+                    with OpenEXR.File(hdr, ch) as f:
+                        f.write(cesta)
+                    ref_ch = OpenEXR.File(cesta, separate_channels=True).channels()
+                    ref = np.stack([ref_ch[c].pixels.astype(np.float32) for c in "RGBA"], axis=-1)
+                    nas = nase(cesta)
+                    ok = nas.shape == ref.shape and np.array_equal(nas, ref, equal_nan=True)
+                    pozn = "bit po bite" if ok else (f"max rozdiel {np.nanmax(np.abs(nas - ref)):.4g}" if nas.shape == ref.shape else f"tvar {nas.shape}")
+                    zapis_vysledok("OpenEXR čítanie", nazov, ok, pozn)
+                except Exception as e:  # noqa: BLE001
+                    zapis_vysledok("OpenEXR čítanie", nazov, False, str(e)[:160])
+    # podvzorkovaný kanál a posunuté dataWindow
+    try:
+        h, w = 24, 32
+        y = rng.random((h, w)).astype(np.float16)
+        hdr = {"compression": OpenEXR.ZIP_COMPRESSION, "type": OpenEXR.scanlineimage,
+               "dataWindow": (np.array([-7, 5], dtype=np.int32), np.array([w - 8, h + 4], dtype=np.int32)),
+               "displayWindow": (np.array([0, 0], dtype=np.int32), np.array([63, 63], dtype=np.int32))}
+        cesta = os.path.join(PRAC, "exr_okno.exr")
+        with OpenEXR.File(hdr, {"Y": y}) as f:
+            f.write(cesta)
+        nas = nase(cesta)[:, :, 0]
+        zapis_vysledok("OpenEXR čítanie", "sivý Y, posunuté dataWindow", np.array_equal(nas, y.astype(np.float32)), "")
+    except Exception as e:  # noqa: BLE001
+        zapis_vysledok("OpenEXR čítanie", "sivý Y, posunuté dataWindow", False, str(e)[:160])
+    # zápis
+    for meno in ("zip", "zips", "rle", "none"):
+        for polovicna in (True, False):
+            nazov = f"{meno.upper()} {'half' if polovicna else 'float'}"
+            try:
+                obr = np.exp(rng.normal(0, 1.5, (33, 45, 4))).astype(np.float32)
+                if polovicna:
+                    obr = obr.astype(np.float16).astype(np.float32)
+                zdroj = os.path.join(PRAC, f"exr_zdroj_{meno}_{int(polovicna)}.exr")
+                with OpenEXR.File({"compression": OpenEXR.NO_COMPRESSION, "type": OpenEXR.scanlineimage},
+                                  {c: np.ascontiguousarray(obr[:, :, i]) for i, c in enumerate("RGBA")}) as f:
+                    f.write(zdroj)
+                nas_exr = zdroj + ".nase.exr"
+                env = dict(os.environ, ORCHIDEA_EXR=f"{meno},{'half' if polovicna else 'float'}")
+                r = subprocess.run([PROGRAM, "prevod", zdroj, nas_exr], capture_output=True, text=True, env=env)
+                if r.returncode != 0:
+                    raise RuntimeError(r.stderr)
+                ref_ch = OpenEXR.File(nas_exr, separate_channels=True).channels()
+                spat = np.stack([ref_ch[c].pixels.astype(np.float32) for c in "RGBA"], axis=-1)
+                ok = np.array_equal(spat, obr)
+                zapis_vysledok("OpenEXR zápis", nazov, ok, f"OpenEXR prečíta bit po bite; {os.path.getsize(nas_exr)} B")
+            except Exception as e:  # noqa: BLE001
+                zapis_vysledok("OpenEXR zápis", nazov, False, str(e)[:160])
+
+
 def main():
     rng = np.random.default_rng(2026)
-    overenia = {"png": over_png, "jpeg": over_jpeg, "tiff": over_tiff}
+    overenia = {"png": over_png, "jpeg": over_jpeg, "tiff": over_tiff, "exr": over_exr}
     for meno, f in overenia.items():
         if not VYBER or meno in VYBER:
             f(rng)

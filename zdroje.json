@@ -216,7 +216,7 @@
       "posudenie_charty": "slobodný projekt; samostatný firmvér pred štartom systému, so SKLENÍKOM sa nezlučuje"
     },
     {
-      "meno": "rozhodcovia obrazových formátov: imagecodecs (s knižnicami libpng, libjpeg-turbo, libtiff, libjxl, OpenEXR, zlib), Pillow, tifffile, NumPy",
+      "meno": "rozhodcovia obrazových formátov: imagecodecs (s knižnicami libpng, libjpeg-turbo, libtiff, libjxl, OpenEXR, zlib), Pillow, tifffile, OpenEXR (balík Pythonu), NumPy",
       "trieda": "B",
       "licencia": "BSD-3-Clause (imagecodecs, tifffile, NumPy, libjxl, OpenEXR), MIT-CMU (Pillow), libpng, IJG a BSD-3 (libjpeg-turbo), libtiff, Zlib",
       "kde": "len CI – formaty/nastroje/over_formaty.py (inštalácia cez pip pri behu), nie je v repozitári ani v programe",

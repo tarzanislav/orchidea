@@ -3,7 +3,7 @@
 //! skrátenie, zväčšenie rozmerov v hlavičke a zámena úsekov. Semienko je pevné – chyba sa dá zopakovať.
 
 use orchidea_formaty::obraz::{Limity, Model, Obraz, Vzorky};
-use orchidea_formaty::{deflate, jpeg, png, tiff};
+use orchidea_formaty::{deflate, exr, jpeg, png, tiff};
 use orchidea_jadro::nahoda::Nahoda;
 
 /// Prísne limity – fuzzer nesmie alokovať veľa pamäte ani pri „platnom“ obrovskom rozmere.
@@ -167,6 +167,38 @@ fn fuzzer_tiff() {
             let _ = tiff::pocet_stran(d);
         },
         14,
+    );
+}
+
+#[test]
+fn fuzzer_exr() {
+    let mut zaklady = Vec::new();
+    for (model, alfa) in [(Model::Rgb, true), (Model::Siva, false)] {
+        let k = if model == Model::Siva { 1 } else { 3 } + alfa as usize;
+        let v: Vec<f32> = (0..9 * 37 * k).map(|i| (i as f32 * 0.31).sin() * 3.0).collect();
+        let o = Obraz::novy(9, 37, model, alfa, Vzorky::F32(v)).unwrap();
+        for kompresia in [exr::Kompresia::Zip, exr::Kompresia::Rle, exr::Kompresia::Ziadna] {
+            for polovicna in [true, false] {
+                let e = exr::zapis(&o, &exr::NastavenieExr { polovicna, kompresia }).unwrap();
+                // tá istá hlavička s inými kompresiami – fuzzer tak skúša aj PIZ, PXR24, B44 a DWA s cudzími údajmi
+                let p = e.windows(12).position(|w| w == b"compression\0").unwrap() + 12 + 12 + 4;
+                for c in 0..10u8 {
+                    let mut x = e.clone();
+                    x[p] = c;
+                    zaklady.push(x);
+                }
+            }
+        }
+    }
+    let l = limity();
+    fuzz(
+        "OpenEXR",
+        &zaklady,
+        |d| {
+            let _ = exr::citaj(d, &l);
+            let _ = exr::citaj_hlavicku(d);
+        },
+        15,
     );
 }
 

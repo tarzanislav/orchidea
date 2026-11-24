@@ -5,7 +5,7 @@
 //! - `formaty zlib-zbal <úroveň> <vstup> <výstup>`, `formaty zlib-rozbal <vstup> <výstup>`
 //!
 //! Formát `.surove`: riadok „šírka výška kanály typ“ (typ u8, u16 alebo f32) a vzorky little-endian.
-use orchidea_formaty::{Format, Limity, Obraz, Vzorky, citaj, deflate, jpeg, zapis};
+use orchidea_formaty::{Format, Limity, Obraz, Vzorky, citaj, deflate, exr, jpeg, zapis};
 use std::process::ExitCode;
 
 fn surove(o: &Obraz) -> Vec<u8> {
@@ -62,7 +62,20 @@ fn spusti(a: &[String]) -> Result<(), String> {
                         let nast = jpeg::NastavenieJpeg { kvalita, progresivny, ..Default::default() };
                         jpeg::zapis(&o, &nast).map_err(|e| e.to_string())?
                     }
-                    _ => zapis(&o, f).map_err(|e| e.to_string())?,
+                    _ => match (f, std::env::var("ORCHIDEA_EXR")) {
+                        // nastavenie zápisu OpenEXR pre skúšky: „zip|zips|rle|none,half|float“
+                        (Format::Exr, Ok(n)) => {
+                            let kompresia = match n.split(',').next() {
+                                Some("none") => exr::Kompresia::Ziadna,
+                                Some("rle") => exr::Kompresia::Rle,
+                                Some("zips") => exr::Kompresia::Zips,
+                                _ => exr::Kompresia::Zip,
+                            };
+                            let nast = exr::NastavenieExr { polovicna: !n.ends_with("float"), kompresia };
+                            exr::zapis(&o, &nast).map_err(|e| e.to_string())?
+                        }
+                        _ => zapis(&o, f).map_err(|e| e.to_string())?,
+                    },
                 }
             };
             std::fs::write(&a[3], d).map_err(|e| e.to_string())

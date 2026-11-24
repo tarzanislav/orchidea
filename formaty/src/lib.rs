@@ -3,11 +3,13 @@
 
 pub mod deflate;
 pub mod exif;
+pub mod exr;
 pub mod huffman;
 pub mod jpeg;
 pub mod kontrola;
 pub mod obraz;
 pub mod png;
+pub mod polovicna;
 pub mod tiff;
 
 pub use obraz::{Cicp, Farba, Limity, Metadata, Model, Obraz, Vzorky};
@@ -20,6 +22,7 @@ pub enum Format {
     Png,
     Jpeg,
     Tiff,
+    Exr,
 }
 
 impl Format {
@@ -28,6 +31,7 @@ impl Format {
             Format::Png => "PNG",
             Format::Jpeg => "JPEG",
             Format::Tiff => "TIFF",
+            Format::Exr => "OpenEXR",
         }
     }
 
@@ -37,6 +41,7 @@ impl Format {
             "png" | "apng" => Some(Format::Png),
             "jpg" | "jpeg" | "jpe" | "jfif" => Some(Format::Jpeg),
             "tif" | "tiff" => Some(Format::Tiff),
+            "exr" => Some(Format::Exr),
             _ => None,
         }
     }
@@ -53,6 +58,9 @@ pub fn rozpoznaj(data: &[u8]) -> Option<Format> {
     if data.len() >= 4 && matches!(&data[..4], b"II*\0" | b"MM\0*" | b"II+\0" | b"MM\0+") {
         return Some(Format::Tiff);
     }
+    if data.starts_with(&exr::PODPIS) {
+        return Some(Format::Exr);
+    }
     None
 }
 
@@ -62,6 +70,7 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
         Some(Format::Png) => png::citaj(data, limity),
         Some(Format::Jpeg) => jpeg::citaj(data, limity),
         Some(Format::Tiff) => tiff::citaj(data, limity),
+        Some(Format::Exr) => exr::citaj(data, limity),
         None => Err(Chyba::NezhodaTypov { popis: "neznámy obrazový formát".into(), navrh: None }),
     }
 }
@@ -72,5 +81,6 @@ pub fn zapis(obraz: &Obraz, format: Format) -> Vysledok<Vec<u8>> {
         Format::Png => png::zapis(obraz, &png::NastaveniePng::default()),
         Format::Jpeg => jpeg::zapis(obraz, &jpeg::NastavenieJpeg::default()),
         Format::Tiff => tiff::zapis(obraz, &tiff::NastavenieTiff::default()),
+        Format::Exr => exr::zapis(obraz, &exr::NastavenieExr::default()),
     }
 }

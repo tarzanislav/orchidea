@@ -459,7 +459,7 @@ jobs:
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
       - name: Rozhodcovia (libpng, libjpeg-turbo, libtiff, libjxl, OpenEXR cez imagecodecs; Pillow)
-        run: python3 -m pip install --user --break-system-packages numpy Pillow imagecodecs tifffile
+        run: python3 -m pip install --user --break-system-packages numpy Pillow imagecodecs tifffile OpenEXR
       - name: Zostavenie
         run: cargo build --locked --release -p orchidea-formaty --example formaty
       - name: Porovnanie s referenčnými knižnicami v oboch smeroch
