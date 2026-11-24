@@ -3,10 +3,7 @@
 
 use crate::filtre::RezFiltra;
 use crate::geometria::Geometria;
-use crate::obraz::Obraz;
-use crate::odblokovanie;
-use crate::pohyb::PoleKol;
-use crate::sao;
+use crate::obraz::{ObrazPasov, Zdroj};
 use crate::syntax::{DekoderRezu, DekodovanyObraz, ReferencieRezu, StavObrazu};
 use crate::transformacia::FaktorySkalovania;
 use orchidea_hevc::nal::typ;
@@ -16,7 +13,10 @@ use orchidea_hevc::sei::{self, OdtlacokObrazu};
 use orchidea_hevc::{HlavickaNal, HlavickaRezu, Pps, Sady, SpravaObrazov, Sps, rbsp};
 use orchidea_jadro::{Chyba, Vysledok};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::panic::AssertUnwindSafe;
+use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::JoinHandle;
 
 /// Výsledky overenia bitovej zhody.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -37,10 +37,17 @@ pub struct Statistika {
     pub opis_nezhody: Vec<String>,
 }
 
+/// Segment rezu pripravený na dekódovanie: hlavička, dáta (RBSP) a referencie.
+struct SegmentUlohy {
+    rez: HlavickaRezu,
+    data: Vec<u8>,
+    refs: ReferencieRezu,
+    kol: Option<Arc<DekodovanyObraz>>,
+}
+
+/// Rozbieraný obraz (hlavné vlákno zbiera segmenty rezov, kým obraz neskončí).
 struct Aktualny {
-    id: u32,
-    poc: i32,
-    stav: StavObrazu,
+    ciel: Arc<DekodovanyObraz>,
     sps: Arc<Sps>,
     pps: Arc<Pps>,
     geometria: Arc<Geometria>,
@@ -49,9 +56,57 @@ struct Aktualny {
     poradie: usize,
     /// stručný opis segmentov rezov (pre ladenie)
     opis: Vec<String>,
+    segmenty: Vec<SegmentUlohy>,
+}
+
+/// Dekódovanie jedného obrazu – beží v pracovnom vlákne (pri jednom vlákne priamo).
+struct Uloha {
+    ciel: Arc<DekodovanyObraz>,
+    segmenty: Vec<SegmentUlohy>,
+    sps: Arc<Sps>,
+    pps: Arc<Pps>,
+    geometria: Arc<Geometria>,
+    faktory: Option<Arc<FaktorySkalovania>>,
+    odtlacky: Vec<OdtlacokObrazu>,
+    poradie: usize,
+    opis: Vec<String>,
+    overovat: bool,
+}
+
+/// Spoločné pre hlavné a pracovné vlákna: štatistika a počet dokončených úloh.
+#[derive(Default)]
+struct Spolocne {
+    statistika: Mutex<Statistika>,
+    dokoncene: Mutex<usize>,
+    zmena: Condvar,
+}
+
+fn zamkni<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Pracovné vlákna dekódovania obrazov (súbežnosť po obrazoch).
+struct Vlakna {
+    odoslat: Option<SyncSender<Uloha>>,
+    vlakna: Vec<JoinHandle<()>>,
+}
+
+impl Drop for Vlakna {
+    fn drop(&mut self) {
+        self.odoslat = None;
+        for v in self.vlakna.drain(..) {
+            let _ = v.join();
+        }
+    }
 }
 
 /// Softvérový dekodér HEVC.
+///
+/// **Súbežnosť po obrazoch:** hlavné vlákno rozoberá jednotky NAL, hlavičky rezov a spravuje pamäť obrazov;
+/// každý obraz sa dekóduje v pracovnom vlákne. Obraz sa zverejňuje po riadkoch CTB (aj s filtrami v slučke)
+/// a ďalší obraz, ktorý ho má ako referenciu, môže bežať súčasne – čaká len na riadky, ktoré naozaj číta.
+/// Úlohy sa berú v poradí dekódovania a každá čaká len na skoršie, takže najstaršia rozpracovaná úloha vždy
+/// pokračuje (nikdy sa nezasekne). Výsledok je bitovo rovnaký pri ľubovoľnom počte vlákien.
 #[allow(missing_debug_implementations)]
 pub struct Dekoder {
     sady: Sady,
@@ -64,11 +119,15 @@ pub struct Dekoder {
     vystup: Vec<Arc<DekodovanyObraz>>,
     geometria: Option<(Pps, Sps, Arc<Geometria>)>,
     faktory: Option<(Pps, Sps, Arc<FaktorySkalovania>)>,
-    /// voľná pamäť obrazov a stavu na opätovné použitie (chladný systém – žiadne alokácie na obraz)
-    volne_obrazy: Vec<Obraz>,
+    /// stav obrazu na opätovné použitie pri dekódovaní v tomto vlákne (chladný systém – bez alokácií na obraz)
     rezerva_stavu: Option<StavObrazu>,
+    spolocne: Arc<Spolocne>,
+    vlakien: usize,
+    vlakna: Option<Vlakna>,
+    odoslane: usize,
     /// overovať odtlačky MD5 zo SEI (skúšky); pri prehrávaní sa vypne a ušetrí sa práca
     pub overovat_odtlacky: bool,
+    /// výsledky overenia – úplné po [`Dekoder::koniec`]
     pub statistika: Statistika,
 }
 
@@ -128,8 +187,11 @@ impl Dekoder {
             vystup: Vec::new(),
             geometria: None,
             faktory: None,
-            volne_obrazy: Vec::new(),
             rezerva_stavu: None,
+            spolocne: Arc::new(Spolocne::default()),
+            vlakien: std::thread::available_parallelism().map_or(1, |n| n.get()).min(8),
+            vlakna: None,
+            odoslane: 0,
             overovat_odtlacky: true,
             statistika: Statistika::default(),
         }
@@ -140,34 +202,52 @@ impl Dekoder {
         Dekoder { overovat_odtlacky: false, ..Self::novy() }
     }
 
-    /// Obraz z voľnej pamäte (obsah sa celý prepíše dekódovaním), alebo nový.
-    fn vezmi_obraz(&mut self, sirka: usize, vyska: usize) -> Obraz {
-        match self.volne_obrazy.iter().position(|o| o.sirka() == sirka && o.vyska() == vyska) {
-            Some(i) => self.volne_obrazy.swap_remove(i),
-            None => Obraz::novy(sirka, vyska),
-        }
-    }
-
-    fn vrat_obraz(&mut self, o: Obraz) {
-        if self.volne_obrazy.len() < 4 && o.sirka() > 0 {
-            self.volne_obrazy.push(o);
-        }
+    /// Počet vlákien dekódovania (predvolene počet jadier, najviac 8; 1 = všetko v hlavnom vlákne).
+    pub fn s_vlaknami(mut self, n: usize) -> Dekoder {
+        self.vlakien = n.max(1);
+        self
     }
 
     /// Spracuje jednotku NAL (bez štartovacieho kódu) a vráti obrazy pripravené na výstup (v poradí zobrazenia).
+    /// Vrátený obraz sa môže ešte dekódovať – čítanie jeho riadkov počká, kým nie sú hotové.
     pub fn nal(&mut self, nal: &[u8]) -> Vec<Arc<DekodovanyObraz>> {
         if let Err(e) = self.nal_vnutorne(nal) {
-            self.statistika.chyby.push(e.to_string());
+            zamkni(&self.spolocne.statistika).chyby.push(e.to_string());
         }
         std::mem::take(&mut self.vystup)
     }
 
-    /// Koniec toku: dokončí posledný obraz a vydá všetky zostávajúce.
+    /// Koniec toku: dokončí posledný obraz, počká na všetky rozpracované a vydá všetky zostávajúce.
     pub fn koniec(&mut self) -> Vec<Arc<DekodovanyObraz>> {
         self.dokonci_obraz();
         let u = self.sprava.vyprazdni();
         self.udalosti(&u, (0, 0));
+        self.cakaj_na_vsetky();
+        self.statistika = zamkni(&self.spolocne.statistika).clone();
         std::mem::take(&mut self.vystup)
+    }
+
+    fn cakaj_na_vsetky(&self) {
+        let mut n = zamkni(&self.spolocne.dokoncene);
+        while *n < self.odoslane {
+            n = self.spolocne.zmena.wait(n).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    /// Odovzdá obraz na dekódovanie: pracovnému vláknu, alebo (jedno vlákno, chyba vlákien) dekóduje hneď.
+    fn odosli(&mut self, u: Uloha) {
+        self.odoslane += 1;
+        if self.vlakien > 1 && self.vlakna.is_none() {
+            self.vlakna = spusti_vlakna(self.vlakien, &self.spolocne);
+        }
+        let u = match self.vlakna.as_ref().and_then(|v| v.odoslat.as_ref()) {
+            Some(o) => match o.send(u) {
+                Ok(()) => return,
+                Err(e) => e.0,
+            },
+            None => u,
+        };
+        vykonaj(u, &mut self.rezerva_stavu, &self.spolocne);
     }
 
     fn nal_vnutorne(&mut self, nal: &[u8]) -> Vysledok<()> {
@@ -222,40 +302,37 @@ impl Dekoder {
             self.udalosti(&z.udalosti, rozmery);
             self.preskakuje = z.preskocit;
             if z.preskocit {
-                self.statistika.preskocene += 1;
+                zamkni(&self.spolocne.statistika).preskocene += 1;
                 self.cakajuce_odtlacky.clear();
                 return Ok(());
             }
+            let (sx, sy) = sps.delenie_farby();
+            let okno = [
+                (sps.okno[0] * sx) as usize,
+                (sps.okno[1] * sx) as usize,
+                (sps.okno[2] * sy) as usize,
+                (sps.okno[3] * sy) as usize,
+            ];
+            // obraz je v pamäti dekodéra hneď – ďalšie obrazy ho môžu mať ako referenciu už počas dekódovania
+            let ciel = Arc::new(DekodovanyObraz::novy(z.id, z.poc, rozmery.0, rozmery.1, sps.log2_ctb, okno));
+            self.dpb.insert(z.id, ciel.clone());
             if let Err(e) = over_profil(&sps, &pps) {
-                // obraz sa nedekóduje – do pamäte ide sivý obraz, aby referencie ostali konzistentné
+                // obraz sa nedekóduje – v pamäti ostane sivý, aby referencie ostali konzistentné
                 self.preskakuje = true;
-                self.udalosti(&[Udalost::Vytvor { id: z.id, poc: z.poc }], rozmery);
+                ciel.dopln();
                 let u = self.sprava.ukonci_obraz(&sps);
                 self.udalosti(&u, rozmery);
                 return Err(e);
             }
             let geometria = self.geometria_pre(&sps, &pps);
             let faktory = self.faktory_pre(&sps, &pps);
-            let mut stav = match self.rezerva_stavu.take() {
-                Some(mut s) => {
-                    if s.obnov(&geometria, z.poc) {
-                        s
-                    } else {
-                        StavObrazu::novy(&geometria, z.poc)
-                    }
-                }
-                None => StavObrazu::novy(&geometria, z.poc),
+            let poradie = {
+                let mut s = zamkni(&self.spolocne.statistika);
+                s.obrazov += 1;
+                s.obrazov - 1
             };
-            stav.obraz = self.vezmi_obraz(geometria.sirka, geometria.vyska);
-            stav.info.cb_qp_offset = pps.cb_qp_offset;
-            stav.info.cr_qp_offset = pps.cr_qp_offset;
-            stav.info.cez_dlazdice = pps.dlazdice.as_ref().is_none_or(|d| d.filter_cez_dlazdice);
-            let poradie = self.statistika.obrazov;
-            self.statistika.obrazov += 1;
             self.aktualny = Some(Aktualny {
-                id: z.id,
-                poc: z.poc,
-                stav,
+                ciel,
                 sps: Arc::new(sps),
                 pps: Arc::new(pps),
                 geometria,
@@ -263,6 +340,7 @@ impl Dekoder {
                 odtlacky: std::mem::take(&mut self.cakajuce_odtlacky),
                 poradie,
                 opis: Vec::new(),
+                segmenty: Vec::new(),
             });
         }
         if self.preskakuje {
@@ -312,27 +390,8 @@ impl Dekoder {
                 rez.max_zlucenie,
             ));
         }
-        let rez_index = a.stav.info.rezy.len() as u16;
-        a.stav.info.rezy.push(RezFiltra {
-            adresa: rez.adresa_rezu,
-            cez_rezy: rez.filter_cez_rezy,
-            beta_div2: rez.beta_div2 as i8,
-            tc_div2: rez.tc_div2 as i8,
-        });
-        let (sps, pps, g, f) = (a.sps.clone(), a.pps.clone(), a.geometria.clone(), a.faktory.clone());
-        let mut d = DekoderRezu::novy(
-            &data,
-            &mut a.stav,
-            &g,
-            &sps,
-            &pps,
-            &rez,
-            &refs,
-            kol.as_ref().map(|k| &k.kol),
-            f.as_deref(),
-            rez_index,
-        );
-        d.dekoduj()
+        a.segmenty.push(SegmentUlohy { rez, data, refs, kol });
+        Ok(())
     }
 
     fn geometria_pre(&mut self, sps: &Sps, pps: &Pps) -> Arc<Geometria> {
@@ -366,13 +425,8 @@ impl Dekoder {
             match *u {
                 Udalost::Vytvor { id, poc } => {
                     // chýbajúci referenčný obraz (8.3.3.2): stredná hodnota vzoriek, bez pohybu
-                    let o = DekodovanyObraz {
-                        id,
-                        poc,
-                        obraz: Obraz::novy(rozmery.0, rozmery.1),
-                        kol: PoleKol { sirka16: 0, vyska16: 0, bloky: Vec::new(), poc },
-                        okno: [0; 4],
-                    };
+                    let o = DekodovanyObraz::novy(id, poc, rozmery.0, rozmery.1, 6, [0; 4]);
+                    o.dopln();
                     self.dpb.insert(id, Arc::new(o));
                 }
                 Udalost::Vystup(id) => {
@@ -381,17 +435,14 @@ impl Dekoder {
                     }
                 }
                 Udalost::Uvolni(id) => {
-                    if let Some(o) = self.dpb.remove(&id)
-                        && let Ok(o) = Arc::try_unwrap(o)
-                    {
-                        self.vrat_obraz(o.obraz);
-                    }
+                    self.dpb.remove(&id);
                 }
             }
         }
     }
 
-    /// Dokončenie obrazu: filtre v slučke, odtlačok MD5, uloženie do pamäte dekodéra a výstup (C.5.2.3).
+    /// Koniec obrazu: odovzdá ho na dekódovanie (filtre v slučke a odtlačok sú súčasťou úlohy) a pokračuje
+    /// výstupom podľa C.5.2.3.
     fn dokonci_obraz(&mut self) {
         self.nezavisla = None;
         if self.preskakuje {
@@ -399,87 +450,193 @@ impl Dekoder {
             return;
         }
         let Some(a) = self.aktualny.take() else { return };
-        let Aktualny { id, poc, mut stav, sps, pps, odtlacky, poradie, opis, .. } = a;
-        odblokovanie::odblokuj(&mut stav.obraz, &stav.mapy, &stav.info);
-        let obraz = if stav.sao.iter().any(|s| s.typ != [0; 3]) {
-            let mut vystup = self.vezmi_obraz(stav.obraz.sirka(), stav.obraz.vyska());
-            sao::sao(&stav.obraz, &mut vystup, &stav.sao, &stav.mapy, &stav.info);
-            let odblokovany = std::mem::replace(&mut stav.obraz, Obraz::prazdny());
-            self.vrat_obraz(odblokovany);
-            vystup
-        } else {
-            std::mem::replace(&mut stav.obraz, Obraz::prazdny())
-        };
-        let kol = std::mem::take(&mut stav.kol);
-        self.rezerva_stavu = Some(stav);
-        // odtlačok obrazu (D.3.19): MD5, CRC alebo kontrolný súčet každej zložky
-        let odtlacok = if self.overovat_odtlacky { odtlacky.first() } else { None };
-        match odtlacok {
-            Some(o) => {
-                let r = &obraz.roviny;
-                let zhoda = (0..3).all(|c| {
-                    let (d, w, h, k) = (&r[c].data, r[c].sirka, r[c].vyska, r[c].krok);
-                    match o {
-                        OdtlacokObrazu::Md5(m) => m.get(c).is_some_and(|x| md5_roviny(d, w, h, k) == *x),
-                        OdtlacokObrazu::Crc(m) => m.get(c).is_some_and(|x| crc_roviny(d, w, h, k) == *x),
-                        OdtlacokObrazu::Kontrolny(m) => {
-                            m.get(c).is_some_and(|x| kontrolny_sucet_roviny(d, w, h, k) == *x)
-                        }
-                    }
-                });
-                if zhoda {
-                    self.statistika.zhoda += 1;
-                } else {
-                    self.statistika.nezhoda.push((poradie, poc));
-                    if self.statistika.opis_nezhody.len() < 2 {
-                        self.statistika.opis_nezhody.push(format!(
-                            "obraz {poradie} POC {poc} {}×{} CTB {} PPS {} (dlaždice {:?}, wpp {}, závislé {}, pcm {:?}, \
-                             tskip {}, bypass {}, cip {}, sdh {}, matice {}): {}",
-                            sps.sirka,
-                            sps.vyska,
-                            1 << sps.log2_ctb,
-                            pps.id,
-                            pps.dlazdice.as_ref().map(|d| (d.stlpcov, d.riadkov, d.sirky.is_none(), d.filter_cez_dlazdice)),
-                            pps.wpp as u8,
-                            pps.zavisle_rezy as u8,
-                            sps.pcm.map(|p| (p.log2_min, p.log2_max, p.bez_filtra)),
-                            pps.transform_skip as u8,
-                            pps.transquant_bypass as u8,
-                            pps.obmedzena_intra as u8,
-                            pps.skryvanie_znamienok as u8,
-                            sps.matice.is_some() as u8,
-                            opis.join(" | ")
-                        ));
-                    }
-                }
-            }
-            None => self.statistika.bez_odtlacku += 1,
-        }
-        let (sx, sy) = sps.delenie_farby();
-        let okno = [
-            (sps.okno[0] * sx) as usize,
-            (sps.okno[1] * sx) as usize,
-            (sps.okno[2] * sy) as usize,
-            (sps.okno[3] * sy) as usize,
-        ];
-        let d = DekodovanyObraz { id, poc, obraz, kol, okno };
-        self.dpb.insert(id, Arc::new(d));
+        let sps = a.sps.clone();
+        self.odosli(Uloha {
+            ciel: a.ciel,
+            segmenty: a.segmenty,
+            sps: a.sps,
+            pps: a.pps,
+            geometria: a.geometria,
+            faktory: a.faktory,
+            odtlacky: a.odtlacky,
+            poradie: a.poradie,
+            opis: a.opis,
+            overovat: self.overovat_odtlacky,
+        });
         let u = self.sprava.ukonci_obraz(&sps);
         self.udalosti(&u, (0, 0));
     }
 }
 
+fn spusti_vlakna(n: usize, spolocne: &Arc<Spolocne>) -> Option<Vlakna> {
+    let (odoslat, prijat) = sync_channel::<Uloha>(n);
+    let prijat: Arc<Mutex<Receiver<Uloha>>> = Arc::new(Mutex::new(prijat));
+    let mut vlakna = Vec::with_capacity(n);
+    for i in 0..n {
+        let (prijat, spolocne) = (prijat.clone(), spolocne.clone());
+        let v = std::thread::Builder::new().name(format!("hevc-{i}")).spawn(move || {
+            let mut rezerva = None;
+            loop {
+                // úlohy v poradí dekódovania – každá čaká len na skoršie, ktoré už niekto dekóduje
+                let u = zamkni(&prijat).recv();
+                match u {
+                    Ok(u) => vykonaj(u, &mut rezerva, &spolocne),
+                    Err(_) => break,
+                }
+            }
+        });
+        match v {
+            Ok(v) => vlakna.push(v),
+            Err(_) => break,
+        }
+    }
+    (!vlakna.is_empty()).then(|| Vlakna { odoslat: Some(odoslat), vlakna })
+}
+
+/// Zaručí zverejnenie celého obrazu a započítanie úlohy aj pri chybe či panike – nikto nesmie čakať naveky.
+struct Strazca<'a> {
+    ciel: &'a DekodovanyObraz,
+    spolocne: &'a Spolocne,
+}
+
+impl Drop for Strazca<'_> {
+    fn drop(&mut self) {
+        self.ciel.dopln();
+        *zamkni(&self.spolocne.dokoncene) += 1;
+        self.spolocne.zmena.notify_all();
+    }
+}
+
+/// Dekódovanie obrazu (všetky segmenty rezov, filtre, zverejnenie) a overenie odtlačku.
+fn vykonaj(u: Uloha, rezerva: &mut Option<StavObrazu>, spolocne: &Spolocne) {
+    let strazca = Strazca { ciel: &u.ciel, spolocne };
+    let chyby = match std::panic::catch_unwind(AssertUnwindSafe(|| dekoduj_obraz(&u, rezerva))) {
+        Ok(chyby) => chyby,
+        Err(_) => {
+            *rezerva = None;
+            vec![format!("HEVC dekodér: vnútorná chyba pri dekódovaní obrazu POC {}", u.ciel.poc)]
+        }
+    };
+    u.ciel.dopln();
+    // odtlačok obrazu (D.3.19): MD5, CRC alebo kontrolný súčet každej zložky
+    let zhoda = if u.overovat { u.odtlacky.first().map(|o| over_odtlacok(o, &u.ciel.obraz)) } else { None };
+    let mut s = zamkni(&spolocne.statistika);
+    s.chyby.extend(chyby);
+    match zhoda {
+        Some(true) => s.zhoda += 1,
+        Some(false) => {
+            s.nezhoda.push((u.poradie, u.ciel.poc));
+            if s.opis_nezhody.len() < 2 {
+                s.opis_nezhody.push(opis_obrazu(&u));
+            }
+        }
+        None => s.bez_odtlacku += 1,
+    }
+    drop(s);
+    drop(strazca);
+}
+
+fn dekoduj_obraz(u: &Uloha, rezerva: &mut Option<StavObrazu>) -> Vec<String> {
+    let g = &*u.geometria;
+    let mut stav = match rezerva.take() {
+        Some(mut s) => {
+            if s.obnov(g, u.ciel.poc) {
+                s
+            } else {
+                StavObrazu::novy(g, u.ciel.poc)
+            }
+        }
+        None => StavObrazu::novy(g, u.ciel.poc),
+    };
+    stav.info.cb_qp_offset = u.pps.cb_qp_offset;
+    stav.info.cr_qp_offset = u.pps.cr_qp_offset;
+    stav.info.cez_dlazdice = u.pps.dlazdice.as_ref().is_none_or(|d| d.filter_cez_dlazdice);
+    stav.ciel = Some(u.ciel.clone());
+    stav.po_riadkoch = u.pps.dlazdice.is_none();
+    let mut chyby = Vec::new();
+    for (i, s) in u.segmenty.iter().enumerate() {
+        stav.info.rezy.push(RezFiltra {
+            adresa: s.rez.adresa_rezu,
+            cez_rezy: s.rez.filter_cez_rezy,
+            beta_div2: s.rez.beta_div2 as i8,
+            tc_div2: s.rez.tc_div2 as i8,
+        });
+        let mut d = DekoderRezu::novy(
+            &s.data,
+            &mut stav,
+            g,
+            &u.sps,
+            &u.pps,
+            &s.rez,
+            &s.refs,
+            s.kol.as_ref().map(|k| &k.kol),
+            u.faktory.as_deref(),
+            i as u16,
+        );
+        if let Err(e) = d.dekoduj() {
+            chyby.push(e.to_string());
+        }
+    }
+    stav.dokonci();
+    stav.ciel = None;
+    *rezerva = Some(stav);
+    chyby
+}
+
+fn over_odtlacok(o: &OdtlacokObrazu, obraz: &ObrazPasov) -> bool {
+    (0..3).all(|c| {
+        let r = &obraz.roviny[c];
+        // pásy majú krok = šírka, za sebou dajú súvislú rovinu
+        let mut d = Vec::with_capacity(r.sirka * r.vyska);
+        for i in 0..r.pocet_pasov() {
+            d.extend_from_slice(r.pas(i));
+        }
+        let (w, h) = (r.sirka, r.vyska);
+        match o {
+            OdtlacokObrazu::Md5(m) => m.get(c).is_some_and(|x| md5_roviny(&d, w, h, w) == *x),
+            OdtlacokObrazu::Crc(m) => m.get(c).is_some_and(|x| crc_roviny(&d, w, h, w) == *x),
+            OdtlacokObrazu::Kontrolny(m) => {
+                m.get(c).is_some_and(|x| kontrolny_sucet_roviny(&d, w, h, w) == *x)
+            }
+        }
+    })
+}
+
+fn opis_obrazu(u: &Uloha) -> String {
+    let (sps, pps) = (&u.sps, &u.pps);
+    format!(
+        "obraz {} POC {} {}×{} CTB {} PPS {} (dlaždice {:?}, wpp {}, závislé {}, pcm {:?}, tskip {}, bypass {}, \
+         cip {}, sdh {}, matice {}): {}",
+        u.poradie,
+        u.ciel.poc,
+        sps.sirka,
+        sps.vyska,
+        1 << sps.log2_ctb,
+        pps.id,
+        pps.dlazdice.as_ref().map(|d| (d.stlpcov, d.riadkov, d.sirky.is_none(), d.filter_cez_dlazdice)),
+        pps.wpp as u8,
+        pps.zavisle_rezy as u8,
+        sps.pcm.map(|p| (p.log2_min, p.log2_max, p.bez_filtra)),
+        pps.transform_skip as u8,
+        pps.transquant_bypass as u8,
+        pps.obmedzena_intra as u8,
+        pps.skryvanie_znamienok as u8,
+        sps.matice.is_some() as u8,
+        u.opis.join(" | ")
+    )
+}
+
 impl DekodovanyObraz {
-    /// Zapíše orezaný obraz (okno SPS) ako surové YUV 4:2:0 (8 bitov).
+    /// Zapíše orezaný obraz (okno SPS) ako surové YUV 4:2:0 (8 bitov); počká na nehotové riadky.
     pub fn zapis_yuv(&self, ciel: &mut Vec<u8>) {
         let [l, p, h, d] = self.okno;
         for c in 0..3 {
             let r = &self.obraz.roviny[c];
-            let s = if c == 0 { 0 } else { 1 };
+            let s = usize::from(c > 0);
             let (x0, x1) = (l >> s, r.sirka - (p >> s));
             let (y0, y1) = (h >> s, r.vyska - (d >> s));
             for y in y0..y1 {
-                ciel.extend_from_slice(&r.data[y * r.krok + x0..y * r.krok + x1]);
+                ciel.extend_from_slice(&r.riadok(y)[x0..x1]);
             }
         }
     }

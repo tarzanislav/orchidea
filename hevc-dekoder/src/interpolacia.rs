@@ -26,7 +26,7 @@
 //! samostatné funkcie – miesto pre neskoršiu verziu NEON (krok H5). Slučky sú písané pre automatickú
 //! vektorizáciu: pevný počet bodov filtra (`N`), dĺžky riadkov overené pred slučkou.
 
-use crate::obraz::{Rovina, Vzorka};
+use crate::obraz::{Vzorka, Zdroj};
 use std::cell::RefCell;
 
 /// Najväčší rozmer predikčného bloku (CTB 64 × 64).
@@ -88,10 +88,10 @@ pub struct Vahy {
 /// [`Vzorka`], `log2_denom` ≤ 7, váhy −128 … 255, |posun| < 2^15. Ak nie je zadaná ani jedna referencia,
 /// `ciel` sa nezmení.
 #[allow(clippy::too_many_arguments)]
-pub fn predikuj(
+pub fn predikuj<Z: Zdroj + ?Sized>(
     jas: bool,
-    ref0: Option<(&Rovina, [i32; 2])>,
-    ref1: Option<(&Rovina, [i32; 2])>,
+    ref0: Option<(&Z, [i32; 2])>,
+    ref1: Option<(&Z, [i32; 2])>,
     x: i32,
     y: i32,
     w: usize,
@@ -188,9 +188,9 @@ thread_local! {
 
 /// Interpolácia bloku jednej zložky z jednej referencie (8.5.3.3.3.1): jas filtrom 8 bodov so štvrtinovou
 /// presnosťou, farba 4:2:0 filtrom 4 body s osminovou presnosťou (mvC = mv).
-fn interpoluj_zlozku(
+fn interpoluj_zlozku<Z: Zdroj + ?Sized>(
     jas: bool,
-    (rovina, mv): (&Rovina, [i32; 2]),
+    (rovina, mv): (&Z, [i32; 2]),
     blok: Blok,
     bitova_hlbka: u32,
     pred: &mut [i16],
@@ -208,10 +208,10 @@ fn interpoluj_zlozku(
 /// zlomku: xInt = x + (mv[0] >> log2_jemnost) + i, xFrac = mv[0] & (2^log2_jemnost − 1), rovnako y.
 /// Do `pred` (riadok j na `[j * w..]`) zapíše predSampleLX − 8192.
 #[allow(clippy::too_many_arguments)]
-fn interpoluj<const N: usize>(
+fn interpoluj<const N: usize, Z: Zdroj + ?Sized>(
     filtre: &[[i16; N]],
     log2_jemnost: u32,
-    rovina: &Rovina,
+    rovina: &Z,
     mv: [i32; 2],
     blok: Blok,
     bitova_hlbka: u32,
@@ -264,27 +264,27 @@ fn interpoluj<const N: usize>(
 
 /// Oblasť zdroja `sw` × `sh` s ľavým horným rohom (`sx`, `sy`) ako (vzorky, krok riadka): priamo z roviny, ak v nej
 /// leží celá, inak kópia s orezanými súradnicami v `okraj`.
-fn oblast<'a>(
-    rovina: &'a Rovina,
+fn oblast<'a, Z: Zdroj + ?Sized>(
+    rovina: &'a Z,
     sx: i32,
     sy: i32,
     sw: usize,
     sh: usize,
     okraj: &'a mut [Vzorka],
 ) -> (&'a [Vzorka], usize) {
-    let vnutri = sx >= 0 && sy >= 0 && sx as usize + sw <= rovina.sirka && sy as usize + sh <= rovina.vyska;
-    if vnutri {
-        (&rovina.data[sy as usize * rovina.krok + sx as usize..], rovina.krok)
-    } else {
-        kopiruj_s_orezanim(rovina, sx, sy, sw, sh, okraj, sw);
-        (&okraj[..sw * sh], sw)
+    let vnutri =
+        sx >= 0 && sy >= 0 && sx as usize + sw <= rovina.sirka() && sy as usize + sh <= rovina.vyska();
+    if vnutri && let Some((d, krok)) = rovina.riadky(sy as usize, sh) {
+        return (&d[sx as usize..], krok);
     }
+    kopiruj_s_orezanim(rovina, sx, sy, sw, sh, okraj, sw);
+    (&okraj[..sw * sh], sw)
 }
 
 /// Kópia oblasti `sw` × `sh` z (`sx`, `sy`) do `ciel` (riadok j na `[j * krok..]`) s orezaním súradníc
 /// Clip3(0, šírka − 1, …) a Clip3(0, výška − 1, …) – vzorky mimo roviny nahradí najbližšia vzorka okraja.
-fn kopiruj_s_orezanim(
-    rovina: &Rovina,
+fn kopiruj_s_orezanim<Z: Zdroj + ?Sized>(
+    rovina: &Z,
     sx: i32,
     sy: i32,
     sw: usize,
@@ -292,8 +292,8 @@ fn kopiruj_s_orezanim(
     ciel: &mut [Vzorka],
     krok: usize,
 ) {
-    debug_assert!(rovina.sirka > 0 && rovina.vyska > 0, "HEVC: prázdna referenčná rovina");
-    let (sirka, vyska) = (rovina.sirka as i32, rovina.vyska as i32);
+    debug_assert!(rovina.sirka() > 0 && rovina.vyska() > 0, "HEVC: prázdna referenčná rovina");
+    let (sirka, vyska) = (rovina.sirka() as i32, rovina.vyska() as i32);
     // stĺpce [0, lavy) ležia vľavo od roviny, [lavy, pravy) vnútri, [pravy, sw) vpravo
     let lavy = (-sx).clamp(0, sw as i32);
     let pravy = (sirka - sx).clamp(lavy, sw as i32);
@@ -306,7 +306,7 @@ fn kopiruj_s_orezanim(
         if pravy > lavy {
             riadok[lavy..pravy].copy_from_slice(&zdroj[od..od + (pravy - lavy)]);
         }
-        riadok[pravy..].fill(zdroj[rovina.sirka - 1]);
+        riadok[pravy..].fill(zdroj[rovina.sirka() - 1]);
     }
 }
 
@@ -530,6 +530,7 @@ fn riadok_explicitne_dve(
 #[cfg(test)]
 mod testy {
     use super::*;
+    use crate::obraz::Rovina;
     use orchidea_jadro::nahoda::Nahoda;
 
     // ---------------------------------------------------------------------------------------------------------
@@ -1042,7 +1043,7 @@ mod testy {
     fn bez_referencie_a_prazdny_blok() {
         let r = Rovina::nova(8, 8, 77);
         let mut ciel = [5; 64];
-        predikuj(true, None, None, 0, 0, 8, 8, None, 8, &mut ciel, 8);
+        predikuj::<Rovina>(true, None, None, 0, 0, 8, 8, None, 8, &mut ciel, 8);
         assert!(ciel.iter().all(|&v| v == 5));
         predikuj(true, Some((&r, [1, 1])), None, 0, 0, 0, 8, None, 8, &mut ciel, 8);
         assert!(ciel.iter().all(|&v| v == 5));

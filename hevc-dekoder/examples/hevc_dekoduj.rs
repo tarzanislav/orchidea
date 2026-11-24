@@ -5,11 +5,11 @@
 //! Spustenie: `cargo run --release -p orchidea-hevc-dekoder --example hevc_dekoduj -- <súbor alebo priečinok>…`
 //! Premenné: `ORCHIDEA_HEVC_YUV=<priečinok>` zapíše výstup YUV, `ORCHIDEA_HEVC_PRISNE=1` vráti chybu pri
 //! akejkoľvek nezhode (CI), `ORCHIDEA_HEVC_RYCHLOST=1` meria čisté dekódovanie (bez overovania MD5) – ako
-//! pri prehrávaní.
+//! pri prehrávaní, `ORCHIDEA_HEVC_VLAKNA=<n>` počet vlákien dekódovania (predvolene počet jadier).
 
 use orchidea_hevc::jednotky_annex_b;
 use orchidea_hevc::odtlacok::{Md5, hex};
-use orchidea_hevc_dekoder::Dekoder;
+use orchidea_hevc_dekoder::{Dekoder, Zdroj};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -85,6 +85,7 @@ fn main() {
     let yuv_priecinok = std::env::var_os("ORCHIDEA_HEVC_YUV").map(PathBuf::from);
     let prisne = std::env::var_os("ORCHIDEA_HEVC_PRISNE").is_some();
     let rychlost = std::env::var_os("ORCHIDEA_HEVC_RYCHLOST").is_some();
+    let vlakna = std::env::var("ORCHIDEA_HEVC_VLAKNA").ok().and_then(|v| v.parse::<usize>().ok());
     println!("| Tok | obrazov | MD5 SEI zhoda | nezhoda | bez SEI | výstup YUV | obr./s | poznámka |");
     println!("|---|---|---|---|---|---|---|---|");
     let (mut presnych, mut zlych, mut mimo, mut neoverenych) = (0usize, 0usize, 0usize, 0usize);
@@ -92,6 +93,9 @@ fn main() {
         let Ok(data) = std::fs::read(cesta) else { continue };
         let meno = cesta.file_name().map_or_else(String::new, |m| m.to_string_lossy().into_owned());
         let mut d = if rychlost { Dekoder::na_prehravanie() } else { Dekoder::novy() };
+        if let Some(n) = vlakna {
+            d = d.s_vlaknami(n);
+        }
         let mut md5 = Md5::novy();
         // varianty pre diagnostiku nezhody celého výstupu: 16-bitové vzorky a obraz bez orezania
         let mut md5_16 = Md5::novy();
@@ -128,7 +132,7 @@ fn main() {
                     md5_16.pridaj(&v16);
                     for r in &o.obraz.roviny {
                         for y in 0..r.vyska {
-                            md5_cely.pridaj(&r.data[y * r.krok..y * r.krok + r.sirka]);
+                            md5_cely.pridaj(r.riadok(y));
                         }
                     }
                 }

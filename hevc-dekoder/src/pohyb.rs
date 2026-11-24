@@ -1,6 +1,8 @@
 //! Predikcia pohybu – H.265, kap. 8.5.3.2: zlučovanie (merge), AMVP a časový kandidát (TMVP), plus dostupnosť
 //! predikčného bloku (6.4.2).
 
+use std::sync::OnceLock;
+
 /// Pohyb predikčného bloku: vektory v štvrtinách vzorky jasu a referenčné indexy (−1 = zoznam sa nepoužíva).
 /// Vnútrosnímkový (alebo nedekódovaný) blok má oba indexy −1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +49,67 @@ pub struct PoleKol {
     pub poc: i32,
 }
 
+/// Pohyb dekódovaného obrazu pre TMVP zverejňovaný po pásoch (riadkoch CTB) – ďalší obraz v inom vlákne počká
+/// len na pás, ktorý potrebuje (ako [`crate::obraz::ObrazPasov`]).
+pub struct PoleKolPasov {
+    pub sirka16: usize,
+    pub vyska16: usize,
+    pub poc: i32,
+    /// riadkov mriežky 16 × 16 v jednom páse
+    riadkov_pasu: usize,
+    pasy: Vec<OnceLock<Box<[PohybKol]>>>,
+}
+
+impl std::fmt::Debug for PoleKolPasov {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PoleKolPasov {}×{}, POC {}", self.sirka16, self.vyska16, self.poc)
+    }
+}
+
+impl PoleKolPasov {
+    pub fn nove(sirka16: usize, vyska16: usize, riadkov_pasu: usize, poc: i32) -> PoleKolPasov {
+        let riadkov_pasu = riadkov_pasu.max(1);
+        let n = vyska16.div_ceil(riadkov_pasu);
+        PoleKolPasov { sirka16, vyska16, poc, riadkov_pasu, pasy: (0..n).map(|_| OnceLock::new()).collect() }
+    }
+
+    pub fn pocet_pasov(&self) -> usize {
+        self.pasy.len()
+    }
+
+    /// Zverejní pás `i` z poľa `zdroj` s rovnakými rozmermi (dekódovanie obrazu ho práve dokončilo).
+    pub fn zverejni_z(&self, i: usize, zdroj: &PoleKol) {
+        if i >= self.pasy.len() {
+            return;
+        }
+        let od = i * self.riadkov_pasu;
+        let po = (od + self.riadkov_pasu).min(self.vyska16);
+        let d: Box<[PohybKol]> = zdroj.bloky[od * self.sirka16..po * self.sirka16].into();
+        let _ = self.pasy[i].set(d);
+    }
+
+    /// Pohyb bunky (`bx`, `by`) mriežky 16 × 16 – počká na jej pás.
+    #[inline]
+    pub fn blok(&self, bx: usize, by: usize) -> Option<&PohybKol> {
+        if bx >= self.sirka16 || by >= self.vyska16 {
+            return None;
+        }
+        let i = by / self.riadkov_pasu;
+        self.pasy[i].wait().get((by - i * self.riadkov_pasu) * self.sirka16 + bx)
+    }
+
+    /// Doplní nezverejnené pásy (obraz s chybou): bloky bez pohybu.
+    pub fn dopln(&self) {
+        for (i, p) in self.pasy.iter().enumerate() {
+            if p.get().is_none() {
+                let od = i * self.riadkov_pasu;
+                let n = ((od + self.riadkov_pasu).min(self.vyska16) - od) * self.sirka16;
+                let _ = p.set(vec![PohybKol::default(); n].into_boxed_slice());
+            }
+        }
+    }
+}
+
 /// Druh rozdelenia kódovacej jednotky na predikčné bloky (PartMode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rozdelenie {
@@ -76,7 +139,7 @@ pub struct Okolie<'a> {
     pub ref_poc: [&'a [i32]; 2],
     pub ref_lt: [&'a [bool]; 2],
     /// kolokovaný obraz (ColPic), ak je slice_temporal_mvp_enabled_flag = 1
-    pub kol: Option<&'a PoleKol>,
+    pub kol: Option<&'a PoleKolPasov>,
     pub b_rez: bool,
     /// collocated_from_l0_flag
     pub kol_z_l0: bool,
@@ -144,7 +207,7 @@ impl Okolie<'_> {
     fn kolokovany(&self, x: i32, y: i32, lx: usize, ref_idx: usize) -> Option<[i16; 2]> {
         let kol = self.kol?;
         let (bx, by) = ((x >> 4) as usize, (y >> 4) as usize);
-        let c = kol.bloky.get(by * kol.sirka16 + bx)?;
+        let c = kol.blok(bx, by)?;
         if !c.pred[0] && !c.pred[1] {
             return None;
         }

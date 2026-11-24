@@ -88,6 +88,26 @@ pub fn odblokuj(obraz: &mut Obraz, mapy: &MapyFiltra, info: &InfoObrazu) {
     vodorovne_hrany(&mut obraz.roviny, mapy, info, &s, 0..mapy.vyska4);
 }
 
+/// Odblokovanie pásu riadkov jasu `y0 … y1 − 1` (riadok CTB; `y0` násobok 8, `y1` začiatok ďalšieho pásu alebo
+/// výška obrazu): zvislé hrany pásu a potom vodorovné hrany s y v páse. Postupné volanie pre pásy zhora nadol
+/// dá ten istý výsledok ako [`odblokuj`] – vodorovná hrana na hornom okraji pásu číta 4 riadky predošlého pásu
+/// (už zvislo filtrované) a mení najviac 3 z nich; hrany v rámci pásu sa neprekrývajú (mriežka 8).
+///
+/// Pás sa smie odblokovať až po rekonštrukcii nasledujúceho pásu (vnútrosnímková predikcia v ňom číta
+/// nefiltrovaný spodný riadok tohto pásu).
+pub fn odblokuj_pas(obraz: &mut Obraz, mapy: &MapyFiltra, info: &InfoObrazu, y0: usize, y1: usize) {
+    let hlbka = obraz.bitova_hlbka;
+    let s = Spolocne {
+        posun: hlbka.saturating_sub(8),
+        max: (1 << hlbka) - 1,
+        c_qp: [info.cb_qp_offset, info.cr_qp_offset],
+    };
+    debug_assert!(y0.is_multiple_of(8), "HEVC: pás odblokovania nezačína na mriežke 8");
+    let koniec4 = if y1 >= obraz.vyska() { mapy.vyska4 } else { y1 / 4 };
+    zvisle_hrany(&mut obraz.roviny, mapy, info, &s, y0 / 4..koniec4);
+    vodorovne_hrany(&mut obraz.roviny, mapy, info, &s, y0 / 4..koniec4);
+}
+
 /// Zvislé hrany (EDGE_VER) jasu aj farby v riadkoch blokov 4×4 `riadky4` (8.7.2.5.1). Úseky rôznych riadkov
 /// blokov sú nezávislé, pás riadkov (napr. riadok CTB) sa dá spracovať samostatne.
 fn zvisle_hrany(

@@ -44,9 +44,39 @@ pub fn sao(vstup: &Obraz, vystup: &mut Obraz, ctb: &[SaoCtb], mapy: &MapyFiltra,
     }
     vystup.bitova_hlbka = vstup.bitova_hlbka;
 
+    let [a, b, c] = &mut vystup.roviny;
+    let mut ciele = [
+        CielSao { data: &mut a.data, krok: a.krok, od_riadka: 0 },
+        CielSao { data: &mut b.data, krok: b.krok, od_riadka: 0 },
+        CielSao { data: &mut c.data, krok: c.krok, od_riadka: 0 },
+    ];
+    for ry in 0..info.vyska_ctb {
+        sao_riadok(vstup, &mut ciele, ctb, mapy, info, ry);
+    }
+}
+
+/// Cieľ zápisu SAO jednej zložky: `data` začína riadkom `od_riadka` roviny, riadky sú po `krok` prvkoch
+/// (celá rovina, alebo len pás riadkov CTB zverejňovaného obrazu).
+#[derive(Debug)]
+pub struct CielSao<'a> {
+    pub data: &'a mut [Vzorka],
+    pub krok: usize,
+    pub od_riadka: usize,
+}
+
+/// SAO jedného riadka CTB `ry` (ako [`sao`]) – zapíše každú vzorku tohto riadka CTB všetkých troch zložiek do
+/// `ciele`. Potrebuje odblokované vzorky riadka CTB a susedných riadkov vzoriek nad ním a pod ním.
+pub fn sao_riadok(
+    vstup: &Obraz,
+    ciele: &mut [CielSao<'_>; 3],
+    ctb: &[SaoCtb],
+    mapy: &MapyFiltra,
+    info: &InfoObrazu,
+    ry: usize,
+) {
     let velkost = 1usize << info.log2_ctb;
     let (sirka_y, vyska_y) = (vstup.sirka(), vstup.vyska());
-    for ry in 0..info.vyska_ctb {
+    {
         for rx in 0..info.sirka_ctb {
             let p = &ctb[ry * info.sirka_ctb + rx];
             // dostupnosť susedných CTB podľa rezov a dlaždíc – len ak ju niektorá zložka potrebuje
@@ -58,7 +88,7 @@ pub fn sao(vstup: &Obraz, vystup: &mut Obraz, ctb: &[SaoCtb], mapy: &MapyFiltra,
                 && lx0 < lx1
                 && ly0 < ly1
                 && ctb_ma_bez_filtra(mapy, lx0, ly0, lx1, ly1);
-            for c in 0..3 {
+            for (c, ciel) in ciele.iter_mut().enumerate() {
                 // 4:2:0: CTB farby má polovičné rozmery (nCtbSw = CtbSizeY / SubWidthC)
                 let podvz = u32::from(c > 0);
                 let rovina = &vstup.roviny[c];
@@ -88,9 +118,9 @@ pub fn sao(vstup: &Obraz, vystup: &mut Obraz, ctb: &[SaoCtb], mapy: &MapyFiltra,
                     bitova_hlbka: vstup.bitova_hlbka,
                     bez_filtra: if bez { Some((mapy, 2 - podvz)) } else { None },
                 };
-                let ciel = &mut vystup.roviny[c];
                 let krok = ciel.krok;
-                sao_ctb_zlozky(rovina, ciel.od(x0, y0), krok, &uloha);
+                let od = (y0 - ciel.od_riadka) * krok + x0;
+                sao_ctb_zlozky(rovina, &mut ciel.data[od..], krok, &uloha);
             }
         }
     }

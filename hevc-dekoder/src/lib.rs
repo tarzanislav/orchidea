@@ -38,5 +38,5 @@ pub mod syntax;
 pub mod transformacia;
 
 pub use dekoder::{Dekoder, Statistika};
-pub use obraz::{Obraz, Rovina, Vzorka};
+pub use obraz::{Obraz, ObrazPasov, Rovina, RovinaPasov, Vzorka, Zdroj};
 pub use syntax::DekodovanyObraz;

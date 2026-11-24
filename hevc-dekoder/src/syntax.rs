@@ -7,9 +7,10 @@ use crate::filtre::{InfoObrazu, MapyFiltra, PohybBloku};
 use crate::geometria::Geometria;
 use crate::interpolacia::{self, Vahy};
 use crate::intra::{self, Susedia};
-use crate::obraz::{Obraz, Vzorka};
-use crate::pohyb::{Blok, Okolie, PohybKol, PohybPu, PoleKol, Rozdelenie};
-use crate::sao::SaoCtb;
+use crate::obraz::{Obraz, ObrazPasov, RovinaPasov, Vzorka};
+use crate::odblokovanie;
+use crate::pohyb::{Blok, Okolie, PohybKol, PohybPu, PoleKol, PoleKolPasov, Rozdelenie};
+use crate::sao::{self, CielSao, SaoCtb};
 use crate::transformacia::{self, FaktorySkalovania, ParametreTb};
 use orchidea_hevc::bity::Citac;
 use orchidea_hevc::rez::TypRezu;
@@ -21,16 +22,44 @@ fn chyba(t: impl Into<String>) -> Chyba {
     Chyba::PoskodeneData(format!("HEVC dekodér: {}", t.into()))
 }
 
-/// Dekódovaný obraz v pamäti dekodéra (referencia a výstup).
-#[derive(Debug, Clone)]
+/// Dekódovaný obraz v pamäti dekodéra (referencia a výstup). Vzorky aj pohyb sa zverejňujú po pásoch (riadkoch
+/// CTB), takže obraz môže byť referenciou (aj výstupom) už počas dekódovania – čítanie nehotového pásu počká.
+#[derive(Debug)]
 pub struct DekodovanyObraz {
     pub id: u32,
     pub poc: i32,
-    pub obraz: Obraz,
+    pub obraz: ObrazPasov,
     /// pohyb pre časovú predikciu (TMVP)
-    pub kol: PoleKol,
+    pub kol: PoleKolPasov,
     /// okno orezania (conformance window) v jase: vľavo, vpravo, hore, dole
     pub okno: [usize; 4],
+}
+
+impl DekodovanyObraz {
+    /// Nový rozpracovaný obraz: pásy výšky CTB `1 << log2_ctb`.
+    pub fn novy(
+        id: u32,
+        poc: i32,
+        sirka: usize,
+        vyska: usize,
+        log2_ctb: u32,
+        okno: [usize; 4],
+    ) -> DekodovanyObraz {
+        let ctb = 1usize << log2_ctb;
+        DekodovanyObraz {
+            id,
+            poc,
+            obraz: ObrazPasov::novy(sirka, vyska, ctb),
+            kol: PoleKolPasov::nove(sirka.div_ceil(16), vyska.div_ceil(16), ctb / 16, poc),
+            okno,
+        }
+    }
+
+    /// Doplní nezverejnené pásy (obraz s chybou), aby naň nikto nečakal naveky.
+    pub fn dopln(&self) {
+        self.obraz.dopln();
+        self.kol.dopln();
+    }
 }
 
 /// Stav rozpracovaného obrazu.
@@ -54,6 +83,13 @@ pub struct StavObrazu {
     pub ulozene_ds: Option<Kontexty>,
     /// QpY poslednej kódovacej jednotky (qPY_PREV pre ďalšiu skupinu kvantovania)
     pub qp_posledny: i32,
+    /// zverejňovaný obraz a postup: rekonštruované, odblokované a zverejnené riadky CTB, zverejnený pohyb
+    pub ciel: Option<Arc<DekodovanyObraz>>,
+    /// zverejňovať po riadkoch CTB (bez dlaždíc – CTB idú v rastrovom poradí); inak všetko na konci obrazu
+    pub po_riadkoch: bool,
+    odblokovanych: usize,
+    zverejnenych: usize,
+    pohyb_zverejnenych: usize,
 }
 
 impl StavObrazu {
@@ -85,6 +121,8 @@ impl StavObrazu {
         self.ulozene_wpp = None;
         self.ulozene_ds = None;
         self.qp_posledny = 26;
+        self.ciel = None;
+        (self.odblokovanych, self.zverejnenych, self.pohyb_zverejnenych) = (0, 0, 0);
         true
     }
 
@@ -119,6 +157,80 @@ impl StavObrazu {
             ulozene_wpp: None,
             ulozene_ds: None,
             qp_posledny: 26,
+            ciel: None,
+            po_riadkoch: false,
+            odblokovanych: 0,
+            zverejnenych: 0,
+            pohyb_zverejnenych: 0,
+        }
+    }
+
+    /// Je hotových prvých `n` riadkov CTB (rekonštrukcia). Zverejní pohyb týchto riadkov, odblokuje riadky
+    /// do `n − 2` (riadok `r` až po rekonštrukcii riadka `r + 1`: vnútrosnímková predikcia v ňom číta nefiltrovaný
+    /// spodný riadok vzoriek riadka `r`) a po SAO zverejní riadky do `n − 3` (SAO riadka `r` číta odblokovaný
+    /// horný riadok vzoriek riadka `r + 1`).
+    pub fn riadky_hotove(&mut self, n: usize) {
+        if self.po_riadkoch {
+            self.posun(n, false);
+        }
+    }
+
+    /// Koniec obrazu: filtre a zverejnenie všetkých zostávajúcich riadkov CTB.
+    pub fn dokonci(&mut self) {
+        let n = self.info.vyska_ctb;
+        self.posun(n, true);
+    }
+
+    fn posun(&mut self, n: usize, koniec: bool) {
+        let Some(ciel) = self.ciel.clone() else { return };
+        let vyska_ctb = self.info.vyska_ctb;
+        let n = n.min(vyska_ctb);
+        while self.pohyb_zverejnenych < n {
+            ciel.kol.zverejni_z(self.pohyb_zverejnenych, &self.kol);
+            self.pohyb_zverejnenych += 1;
+        }
+        let ctb = 1usize << self.info.log2_ctb;
+        let odblokovat = if koniec { vyska_ctb } else { n.saturating_sub(1) };
+        while self.odblokovanych < odblokovat {
+            let r = self.odblokovanych;
+            let (y0, y1) = (r * ctb, ((r + 1) * ctb).min(self.info.vyska));
+            odblokovanie::odblokuj_pas(&mut self.obraz, &self.mapy, &self.info, y0, y1);
+            self.odblokovanych += 1;
+        }
+        let zverejnit = if koniec { vyska_ctb } else { self.odblokovanych.saturating_sub(1) };
+        while self.zverejnenych < zverejnit {
+            self.zverejni_riadok(&ciel.obraz, self.zverejnenych);
+            self.zverejnenych += 1;
+        }
+    }
+
+    /// SAO riadka CTB `r` priamo do nového pásu zverejňovaného obrazu (bez SAO len kópia odblokovaných vzoriek).
+    fn zverejni_riadok(&self, ciel: &ObrazPasov, r: usize) {
+        let s = self.info.sirka_ctb;
+        if !self.sao[r * s..(r + 1) * s].iter().any(|p| p.typ != [0; 3]) {
+            for c in 0..3 {
+                ciel.zverejni_z(c, r, &self.obraz.roviny[c]);
+            }
+            return;
+        }
+        let pas = |rp: &RovinaPasov| {
+            if r < rp.pocet_pasov() { vec![0; rp.riadky_pasu(r).len() * rp.sirka] } else { Vec::new() }
+        };
+        let [mut a, mut b, mut c] = [pas(&ciel.roviny[0]), pas(&ciel.roviny[1]), pas(&ciel.roviny[2])];
+        {
+            let ciel_sao =
+                |data, rp: &RovinaPasov| CielSao { data, krok: rp.sirka, od_riadka: r * rp.vyska_pasu };
+            let mut ciele = [
+                ciel_sao(&mut a[..], &ciel.roviny[0]),
+                ciel_sao(&mut b[..], &ciel.roviny[1]),
+                ciel_sao(&mut c[..], &ciel.roviny[2]),
+            ];
+            sao::sao_riadok(&self.obraz, &mut ciele, &self.sao, &self.mapy, &self.info, r);
+        }
+        for (i, d) in [a, b, c].into_iter().enumerate() {
+            if r < ciel.roviny[i].pocet_pasov() {
+                ciel.roviny[i].zverejni(r, d.into_boxed_slice());
+            }
         }
     }
 }
@@ -199,7 +311,7 @@ pub struct DekoderRezu<'a> {
     pps: &'a Pps,
     h: &'a HlavickaRezu,
     refs: &'a ReferencieRezu,
-    kol: Option<&'a PoleKol>,
+    kol: Option<&'a PoleKolPasov>,
     faktory: Option<&'a FaktorySkalovania>,
     rez_index: u16,
     init_typ: usize,
@@ -226,7 +338,7 @@ impl<'a> DekoderRezu<'a> {
         pps: &'a Pps,
         h: &'a HlavickaRezu,
         refs: &'a ReferencieRezu,
-        kol: Option<&'a PoleKol>,
+        kol: Option<&'a PoleKolPasov>,
         faktory: Option<&'a FaktorySkalovania>,
         rez_index: u16,
     ) -> DekoderRezu<'a> {
@@ -347,6 +459,10 @@ impl<'a> DekoderRezu<'a> {
                     "dáta rezu sa skončili predčasne (CTB {cx}, {cy}; {})",
                     self.c.ladenie()
                 )));
+            }
+            if cx + 1 == g.sirka_ctb {
+                // riadok CTB je celý: filtre a zverejnenie predošlých riadkov (iné vlákna na ne môžu čakať)
+                self.s.riadky_hotove(cy + 1);
             }
             if koniec == 1 {
                 if self.pps.zavisle_rezy {
@@ -978,7 +1094,7 @@ impl<'a> DekoderRezu<'a> {
         for c in 0..3 {
             let (sx, sy, sw, sh) = if c == 0 { (x, y, w, h) } else { (x / 2, y / 2, w / 2, h / 2) };
             let vahy = self.vahy(&p, c);
-            let ref_z = |lx: usize| -> Option<(&crate::obraz::Rovina, [i32; 2])> {
+            let ref_z = |lx: usize| -> Option<(&RovinaPasov, [i32; 2])> {
                 p.pred(lx).then(|| {
                     (
                         &self.refs.obrazy[lx][p.ref_idx[lx] as usize].obraz.roviny[c],
