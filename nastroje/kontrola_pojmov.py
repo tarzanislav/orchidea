@@ -26,7 +26,15 @@ DVOJICE = [
 ]
 RETAZEC = re.compile(r'"(?:[^"\\]|\\.)*"')
 VYNIMKA = "pojmy: výnimka"
-PRIECINKY_RUST = ["sklenik", "pismo", "zariadenie", "teplo", "dlazdice", "hevc", "jadro", "gpu", "neuron"]
+
+
+def priecinky_rust() -> list[pathlib.Path]:
+    """Všetky balíky pracovného priestoru podľa Cargo.toml (aj tie, ktoré pridajú iné relácie)."""
+    import tomllib
+
+    with open(KOREN / "Cargo.toml", "rb") as f:
+        clenovia = tomllib.load(f).get("workspace", {}).get("members", [])
+    return [KOREN / c for c in clenovia]
 
 
 def problemy(text: str) -> list[str]:
@@ -60,8 +68,8 @@ def texty_ci(cesta: pathlib.Path):
 
 def main() -> int:
     najdene = []
-    for p in PRIECINKY_RUST:
-        for subor in sorted((KOREN / p).rglob("*.rs")):
+    for p in priecinky_rust():
+        for subor in sorted(p.rglob("*.rs")):
             if "target" in subor.parts:
                 continue
             for c, t in texty_rust(subor):
