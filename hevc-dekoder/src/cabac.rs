@@ -111,14 +111,12 @@ pub struct Cabac<'a> {
     rozsah: u32,
     /// ivlOffset
     hodnota: u32,
-    /// koľko nulových bajtov sa doplnilo za koniec dát (poškodený alebo skrátený tok)
-    pretecenie: usize,
 }
 
 impl<'a> Cabac<'a> {
     /// Inicializácia dekodéra na bajte `zaciatok` (9.3.2.5): ivlCurrRange = 510, ivlOffset = read_bits(9).
     pub fn novy(data: &'a [u8], zaciatok: usize) -> Cabac<'a> {
-        let mut c = Cabac { data, poz: zaciatok, okno: 0, bitov: 0, rozsah: 510, hodnota: 0, pretecenie: 0 };
+        let mut c = Cabac { data, poz: zaciatok, okno: 0, bitov: 0, rozsah: 510, hodnota: 0 };
         c.hodnota = c.bity(9);
         c
     }
@@ -126,13 +124,8 @@ impl<'a> Cabac<'a> {
     #[inline]
     fn dopln(&mut self) {
         while self.bitov <= 56 {
-            let b = match self.data.get(self.poz) {
-                Some(&b) => b,
-                None => {
-                    self.pretecenie += 1;
-                    0
-                }
-            };
+            // za koncom dát nuly (čítanie dopredu; poškodený tok odhalí `poskodeny`)
+            let b = self.data.get(self.poz).copied().unwrap_or(0);
             self.poz += 1;
             self.okno |= (b as u64) << (56 - self.bitov);
             self.bitov += 8;
@@ -159,9 +152,15 @@ impl<'a> Cabac<'a> {
         self.poz * 8 - self.bitov as usize
     }
 
-    /// Je prúd poškodený (čítanie ďaleko za koncom dát)?
+    /// Stav na ladenie: dĺžka dát a spotrebované bity.
+    pub fn ladenie(&self) -> String {
+        format!("dĺžka {} B, spotrebovaných {} bitov", self.data.len(), self.spotrebovane())
+    }
+
+    /// Je prúd poškodený? Dekodér spotreboval viac bitov, ako dáta majú (v platnom toku nikdy – posledný
+    /// spotrebovaný bit je záverečný bit 1).
     pub fn poskodeny(&self) -> bool {
-        self.pretecenie > 8
+        self.spotrebovane() > self.data.len() * 8
     }
 
     /// DecodeDecision (9.3.4.3.2) s kontextovou premennou `stav` = (pStateIdx << 1) | valMps.
@@ -573,6 +572,7 @@ mod testy {
                 assert_eq!(b, ocakavany, "semienko {semienko}, bin {i}");
             }
             assert_eq!(d.ukoncenie(), 1);
+            assert!(!d.poskodeny(), "platné dáta nesmú vyzerať ako poškodené");
             assert_eq!(d.bajt_po_ukonceni(), koniec, "semienko {semienko}, {} bitov", kod.bity.len());
             assert_eq!(data[d.bajt_po_ukonceni()], 0xAB);
             // nový podprúd za ukončením

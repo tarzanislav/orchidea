@@ -28,12 +28,13 @@ fn subory(cesta: &Path, v: &mut Vec<PathBuf>) {
     }
 }
 
-/// MD5 celého výstupu YUV zo súboru pri toku (skúšobné toky normy: `<meno>.md5`, `<meno>_yuv.md5`, `*md5*.txt`)
-/// a meno súboru.
-fn ocakavane_md5_yuv(tok: &Path) -> Option<(String, String)> {
-    let priecinok = tok.parent()?;
+/// Odtlačky MD5 zo súborov pri toku (skúšobné toky normy: `<meno>.md5`, `<meno>_yuv.md5`, `*md5*.txt`) – každý
+/// súbor s jediným odtlačkom (MD5 celého výstupu YUV alebo samotného toku); zoznamy po snímkach sa nepoužijú.
+fn odtlacky_pri_toku(tok: &Path) -> Vec<(String, String)> {
+    let Some(priecinok) = tok.parent() else { return Vec::new() };
     let mut kandidati: Vec<PathBuf> = std::fs::read_dir(priecinok)
-        .ok()?
+        .into_iter()
+        .flatten()
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
@@ -42,16 +43,16 @@ fn ocakavane_md5_yuv(tok: &Path) -> Option<(String, String)> {
         })
         .collect();
     kandidati.sort();
+    let mut v = Vec::new();
     for k in kandidati {
         let Ok(t) = std::fs::read_to_string(&k) else { continue };
-        // len súbor s jediným odtlačkom (MD5 celého výstupu); zoznamy MD5 po snímkach sa nepoužijú
         let h: Vec<&str> = t.split(|c: char| !c.is_ascii_hexdigit()).filter(|s| s.len() == 32).collect();
         if h.len() == 1 {
             let meno = k.file_name().map_or_else(String::new, |m| m.to_string_lossy().into_owned());
-            return Some((h[0].to_ascii_lowercase(), meno));
+            v.push((h[0].to_ascii_lowercase(), meno));
         }
     }
-    None
+    v
 }
 
 fn main() {
@@ -68,7 +69,7 @@ fn main() {
     let rychlost = std::env::var_os("ORCHIDEA_HEVC_RYCHLOST").is_some();
     println!("| Tok | obrazov | MD5 SEI zhoda | nezhoda | bez SEI | výstup YUV | obr./s | poznámka |");
     println!("|---|---|---|---|---|---|---|---|");
-    let (mut presnych, mut zlych, mut mimo) = (0usize, 0usize, 0usize);
+    let (mut presnych, mut zlych, mut mimo, mut neoverenych) = (0usize, 0usize, 0usize, 0usize);
     for cesta in &zoznam {
         let Ok(data) = std::fs::read(cesta) else { continue };
         let meno = cesta.file_name().map_or_else(String::new, |m| m.to_string_lossy().into_owned());
@@ -77,8 +78,8 @@ fn main() {
         // varianty pre diagnostiku nezhody celého výstupu: 16-bitové vzorky a obraz bez orezania
         let mut md5_16 = Md5::novy();
         let mut md5_cely = Md5::novy();
-        let ocakavane = ocakavane_md5_yuv(cesta);
-        let diagnostika = ocakavane.is_some() && !rychlost;
+        let ocakavane = odtlacky_pri_toku(cesta);
+        let diagnostika = !ocakavane.is_empty() && !rychlost;
         let mut yuv = Vec::new();
         let mut vydanych = 0usize;
         let start = Instant::now();
@@ -127,13 +128,20 @@ fn main() {
             m.pridaj(&data);
             hex(&m.vysledok())
         };
-        let yuv_stav = match &ocakavane {
-            Some((ocak, _)) if *ocak == vystup_md5 => "zhoda".to_string(),
-            Some((ocak, _)) if *ocak == v16 => "zhoda (16-bit vzorky)".to_string(),
-            Some((ocak, _)) if *ocak == vcely => "zhoda (bez orezania)".to_string(),
-            Some((ocak, _)) if *ocak == tok_md5 => "súbor .md5 je odtlačok toku".to_string(),
-            Some((ocak, subor)) => format!("NEZHODA ({vydanych} obr., {subor}: {ocak} ≠ {vystup_md5})"),
-            None => format!("{vydanych} obr."),
+        let ma = |x: &str| ocakavane.iter().any(|(o, _)| o == x);
+        let yuv_stav = if ocakavane.is_empty() {
+            format!("{vydanych} obr.")
+        } else if ma(&vystup_md5) {
+            "zhoda".to_string()
+        } else if ma(&v16) {
+            "zhoda (16-bit vzorky)".to_string()
+        } else if ma(&vcely) {
+            "zhoda (bez orezania)".to_string()
+        } else if ocakavane.iter().all(|(o, _)| *o == tok_md5) {
+            format!("{vydanych} obr. (pri toku len MD5 toku)")
+        } else {
+            let (o, s) = ocakavane.iter().find(|(o, _)| *o != tok_md5).unwrap_or(&ocakavane[0]);
+            format!("NEZHODA ({vydanych} obr., {s}: {o} ≠ {vystup_md5})")
         };
         if let Some(p) = &yuv_priecinok {
             let _ = std::fs::create_dir_all(p);
@@ -149,13 +157,17 @@ fn main() {
         }
         poznamka.extend(s.opis_nezhody.iter().take(1).cloned());
         // bitovo presný: žiadna nezhoda odtlačku obrazu, žiadna chyba, a ak je MD5 celého výstupu, zhoduje sa
-        let presny = s.nezhoda.is_empty() && s.chyby.is_empty() && !yuv_stav.starts_with("NEZHODA");
+        let bez_chyby = s.nezhoda.is_empty() && s.chyby.is_empty() && !yuv_stav.starts_with("NEZHODA");
+        // overený = odtlačok každého obrazu zo SEI, alebo MD5 celého výstupu
+        let overeny = (s.zhoda > 0 && s.bez_odtlacku == 0) || yuv_stav.starts_with("zhoda");
         if mimo_profilu {
             mimo += 1;
-        } else if presny {
+        } else if !bez_chyby {
+            zlych += 1;
+        } else if overeny {
             presnych += 1;
         } else {
-            zlych += 1;
+            neoverenych += 1;
         }
         println!(
             "| {meno} | {} | {} | {} | {} | {yuv_stav} | {:.1} | {} |",
@@ -169,7 +181,8 @@ fn main() {
     }
     println!();
     println!(
-        "**Tokov: {}, bitovo presných: {presnych}, s chybou: {zlych}, mimo profilu Main 8-bit: {mimo}**",
+        "**Tokov: {}, bitovo presných: {presnych}, s chybou: {zlych}, bez odtlačku na overenie: {neoverenych}, \
+         mimo profilu Main 8-bit: {mimo}**",
         zoznam.len()
     );
     if prisne && zlych > 0 {

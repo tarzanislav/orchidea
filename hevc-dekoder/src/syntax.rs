@@ -343,7 +343,10 @@ impl<'a> DekoderRezu<'a> {
                 }
             }
             if self.c.poskodeny() {
-                return Err(chyba("dáta rezu sa skončili predčasne"));
+                return Err(chyba(format!(
+                    "dáta rezu sa skončili predčasne (CTB {cx}, {cy}; {})",
+                    self.c.ladenie()
+                )));
             }
             if koniec == 1 {
                 if self.pps.zavisle_rezy {
