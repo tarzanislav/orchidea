@@ -2,7 +2,8 @@
 # Meranie vlastného dekodéra HEVC na skutočnom Raspberry Pi (R214, krok H5):
 # bitová zhoda (MD5 každého obrazu), obrazy za sekundu pri 1, 2 a 4 vláknach a teplota dosky.
 #
-# Použitie: rozbaliť balík z CI („orchidea-hevc-rpi-64bit“) na dosku a spustiť  sh meraj_hevc.sh
+# Použitie: rozbaliť balík z CI („orchidea-hevc-rpi-64bit“ pre 64-bitový systém, „orchidea-hevc-rpi-32bit-armv7“
+# pre 32-bitový) na dosku a spustiť  sh meraj_hevc.sh
 # Výsledok: hevc_vysledky.txt (poslať späť). Trvá niekoľko minút.
 #
 # Chladný systém: pred každým meraním doska vychladne pod 60 °C (najviac 5 minút čakania) a pri 80 °C sa
