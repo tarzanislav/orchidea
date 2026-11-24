@@ -636,9 +636,12 @@ fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex
             // 320×240 a 720×576 (šírka nie je násobkom 32 – overí aj zarovnanie riadkov NV12)
             for (sirka, vyska) in [(320, 240), (720, 576)] {
                 let snimky: Vec<video::Obraz> = (0..8).map(|n| video::vzor(sirka, vyska, n)).collect();
-                for (f, meno, toky) in [
-                    (v4l2::H264, "H.264", video::h264_pcm(&snimky)),
-                    (v4l2::HEVC, "HEVC", video::hevc_pcm(&snimky)),
+                // R202: H.264 aj bez PCM (Intra 16×16 s DC) – hlavné jadro I_PCM nevie, overí sa bežná cesta
+                let (dc_toky, dc_cakane) = video::h264_dc(sirka, vyska, 8);
+                for (f, meno, toky, cakane, druh) in [
+                    (v4l2::H264, "H.264", video::h264_pcm(&snimky), &snimky, "bloky PCM"),
+                    (v4l2::H264, "H.264 bez PCM", dc_toky, &dc_cakane, "Intra 16×16 s DC"),
+                    (v4l2::HEVC, "HEVC", video::hevc_pcm(&snimky), &snimky, "bloky PCM"),
                 ] {
                     if !d.vie(f) {
                         if sirka == 320 {
@@ -647,12 +650,12 @@ fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex
                         continue;
                     }
                     pridaj(format!(
-                        "{meno} {sirka}×{vyska}: skúška – {} snímok (bloky PCM, presne známy obraz)",
-                        snimky.len()
+                        "{meno} {sirka}×{vyska}: skúška – {} snímok ({druh}, presne známy obraz)",
+                        cakane.len()
                     ));
                     let mut jadro = kmsg_od_konca();
-                    match v4l2::skus(&d.cesta, f, &toky, &snimky, Duration::from_secs(10)) {
-                        Ok(v) => pridaj(format!("{meno} {sirka}×{vyska}: {}", v.popis(snimky.len()))),
+                    match v4l2::skus(&d.cesta, f, &toky, cakane, Duration::from_secs(10)) {
+                        Ok(v) => pridaj(format!("{meno} {sirka}×{vyska}: {}", v.popis(cakane.len()))),
                         Err(e) => pridaj(format!("{meno} {sirka}×{vyska}: chyba – {e}")),
                     }
                     for r in jadro.as_mut().map(kmsg_nove).unwrap_or_default() {
@@ -1569,6 +1572,8 @@ pub fn spusti() {
     let mut usb_strom_od: Option<(u64, u64)> = None;
     // R192: zariadenia priamo na koreňovom porte – keď spia, radič USB neposiela mikrorámce
     let mut usb_zbernica_od: Option<(u64, u64)> = None;
+    // R201: koreňové rozbočovače (xHCI) – spia, keď stojí celá zbernica
+    let mut usb_koren_od: Option<(u64, u64)> = None;
     let mut obrazovka_zmenena = false;
     let mut pokus = false;
     // R192: fáza pokusu dovoľuje spánok siete s káblom (mimo pokusu vždy)
@@ -1605,6 +1610,8 @@ pub fn spusti() {
     let mut cec_stav = String::from("zatiaľ neotvorené");
     let mut cec_dalsi_pokus_s = 5.0;
     let mut cec_obraz: Option<StavObrazu> = None;
+    // R203: kedy krabička naposledy budila televízor (kontrola, či sa ozval)
+    let mut tv_budenie_od: Option<Instant> = None;
     // televízor išiel spať – obraz krabičky sa vypne, kým sa niekto neozve
     let mut tv_spi = false;
     // R166: takt obvodu obrazu podľa potreby (vlastný ovládač jadra)
@@ -2192,18 +2199,45 @@ pub fn spusti() {
             if let Some(c) = cec.as_mut()
                 && cec_obraz != Some(r.stav)
             {
-                match r.stav {
+                // R203: preskočené zapnutie sa nezapíše – keď príde človek, televízor sa zapne (predtým si KLÍČ
+                // myslel, že televízor už zapol, a po pokuse ho stlačenie nezobudilo)
+                let spracovane = match r.stav {
                     // počas pokusu (aj v noci) krabička televízor sama nezapína – len keď ju človek zobudí
-                    StavObrazu::Zapnuty if r.faza.is_some() && !r.rusi && necinnost >= 60 => {}
+                    StavObrazu::Zapnuty if r.faza.is_some() && !r.rusi && necinnost >= 60 => false,
                     // dlhý test (aj po nečakanom reštarte v noci) zapne televízor len pre človeka
-                    StavObrazu::Zapnuty if dlhy && !clovek_bol => {}
-                    StavObrazu::Zapnuty => c.obraz_zapnuty(),
+                    StavObrazu::Zapnuty if dlhy && !clovek_bol => false,
+                    StavObrazu::Zapnuty => {
+                        c.obraz_zapnuty();
+                        tv_budenie_od = Some(Instant::now());
+                        true
+                    }
                     // dlhý test na noc: televízor ide spať vždy, keď krabička vypne obraz (vlastník tak chcel)
-                    StavObrazu::Vypnuty if dlhy => c.uspi_tv_hned(),
-                    StavObrazu::Vypnuty => c.obraz_vypnuty(),
-                    StavObrazu::Cierny => {}
+                    StavObrazu::Vypnuty if dlhy => {
+                        c.uspi_tv_hned();
+                        true
+                    }
+                    StavObrazu::Vypnuty => {
+                        c.obraz_vypnuty();
+                        true
+                    }
+                    StavObrazu::Cierny => true,
+                };
+                if spracovane {
+                    cec_obraz = Some(r.stav);
                 }
-                cec_obraz = Some(r.stav);
+            }
+            // R203: televízor sa ani 5 s po prebudení neozval (spí bez HPD, krabička nemá adresu CEC) – reštart
+            // linky HDMI, rovnako ako 5× tlačidlo (vlastník 24. 11.: až to televízor zobudilo); raz za prebudenie
+            if let Some(t) = tv_budenie_od
+                && t.elapsed() >= Duration::from_secs(5)
+            {
+                tv_budenie_od = None;
+                if cec.as_ref().is_some_and(|c| c.caka_na_televizor())
+                    && displej.as_ref().is_some_and(|d| d.stav_obrazu() == StavObrazu::Zapnuty)
+                {
+                    hlas("CEC: televízor sa po prebudení neozval – reštart linky HDMI (R203)");
+                    rucny_restart = true;
+                }
             }
             // R185: strážca linky HDMI – televízor cez SCDC hlási, či signál prijíma; keď sa zasekne, krabička
             // mu vráti nezakódovaný režim alebo reštartuje linku (vypne a zapne obraz)
@@ -2311,6 +2345,7 @@ pub fn spusti() {
                     usb_strom = chlad::nastav_spanok_usb_stromu(Path::new("/"), p);
                     usb_strom_od = if p { chlad::cas_spanku_usb_stromu(Path::new("/")) } else { None };
                     usb_zbernica_od = if p { chlad::cas_spanku_zbernice_usb(Path::new("/")) } else { None };
+                    usb_koren_od = if p { chlad::cas_spanku_korenov_usb(Path::new("/")) } else { None };
                 }
                 regulator.nastav_parkovanie(parkovat_mozno && p);
                 alr = SietPodlaPotreby::nova();
@@ -2708,23 +2743,35 @@ pub fn spusti() {
                                             spi as f64 * 100.0 / (spi + bdie).max(1) as f64
                                         )
                                     }
+                                    // R201: v strome nie je nič okrem koreňových rozbočovačov a úložísk
+                                    (Some(_), None) | (None, None)
+                                        if usb_strom_od.is_none() && periferie_teraz == Some(true) =>
+                                    {
+                                        "okrem koreňových rozbočovačov a úložísk nič – meria sa zbernica"
+                                            .into()
+                                    }
                                     _ => "zatiaľ bez merania".into(),
                                 }
                             );
                             // R192: zbernica – port na koreni uspaný = bez mikrorámcov (RPi 1–3: bez 8000 FIQ/s)
                             let bdiace = chlad::usb_bdiace(Path::new("/"));
+                            let podiel = |od: Option<(u64, u64)>, t: Option<(u64, u64)>| match (od, t) {
+                                (Some(od), Some(t)) => {
+                                    let (s, b) = (t.0.saturating_sub(od.0), t.1.saturating_sub(od.1));
+                                    (s + b > 0).then(|| format!("{:.0} %", s as f64 * 100.0 / (s + b) as f64))
+                                }
+                                _ => None,
+                            };
                             text += &format!(
-                                "  zbernica USB (R192): koreňový port uspaný {} · teraz bdejú: {}{NL}",
-                                match (usb_zbernica_od, chlad::cas_spanku_zbernice_usb(Path::new("/"))) {
-                                    (Some(od), Some(t)) => {
-                                        let (s, b) = (t.0.saturating_sub(od.0), t.1.saturating_sub(od.1));
-                                        format!(
-                                            "{:.0} % času (vtedy radič neposiela mikrorámce)",
-                                            s as f64 * 100.0 / (s + b).max(1) as f64
-                                        )
-                                    }
-                                    _ => "– zatiaľ bez merania".into(),
-                                },
+                                "  zbernica USB (R192, R201): port na koreni uspaný {} · koreňový rozbočovač spal {} · teraz bdejú: {}{NL}",
+                                podiel(usb_zbernica_od, chlad::cas_spanku_zbernice_usb(Path::new("/")))
+                                    .map_or("– (nič na koreni)".into(), |p| format!(
+                                        "{p} času (vtedy port bez mikrorámcov)"
+                                    )),
+                                podiel(usb_koren_od, chlad::cas_spanku_korenov_usb(Path::new("/")))
+                                    .map_or("– (nemeria sa)".into(), |p| format!(
+                                        "{p} (vtedy stojí celá zbernica)"
+                                    )),
                                 if bdiace.is_empty() { "nič".to_string() } else { bdiace.join(", ") }
                             );
                         }

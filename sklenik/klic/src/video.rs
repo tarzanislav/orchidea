@@ -158,11 +158,8 @@ fn bloky(o: &Obraz, x: usize, y: usize, velkost: usize, ciel: &mut Vec<u8>) {
     }
 }
 
-/// Tok H.264 (Annex B) zo snímok – po jednej prístupovej jednotke na snímku (prvá má aj SPS a PPS). Každá
-/// snímka je IDR, všetky makrobloky I_PCM. Rozmery musia byť násobkom 16.
-pub fn h264_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
-    let (sirka, vyska) = (snimky[0].sirka, snimky[0].vyska);
-    assert!(sirka % 16 == 0 && vyska % 16 == 0);
+/// SPS a PPS H.264 (Constrained Baseline, CAVLC, QP 26, 25 snímok/s, okamžitý výstup snímky).
+fn h264_sps_pps(sirka: usize, vyska: usize) -> (Bity, Bity) {
     let mut sps = Bity::default();
     sps.u(8, 66); // Baseline
     sps.u(8, 0xC0); // constraint_set0/1 – Constrained Baseline
@@ -212,6 +209,15 @@ pub fn h264_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
     pps.u(1, 0); // constrained_intra_pred_flag
     pps.u(1, 0); // redundant_pic_cnt_present_flag
     pps.koniec();
+    (sps, pps)
+}
+
+/// Tok H.264 (Annex B) zo snímok – po jednej prístupovej jednotke na snímku (prvá má aj SPS a PPS). Každá
+/// snímka je IDR, všetky makrobloky I_PCM. Rozmery musia byť násobkom 16.
+pub fn h264_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
+    let (sirka, vyska) = (snimky[0].sirka, snimky[0].vyska);
+    assert!(sirka % 16 == 0 && vyska % 16 == 0);
+    let (sps, pps) = h264_sps_pps(sirka, vyska);
 
     snimky
         .iter()
@@ -246,7 +252,116 @@ pub fn h264_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
             au.extend(nal(&[0x65], &rez.data));
             au
         })
-        .collect()
+        .collect::<Vec<_>>()
+        .s_koncom_h264()
+}
+
+/// R202: koniec toku H.264 – end_of_seq a end_of_stream: dekodér dostane štartovací kód za posledným rezom a
+/// vie, že posledná snímka je celá (inak ju parser drží a čaká na ďalšie dáta).
+trait KoniecToku {
+    fn s_koncom_h264(self) -> Self;
+    fn s_koncom_hevc(self) -> Self;
+}
+
+impl KoniecToku for Vec<Vec<u8>> {
+    fn s_koncom_h264(mut self) -> Self {
+        if let Some(posledna) = self.last_mut() {
+            posledna.extend_from_slice(&[0, 0, 0, 1, 0x0A, 0, 0, 0, 1, 0x0B]);
+        }
+        self
+    }
+
+    fn s_koncom_hevc(mut self) -> Self {
+        // EOS_NUT (36) a EOB_NUT (37): ovládač pri EOS vydá všetky snímky (sklenik_hevc.c), EOB ukončí EOS
+        if let Some(posledna) = self.last_mut() {
+            posledna.extend_from_slice(&[0, 0, 0, 1, 0x48, 0x01, 0, 0, 0, 1, 0x4A, 0x01]);
+        }
+        self
+    }
+}
+
+/// R202: koeficient DC jasu bloku Intra 16×16 (CAVLC, nC 0–1, jediný koeficient na pozícii 0), −8 až 8.
+fn dc_koeficient(b: &mut Bity, c: i32) {
+    match c.unsigned_abs() {
+        0 => b.u(1, 1), // coeff_token: TotalCoeff 0
+        1 => {
+            b.u(2, 0b01); // coeff_token: TotalCoeff 1, TrailingOnes 1
+            b.u(1, u64::from(c < 0)); // trailing_ones_sign_flag
+            b.u(1, 1); // total_zeros 0
+        }
+        a => {
+            assert!(a <= 8);
+            b.u(6, 0b000101); // coeff_token: TotalCoeff 1, TrailingOnes 0
+            // levelCode bez úpravy o 2 (prvá úroveň pri TrailingOnes < 3), suffixLength 0 → len level_prefix
+            let kod = if c > 0 { 2 * c - 2 } else { -2 * c - 1 } - 2;
+            b.u(kod as u32, 0);
+            b.u(1, 1);
+            b.u(1, 1); // total_zeros 0
+        }
+    }
+}
+
+/// R202: o koľko zmení bod koeficient DC `c` bloku Intra 16×16 pri QP 26 (ITU-T H.264 8.5.10 a 8.5.12):
+/// Hadamard rozloží c do všetkých 16 blokov, dcY = (c·208 + 2) >> 2, potom (dcY + 32) >> 6 v každom bode.
+fn posun_dc(c: i32) -> i32 {
+    (((c * 208 + 2) >> 2) + 32) >> 6
+}
+
+/// R202: tok H.264 **bez PCM** – makrobloky Intra 16×16 s predikciou DC a jediným koeficientom DC (každý blok
+/// inej jasnosti), farba bez zvyšku (128). Overí bežnú cestu dekodéra (predikcia, CAVLC, Hadamard,
+/// inverzná transformácia) – dekodér hlavného jadra I_PCM nevie (0/8), tento tok ukáže, či vie aspoň toto.
+/// Vráti toky a čakané obrazy (bit po bite, overuje FFmpeg v CI).
+pub fn h264_dc(sirka: usize, vyska: usize, pocet: usize) -> (Vec<Vec<u8>>, Vec<Obraz>) {
+    assert!(sirka.is_multiple_of(16) && vyska.is_multiple_of(16));
+    let (sps, pps) = h264_sps_pps(sirka, vyska);
+    let (sx, sy) = (sirka / 16, vyska / 16);
+    let mut toky = Vec::new();
+    let mut cakane = Vec::new();
+    for n in 0..pocet {
+        let mut au = Vec::new();
+        if n == 0 {
+            au.extend(nal(&[0x67], &sps.data));
+            au.extend(nal(&[0x68], &pps.data));
+        }
+        let mut rez = Bity::default();
+        rez.ue(0); // first_mb_in_slice
+        rez.ue(7); // slice_type I
+        rez.ue(0); // pic_parameter_set_id
+        rez.u(4, 0); // frame_num
+        rez.ue((n % 2) as u64); // idr_pic_id
+        rez.u(1, 0); // no_output_of_prior_pics_flag
+        rez.u(1, 0); // long_term_reference_flag
+        rez.se(0); // slice_qp_delta – QP 26
+        rez.ue(1); // disable_deblocking_filter_idc – bez filtra
+        let mut jas = vec![0i32; sx * sy];
+        for my in 0..sy {
+            for mx in 0..sx {
+                let c = ((mx * 3 + my * 5 + n * 7) % 17) as i32 - 8;
+                rez.ue(3); // mb_type I_16x16_2_0_0 – predikcia DC, bez AC a farby
+                rez.ue(0); // intra_chroma_pred_mode DC
+                rez.se(0); // mb_qp_delta
+                dc_koeficient(&mut rez, c);
+                let hore = (my > 0).then(|| jas[(my - 1) * sx + mx]);
+                let vlavo = (mx > 0).then(|| jas[my * sx + mx - 1]);
+                let pred = match (hore, vlavo) {
+                    (Some(h), Some(v)) => (h + v + 1) >> 1,
+                    (Some(x), None) | (None, Some(x)) => x,
+                    (None, None) => 128,
+                };
+                jas[my * sx + mx] = (pred + posun_dc(c)).clamp(0, 255);
+            }
+        }
+        rez.koniec();
+        au.extend(nal(&[0x65], &rez.data));
+        toky.push(au);
+        let mut y = vec![0u8; sirka * vyska];
+        for (i, b) in y.iter_mut().enumerate() {
+            *b = jas[(i / sirka / 16) * sx + (i % sirka) / 16] as u8;
+        }
+        let farba = vec![128u8; sirka * vyska / 4];
+        cakane.push(Obraz { sirka, vyska, y, cb: farba.clone(), cr: farba });
+    }
+    (toky.s_koncom_h264(), cakane)
 }
 
 /// Pravdepodobnostné kódovanie CABAC (ITU-T H.265, kap. 9.3.4.3 a 9.3.5) – len kóder, len to, čo tok PCM
@@ -628,7 +743,7 @@ pub fn hevc_gop(snimky: &[Obraz], gop: usize, snimok_za_s: Option<u32>) -> (Vec<
         au.extend(nal(&hlavicka, &c.bity.data));
         toky.push(au);
     }
-    (toky, cakane)
+    (toky.s_koncom_hevc(), cakane)
 }
 
 #[cfg(test)]
@@ -710,6 +825,16 @@ mod testy {
             yuv.extend_from_slice(&o.cr);
         }
         std::fs::write(format!("{dir}/pcm.yuv"), yuv).unwrap();
+        // R202: H.264 bez PCM – Intra 16×16, predikcia DC a koeficienty DC
+        let (toky, cakane) = h264_dc(320, 240, 3);
+        std::fs::write(format!("{dir}/dc.h264"), toky.concat()).unwrap();
+        let mut yuv = Vec::new();
+        for o in &cakane {
+            yuv.extend_from_slice(&o.y);
+            yuv.extend_from_slice(&o.cb);
+            yuv.extend_from_slice(&o.cr);
+        }
+        std::fs::write(format!("{dir}/dc.yuv"), yuv).unwrap();
         // R177: skupiny po 4 snímkach – IDR s PCM a tri P-snímky s preskočenými jednotkami, 25 snímok/s
         let obrazy: Vec<Obraz> = (0..10).map(|n| vzor(320, 240, n)).collect();
         let (toky, cakane) = hevc_gop(&obrazy, 4, Some(25));

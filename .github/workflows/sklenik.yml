@@ -144,6 +144,9 @@ jobs:
             ffmpeg -v error -i /tmp/vid/pcm.$f -f rawvideo -pix_fmt yuv420p -y /tmp/vid/dek.$f.yuv
             cmp /tmp/vid/dek.$f.yuv /tmp/vid/pcm.yuv && echo "- ✅ skúšobný tok $f: FFmpeg dekóduje presne vzor (bit po bite)" | tee -a "$GITHUB_STEP_SUMMARY"
           done
+          # R202: H.264 bez PCM (Intra 16×16, predikcia DC, koeficienty DC)
+          ffmpeg -v error -i /tmp/vid/dc.h264 -f rawvideo -pix_fmt yuv420p -y /tmp/vid/dek.dc.yuv
+          cmp /tmp/vid/dek.dc.yuv /tmp/vid/dc.yuv && echo "- ✅ skúšobný tok H.264 bez PCM (Intra 16×16 s DC): FFmpeg dekóduje presne (bit po bite)" | tee -a "$GITHUB_STEP_SUMMARY"
           # R177: HEVC so skupinami snímok – P-snímky s preskočenými jednotkami cez referenciu, časovanie VUI
           ffmpeg -v error -i /tmp/vid/gop.hevc -f rawvideo -pix_fmt yuv420p -y /tmp/vid/dek.gop.yuv
           cmp /tmp/vid/dek.gop.yuv /tmp/vid/gop.yuv && echo "- ✅ skúšobný tok HEVC so skupinami (P cez referenciu): FFmpeg dekóduje presne (bit po bite)" | tee -a "$GITHUB_STEP_SUMMARY"

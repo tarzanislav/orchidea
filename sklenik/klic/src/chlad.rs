@@ -823,15 +823,32 @@ fn na_koreni(p: &Path) -> bool {
         .is_some_and(|(zb, port)| !zb.starts_with("usb") && !port.contains('.'))
 }
 
-/// R192: zariadenia stromu USB, ktoré práve bdejú (meno a výrobok) – čo drží zbernicu hore.
-pub fn usb_bdiace(koren: &Path) -> Vec<String> {
-    usb_ostatne(koren)
+/// R201: všetky zariadenia USB (aj úložiská, bez rozhraní) – (cesta, je koreňový rozbočovač).
+fn usb_vsetky(koren: &Path) -> Vec<(PathBuf, bool)> {
+    let zar = koren.join("sys/bus/usb/devices");
+    let mut v: Vec<(PathBuf, bool)> = fs::read_dir(&zar)
         .into_iter()
-        .filter(|(p, _, _, koren_hub)| {
+        .flatten()
+        .flatten()
+        .filter_map(|z| {
+            let meno = z.file_name().into_string().ok()?;
+            (!meno.contains(':') && zar.join(&meno).join("power").exists())
+                .then(|| (zar.join(&meno), meno.starts_with("usb")))
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// R192: zariadenia USB, ktoré práve bdejú (meno a výrobok) – čo drží zbernicu hore (R201: aj úložiská).
+pub fn usb_bdiace(koren: &Path) -> Vec<String> {
+    usb_vsetky(koren)
+        .into_iter()
+        .filter(|(p, koren_hub)| {
             !koren_hub
                 && fs::read_to_string(p.join("power/runtime_status")).is_ok_and(|s| s.trim() == "active")
         })
-        .map(|(p, _, _, _)| {
+        .map(|(p, _)| {
             let meno = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             match fs::read_to_string(p.join("product")) {
                 Ok(v) if !v.trim().is_empty() => format!("{meno} {}", v.trim()),
@@ -841,12 +858,26 @@ pub fn usb_bdiace(koren: &Path) -> Vec<String> {
         .collect()
 }
 
+/// R201: čas v spánku a v činnosti (ms) **koreňových rozbočovačov** – na radiči xHCI (X96, Odroid, RPi 4/5)
+/// spí koreň, keď spí všetko pod ním: vtedy stojí celá zbernica. Na RPi 1–3 (dwc_otg) koreň nespí nikdy –
+/// tam rozhoduje port (`cas_spanku_zbernice_usb`).
+pub fn cas_spanku_korenov_usb(koren: &Path) -> Option<(u64, u64)> {
+    sucet_spanku(usb_vsetky(koren).into_iter().filter(|(_, k)| *k).map(|(p, _)| p))
+}
+
 fn cas_spanku_stromu(koren: &Path, len_koren: bool) -> Option<(u64, u64)> {
+    if len_koren {
+        // R201: port na koreni drží hore aj úložisko – počíta sa každé zariadenie priamo na koreni
+        return sucet_spanku(
+            usb_vsetky(koren).into_iter().filter(|(p, k)| !k && na_koreni(p)).map(|(p, _)| p),
+        );
+    }
+    sucet_spanku(usb_ostatne(koren).into_iter().filter(|(_, _, _, k)| !k).map(|(p, _, _, _)| p))
+}
+
+fn sucet_spanku(zariadenia: impl Iterator<Item = PathBuf>) -> Option<(u64, u64)> {
     let (mut spi, mut bdie, mut nasiel) = (0u64, 0u64, false);
-    for (p, _, _, koren_hub) in usb_ostatne(koren) {
-        if koren_hub || (len_koren && !na_koreni(&p)) {
-            continue;
-        }
+    for p in zariadenia {
         let cislo = |s: &str| fs::read_to_string(p.join("power").join(s)).ok()?.trim().parse::<u64>().ok();
         if let (Some(s), Some(a)) = (cislo("runtime_suspended_time"), cislo("runtime_active_time")) {
             spi += s;
@@ -1134,8 +1165,21 @@ mod skusky {
         assert_eq!(fs::read_to_string(z.join("1-1.3/power/control")).unwrap(), "on");
         // bez koreňového rozbočovača a úložiska: 1-1 a 1-1.2
         assert_eq!(cas_spanku_usb_stromu(&k), Some((6000, 2000)));
-        // R192: zbernica = len 1-1 (priamo na koreňovom porte)
+        // R192: zbernica = len 1-1 (priamo na koreňovom porte); R201: koreňový rozbočovač zvlášť
         assert_eq!(cas_spanku_zbernice_usb(&k), Some((3000, 1000)));
+        assert_eq!(cas_spanku_korenov_usb(&k), Some((3000, 1000)));
+        // R201: X96 – na koreni len úložisko (1-2): zbernicu meria aj tak
+        zar("1-2", "00");
+        rozhranie("1-2:1.0", "08");
+        fs::write(z.join("1-2/power/runtime_suspended_time"), "500").unwrap();
+        fs::write(z.join("1-2/power/runtime_active_time"), "500").unwrap();
+        assert_eq!(cas_spanku_zbernice_usb(&k), Some((3500, 1500)));
+        assert_eq!(cas_spanku_usb_stromu(&k), Some((6000, 2000)), "úložisko v strome nie");
+        fs::write(z.join("1-2/power/runtime_status"), "active").unwrap();
+        fs::write(z.join("1-2/product"), "Ultra USB 3.0\n").unwrap();
+        assert_eq!(usb_bdiace(&k), vec!["1-2 Ultra USB 3.0".to_string()], "aj úložisko drží zbernicu");
+        fs::remove_dir_all(z.join("1-2")).unwrap();
+        fs::remove_dir_all(z.join("1-2:1.0")).unwrap();
         fs::write(z.join("1-1/power/runtime_status"), "suspended").unwrap();
         fs::write(z.join("1-1.2/power/runtime_status"), "active").unwrap();
         fs::write(z.join("1-1.2/product"), "USB Keyboard\n").unwrap();

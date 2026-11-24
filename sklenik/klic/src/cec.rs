@@ -77,6 +77,13 @@ fn pa_z(b: &[u8]) -> Option<u16> {
     (b.len() >= 2).then(|| u16::from_be_bytes([b[0], b[1]]))
 }
 
+/// R203: „zapni sa“ televízoru **bez vlastnej adresy** (od neregistrovaného zariadenia 15). Televízor v
+/// pohotovosti často stiahne HPD – jadro potom krabičke zruší adresu a bežnú správu poslať nedovolí; túto
+/// jedinú (Image View On od 15 pre televízor) dovolí práve na zobudenie takého televízora.
+pub fn zapni_tv_bez_adresy() -> Vec<u8> {
+    vec![0xF << 4 | TV, IMAGE_VIEW_ON]
+}
+
 /// Správa „zapni sa“ televízoru.
 pub fn zapni_tv(ja: u8) -> Vec<u8> {
     vec![ja << 4 | TV, IMAGE_VIEW_ON]
@@ -212,6 +219,10 @@ pub struct Cec {
     pub aktivny: bool,
     /// Obraz sa zapol skôr, než jadro získalo adresu – televízor sa zapne hneď, ako ju bude mať.
     zapnutie_caka: bool,
+    /// R203: zobúdzanie televízora bez adresy – kedy naposledy a koľkokrát pri tomto prebudení.
+    bez_adresy_naposledy: Option<std::time::Instant>,
+    bez_adresy_pokusov: u8,
+    pub zobudeni_bez_adresy: u32,
     /// Počty pre záznam.
     pub zapnuti_tv: u32,
     pub uspati_tv: u32,
@@ -258,6 +269,9 @@ impl Cec {
             rezim,
             aktivny: false,
             zapnutie_caka: false,
+            bez_adresy_naposledy: None,
+            bez_adresy_pokusov: 0,
+            zobudeni_bez_adresy: 0,
             zapnuti_tv: 0,
             uspati_tv: 0,
             tlacidiel: 0,
@@ -309,7 +323,12 @@ impl Cec {
     /// Krabička zobudila obraz: zapni televízor a prepni ho na krabičku.
     pub fn obraz_zapnuty(&mut self) {
         let Some((ja, pa)) = self.adresy() else {
+            // R203: televízor spí a nemá HPD – zobudiť ho bez adresy, Active Source pošle, keď adresa príde
+            if !self.zapnutie_caka {
+                self.bez_adresy_pokusov = 0;
+            }
             self.zapnutie_caka = true;
+            self.zobud_bez_adresy();
             return;
         };
         self.zapnutie_caka = false;
@@ -317,6 +336,25 @@ impl Cec {
             self.zapnuti_tv += 1;
             self.aktivny = true;
         }
+    }
+
+    /// R203: Image View On od neregistrovaného zariadenia (najviac 5× za prebudenie, každé 3 s).
+    fn zobud_bez_adresy(&mut self) {
+        if self.bez_adresy_pokusov >= 5
+            || self.bez_adresy_naposledy.is_some_and(|t| t.elapsed().as_secs() < 3)
+        {
+            return;
+        }
+        self.bez_adresy_pokusov += 1;
+        self.bez_adresy_naposledy = Some(std::time::Instant::now());
+        if self.posli(&zapni_tv_bez_adresy()) {
+            self.zobudeni_bez_adresy += 1;
+        }
+    }
+
+    /// R203: obraz je zapnutý, ale televízor sa ešte neozval (krabička nemá adresu) – treba pomôcť linke.
+    pub fn caka_na_televizor(&self) -> bool {
+        self.zapnutie_caka
     }
 
     /// Krabička vypla obraz: uspi televízor, ak ukazuje krabičku (inak len oznám, že vstup nič neukazuje).
@@ -350,8 +388,12 @@ impl Cec {
     pub fn prijmi(&mut self, obraz: bool) -> Vec<Udalost> {
         let mut udalosti = Vec::new();
         let adresy = self.adresy();
-        if self.zapnutie_caka && adresy.is_some() && obraz {
-            self.obraz_zapnuty();
+        if self.zapnutie_caka && obraz {
+            if adresy.is_some() {
+                self.obraz_zapnuty();
+            } else {
+                self.zobud_bez_adresy();
+            }
         }
         for _ in 0..32 {
             let mut s = prazdna();
@@ -406,7 +448,7 @@ impl Cec {
             None => "televízor nepripojený alebo bez CEC".into(),
         };
         format!(
-            "{adr} · {} · televízor zapnutý {}×, uspatý {}×, sám zaspal {}× · tlačidlá ovládača TV {} · správy ok {}, chyby {}",
+            "{adr} · {} · televízor zapnutý {}×, uspatý {}×, sám zaspal {}×{} · tlačidlá ovládača TV {} · správy ok {}, chyby {}",
             match self.rezim {
                 Rezim::Vsetko => "zapína aj uspáva TV",
                 Rezim::LenZapni => "len zapína TV",
@@ -415,6 +457,11 @@ impl Cec {
             self.zapnuti_tv,
             self.uspati_tv,
             self.tv_spal,
+            if self.zobudeni_bez_adresy > 0 {
+                format!(" (z toho bez adresy {}×, R203)", self.zobudeni_bez_adresy)
+            } else {
+                String::new()
+            },
             self.tlacidiel,
             self.odoslanych_ok,
             self.odoslanych_chyba
@@ -451,6 +498,8 @@ mod skusky {
     #[test]
     fn spravy_pre_televizor() {
         assert_eq!(zapni_tv(JA), [0x40, 0x04]);
+        // R203: od neregistrovaného (15) pre televízor (0) – jediná správa, ktorú jadro pošle bez adresy
+        assert_eq!(zapni_tv_bez_adresy(), [0xF0, 0x04]);
         assert_eq!(aktivny_zdroj(JA, PA), [0x4F, 0x82, 0x10, 0x00]);
         assert_eq!(uspi_tv(JA), [0x40, 0x36]);
         assert_eq!(neaktivny_zdroj(JA, PA), [0x40, 0x9D, 0x10, 0x00]);

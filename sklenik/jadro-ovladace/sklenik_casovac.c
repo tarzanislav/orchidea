@@ -16,6 +16,10 @@
  * Krok 10 µs: najdlhšie čakanie 655 ms (pri 1 µs by bolo len 65 ms – zbytočné budenie 15× za sekundu),
  * presnosť 10 µs stačí (výstup z hlbokého spánku trvá ~1,5 ms).
  *
+ * R200: zavádzač X96 nechá zapnuté všetky časovače F–I (riadenie 0x000fc000), hoci ich nič nepoužíva. Zapnutý
+ * bit preto ešte neznamená „obsadený“: ovládač 4 ms sleduje počítadlo F (bity 31–16 hodnoty) – ak stojí, časovač
+ * nikto nepoužíva a prevezme ho; ak sa hýbe, nechá ho tak.
+ *
  * Bezpečnosť – pri štarte sa časovača nedotkne (len prečíta riadenie). Zapne ho až KLÍČ zápisom 1 do
  * /sys/module/sklenik_casovac/parameters/zapnute, a to tesne pred hlbokým spánkom jadier, keď už beží strážny
  * časovač a na karte je poistka R167. Pred zaregistrovaním ovládač časovač vyskúša: prerušenie po 2 ms a po
@@ -29,6 +33,7 @@
 #include <linux/clockchips.h>
 #include <linux/completion.h>
 #include <linux/cpumask.h>
+#include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -45,6 +50,7 @@
 #define SKL_F_ZAPNUTY		BIT(16)
 #define SKL_F_OPAKOVANY		BIT(12)
 #define SKL_F_KROK		GENMASK(1, 0)
+#define SKL_F_POCITADLO		GENMASK(31, 16)
 #define SKL_KROK_10US		1
 #define SKL_TAKT_HZ		100000
 #define SKL_MIN_KROKOV		2
@@ -53,6 +59,8 @@
 static void __iomem *skl_reg;
 static int skl_irq = -ENXIO;
 static u32 skl_riadenie_pri_starte;
+/* R200: zavádzač nechal Timer F zapnutý, no počítadlo stálo – prevzatý */
+static bool skl_prevzaty;
 /* riadenie je spoločné pre časovače F–I – meníme len bity F, pod zámkom (volá sa aj s vypnutými prerušeniami) */
 static DEFINE_RAW_SPINLOCK(skl_reg_zamok);
 static DEFINE_MUTEX(skl_zamok);
@@ -157,10 +165,22 @@ static int skl_zapni(void)
 	if (!skl_reg)
 		return -ENODEV;
 	if (skl_riadenie_pri_starte & SKL_F_ZAPNUTY) {
-		scnprintf(skl_stav, sizeof(skl_stav),
-			  "nezapnutý – Timer F už niekto používa (riadenie pri štarte 0x%08x)",
-			  skl_riadenie_pri_starte);
-		return -EBUSY;
+		/* R200: zapnutý zavádzačom – používa ho niekto naozaj? Počítadlo sa pri kroku 1 µs až 1 ms za 4 ms
+		 * pohne aspoň trikrát; ak stojí, odpočet dávno skončil a časovač nikto nepoužíva. */
+		u32 prvy = FIELD_GET(SKL_F_POCITADLO, readl(skl_reg + SKL_HODNOTA)), teraz = prvy;
+		int i;
+
+		for (i = 0; i < 20 && teraz == prvy; i++) {
+			usleep_range(200, 250);
+			teraz = FIELD_GET(SKL_F_POCITADLO, readl(skl_reg + SKL_HODNOTA));
+		}
+		if (teraz != prvy) {
+			scnprintf(skl_stav, sizeof(skl_stav),
+				  "nezapnutý – Timer F niekto používa (riadenie 0x%08x, počítadlo beží %u → %u)",
+				  skl_riadenie_pri_starte, prvy, teraz);
+			return -EBUSY;
+		}
+		skl_prevzaty = true;
 	}
 	kratka = skl_skus(200);
 	dlha = kratka >= 0 ? skl_skus(2000) : -1;
@@ -185,8 +205,8 @@ static int skl_zapni(void)
 			  kratka, dlha);
 	else
 		scnprintf(skl_stav, sizeof(skl_stav),
-			  "beží – spoločný časovač budenia (Timer F, krok 10 µs, skúšky 2 ms → %lld µs, 20 ms → %lld µs)",
-			  kratka, dlha);
+			  "beží – spoločný časovač budenia (Timer F, krok 10 µs, skúšky 2 ms → %lld µs, 20 ms → %lld µs%s)",
+			  kratka, dlha, skl_prevzaty ? ", prevzatý od zavádzača – stál" : "");
 	pr_info("%s\n", skl_stav);
 	return 0;
 }
