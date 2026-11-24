@@ -207,6 +207,8 @@ const S_MODE: std::ffi::c_ulong = io(PIS, 9, 4);
 const MODE_INITIATOR: u32 = 1;
 const MODE_FOLLOWER: u32 = 1 << 4;
 const LOG_ADDR_INVALID: u8 = 0xff;
+/// Neregistrované zariadenie (žiadna voľná adresa prehrávača).
+const LOG_ADDR_UNREGISTERED: u8 = 15;
 const PHYS_ADDR_INVALID: u16 = 0xffff;
 const RX_STATUS_OK: u8 = 1;
 const TX_STATUS_OK: u8 = 1;
@@ -230,6 +232,9 @@ pub struct Cec {
     pub tv_spal: u32,
     pub odoslanych_ok: u32,
     pub odoslanych_chyba: u32,
+    /// R220: posledné nové prihlásenie a ich počet.
+    preprihlasenie: Option<std::time::Instant>,
+    pub preprihlaseni: u32,
 }
 
 impl Cec {
@@ -243,6 +248,64 @@ impl Cec {
         let fd = subor.as_raw_fd();
         let mut mode = MODE_INITIATOR | MODE_FOLLOWER;
         sys::ioctl_raz(fd, S_MODE, &mut mode)?;
+        prihlas(fd)?;
+        Ok(Cec {
+            subor,
+            rezim,
+            aktivny: false,
+            zapnutie_caka: false,
+            bez_adresy_naposledy: None,
+            bez_adresy_pokusov: 0,
+            zobudeni_bez_adresy: 0,
+            zapnuti_tv: 0,
+            uspati_tv: 0,
+            tlacidiel: 0,
+            tv_spal: 0,
+            odoslanych_ok: 0,
+            odoslanych_chyba: 0,
+            preprihlasenie: None,
+            preprihlaseni: 0,
+        })
+    }
+
+    /// R220: krabička ostala neregistrovaná (logická adresa 15 – Odroid C4 24. 11. po uspatí televízora: pri
+    /// boji o adresu bola zbernica v zvláštnom stave a jadro to už neskúsi znova). Kým je televízor pripojený,
+    /// odhlási sa a prihlási znova – najviac raz za minútu.
+    fn oprav_adresu(&mut self, adresy: Option<(u8, u16)>) {
+        if adresy.map(|(la, _)| la) != Some(LOG_ADDR_UNREGISTERED)
+            || self.preprihlasenie.is_some_and(|t| t.elapsed().as_secs() < 60)
+        {
+            return;
+        }
+        self.preprihlasenie = Some(std::time::Instant::now());
+        let fd = self.subor.as_raw_fd();
+        let mut prazdne = prazdne_adresy();
+        if sys::ioctl_raz(fd, S_LOG_ADDRS, &mut prazdne).is_ok() && prihlas(fd).is_ok() {
+            self.preprihlaseni += 1;
+        }
+    }
+}
+
+/// Prázdne logické adresy (odhlásenie).
+fn prazdne_adresy() -> LogickeAdresy {
+    LogickeAdresy {
+        log_addr: [LOG_ADDR_INVALID; 4],
+        log_addr_mask: 0,
+        cec_version: 0,
+        num_log_addrs: 0,
+        vendor_id: 0,
+        flags: 0,
+        osd_name: [0; 15],
+        primary_device_type: [0; 4],
+        log_addr_type: [0; 4],
+        all_device_types: [0; 4],
+        features: [[0; 12]; 4],
+    }
+}
+
+/// Prihlási krabičku ako prehrávač „SKLENIK“ – adresu si jadro vybojuje samo, keď je pripojený televízor.
+fn prihlas(fd: i32) -> io::Result<()> {
+    {
         let mut meno = [0u8; 15];
         meno[..7].copy_from_slice(b"SKLENIK");
         let mut la = LogickeAdresy {
@@ -260,27 +323,14 @@ impl Cec {
         };
         // EBUSY = adresy už nastavené (napr. po reštarte KLÍČA) – v poriadku
         match sys::ioctl_raz(fd, S_LOG_ADDRS, &mut la) {
-            Ok(()) => {}
-            Err(e) if e.raw_os_error() == Some(16) => {}
-            Err(e) => return Err(e),
+            Ok(()) => Ok(()),
+            Err(e) if e.raw_os_error() == Some(16) => Ok(()),
+            Err(e) => Err(e),
         }
-        Ok(Cec {
-            subor,
-            rezim,
-            aktivny: false,
-            zapnutie_caka: false,
-            bez_adresy_naposledy: None,
-            bez_adresy_pokusov: 0,
-            zobudeni_bez_adresy: 0,
-            zapnuti_tv: 0,
-            uspati_tv: 0,
-            tlacidiel: 0,
-            tv_spal: 0,
-            odoslanych_ok: 0,
-            odoslanych_chyba: 0,
-        })
     }
+}
 
+impl Cec {
     pub fn fd(&self) -> i32 {
         self.subor.as_raw_fd()
     }
@@ -387,6 +437,7 @@ impl Cec {
     /// Prečíta všetky čakajúce správy, odpovie na otázky a vráti udalosti pre KLÍČ.
     pub fn prijmi(&mut self, obraz: bool) -> Vec<Udalost> {
         let mut udalosti = Vec::new();
+        self.oprav_adresu(self.adresy());
         let adresy = self.adresy();
         if self.zapnutie_caka && obraz {
             if adresy.is_some() {
@@ -446,6 +497,11 @@ impl Cec {
                 pa & 0xF
             ),
             None => "televízor nepripojený alebo bez CEC".into(),
+        };
+        let adr = if self.preprihlaseni > 0 {
+            format!("{adr} · nové prihlásenia po strate adresy (R220) {}×", self.preprihlaseni)
+        } else {
+            adr
         };
         format!(
             "{adr} · {} · televízor zapnutý {}×, uspatý {}×, sám zaspal {}×{} · tlačidlá ovládača TV {} · správy ok {}, chyby {}",
