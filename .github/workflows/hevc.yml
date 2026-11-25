@@ -144,8 +144,9 @@ jobs:
           for d in toky/norma/AMP_D* toky/norma/TILES_A* toky/norma/WPP_D_ericsson_MAIN_*; do
             if [ -d "$d" ]; then cp -r "$d" "$b/toky/"; fi
           done
-          cp target/release/examples/hevc_dekoduj hevc-dekoder/rpi/meraj_hevc.sh "$b/"
-          chmod +x "$b/hevc_dekoduj" "$b/meraj_hevc.sh"
+          cargo build --locked --release -p orchidea-hevc-dekoder --example hevc_meranie
+          cp target/release/examples/hevc_dekoduj target/release/examples/hevc_meranie hevc-dekoder/rpi/meraj_hevc.sh "$b/"
+          chmod +x "$b/hevc_dekoduj" "$b/hevc_meranie" "$b/meraj_hevc.sh"
           du -sh "$b"
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'ubuntu-24.04-arm'
@@ -186,7 +187,8 @@ jobs:
         env:
           ORCHIDEA_HEVC_PRISNE: "1"
         run: |
-          cargo build --locked --release -p orchidea-hevc-dekoder --example hevc_dekoduj --target armv7-unknown-linux-gnueabihf
+          cargo build --locked --release -p orchidea-hevc-dekoder --example hevc_dekoduj --example hevc_meranie \
+            --target armv7-unknown-linux-gnueabihf
           echo "### HEVC – vlastný dekodér na 32-bitovom ARMv7 s NEON (QEMU)" >> "$GITHUB_STEP_SUMMARY"
           qemu-arm -L /usr/arm-linux-gnueabihf target/armv7-unknown-linux-gnueabihf/release/examples/hevc_dekoduj \
             toky/norma > armv7.txt || { cat armv7.txt | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; }
@@ -206,8 +208,10 @@ jobs:
           for d in toky/norma/AMP_D* toky/norma/TILES_A* toky/norma/WPP_D_ericsson_MAIN_*; do
             if [ -d "$d" ]; then cp -r "$d" "$b/toky/"; fi
           done
-          cp target/armv7-unknown-linux-gnueabihf/release/examples/hevc_dekoduj hevc-dekoder/rpi/meraj_hevc.sh "$b/"
-          chmod +x "$b/hevc_dekoduj" "$b/meraj_hevc.sh"
+          r=target/armv7-unknown-linux-gnueabihf/release/examples
+          cp "$r/hevc_dekoduj" "$r/hevc_meranie" hevc-dekoder/rpi/meraj_hevc.sh "$b/"
+          chmod +x "$b/hevc_dekoduj" "$b/hevc_meranie" "$b/meraj_hevc.sh"
+          qemu-arm -L /usr/arm-linux-gnueabihf "$b/hevc_meranie" --vlakna 2 "$b/toky/film720.hevc" | tail -n 1
           du -sh "$b"
       - uses: actions/upload-artifact@v4
         with:
