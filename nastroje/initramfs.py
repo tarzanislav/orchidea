@@ -42,9 +42,20 @@ def main() -> int:
     ino += 1
     obsah += zaznam("init", 0o100755, klic.read_bytes(), ino=ino)
     ino += 1
+    # ďalšie súbory (R223: program merania HEVC a skúšobné toky); chýbajúce priečinky sa vytvoria
+    hotove = {"dev", "proc", "sys", "run", "tmp", "usr", "usr/bin"}
     for par in sys.argv[3:]:
         ciel, zdroj = par.split("=", 1)
-        obsah += zaznam(ciel.lstrip("/"), 0o100755, Path(zdroj).read_bytes(), ino=ino)
+        ciel = ciel.lstrip("/")
+        casti = ciel.split("/")[:-1]
+        for i in range(1, len(casti) + 1):
+            d = "/".join(casti[:i])
+            if d not in hotove:
+                obsah += zaznam(d, 0o040755, ino=ino)
+                ino += 1
+                hotove.add(d)
+        rezim = 0o100644 if ciel.endswith(".hevc") else 0o100755
+        obsah += zaznam(ciel, rezim, Path(zdroj).read_bytes(), ino=ino)
         ino += 1
     obsah += zaznam("TRAILER!!!", 0)
     vystup.write_bytes(gzip.compress(bytes(obsah), compresslevel=9, mtime=0))

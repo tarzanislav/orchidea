@@ -145,6 +145,10 @@ jobs:
           file "$b"
           ${{ matrix.qemu }} -cpu ${{ matrix.cpu }} "$b" --skuska
           mkdir -p klic-vystup && cp "$b" klic-vystup/klic
+          # R223: program merania vlastného dekodéra HEVC (relácia B, rozhranie R4) pre ten istý procesor
+          cargo build --locked --release -p orchidea-hevc-dekoder --example hevc_meranie --target ${{ matrix.ciel }}
+          cp "target/${{ matrix.ciel }}/release/examples/hevc_meranie" klic-vystup/hevc_meranie
+          file klic-vystup/hevc_meranie
       - name: R165 – skúšobné video KLÍČA overené nezávislým dekodérom (FFmpeg) bit po bite
         if: matrix.id == 'v8'
         run: |
@@ -161,6 +165,23 @@ jobs:
           # R177: HEVC so skupinami snímok – P-snímky s preskočenými jednotkami cez referenciu, časovanie VUI
           ffmpeg -v error -i /tmp/vid/gop.hevc -f rawvideo -pix_fmt yuv420p -y /tmp/vid/dek.gop.yuv
           cmp /tmp/vid/dek.gop.yuv /tmp/vid/gop.yuv && echo "- ✅ skúšobný tok HEVC so skupinami (P cez referenciu): FFmpeg dekóduje presne (bit po bite)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: R223 – skúšobné toky HEVC pre meranie na zariadení (x265, MD5 v SEI) a overenie programom merania
+        if: matrix.id == 'v8'
+        run: |
+          mkdir -p klic-vystup/hevc
+          z="-hide_banner -loglevel error -y -f lavfi"
+          film() {
+            ffmpeg $z -i "testsrc2=size=$2:rate=24" -frames:v 96 -c:v libx265 -preset fast -crf 23 -pix_fmt yuv420p \
+              -x265-params "log-level=error:hash=1" "klic-vystup/hevc/$1.hevc"
+          }
+          film film720 1280x720
+          film film1080 1920x1080
+          ls -l klic-vystup/hevc
+          for t in klic-vystup/hevc/*.hevc; do
+            v=$(klic-vystup/hevc_meranie "$t" | grep '^VYSLEDOK')
+            echo "- $(basename "$t"): $v" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "$v" | grep -q 'stav=ok' && echo "$v" | grep -q 'sei_nezhoda=0'
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: klic-${{ matrix.id }}
@@ -571,7 +592,12 @@ jobs:
       - name: Zavádzací oddiel – jadrá, systémy v pamäti, nastavenie
         run: |
           mkdir -p boot
-          for v in 6 7 8; do python3 nastroje/initramfs.py "klic/klic-v$v/klic" "boot/initramfs$v.cpio.gz"; done
+          # R223: v systéme v pamäti aj program merania HEVC a skúšobné toky (z úlohy v8)
+          for v in 6 7 8; do
+            dalsie="usr/bin/hevc_meranie=klic/klic-v$v/hevc_meranie"
+            for t in klic/klic-v8/hevc/*.hevc; do dalsie="$dalsie usr/share/orchidea/hevc/$(basename "$t")=$t"; done
+            python3 nastroje/initramfs.py "klic/klic-v$v/klic" "boot/initramfs$v.cpio.gz" $dalsie
+          done
           cp firmver/* jadra/*.dtb jadra/*.img jadra/*.config boot/
           cp sklenik/boot/config.txt sklenik/boot/cmdline.txt sklenik/boot/sklenik.txt sklenik/boot/sklenik-obraz.txt sklenik/boot/sklenik-pokoj.txt boot/
           mkdir -p boot/overlays && cp prekrytia/*.dtbo boot/overlays/

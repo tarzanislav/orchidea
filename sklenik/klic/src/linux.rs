@@ -1752,6 +1752,9 @@ pub fn spusti() {
     let mut usb_ozivene = false;
     // R165: hardvérový dekodér videa – výsledky skúšky (vlákno) a či už bežala
     let video_riadky: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // R223: meranie vlastného dekodéra HEVC (spolu s prvým pokusom na zariadení)
+    let hevc_riadky: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut hevc_spustene = false;
     let mut video_spustene = false;
     let mut bez_teploty_hlasene = false;
     let mut teplota = hw.teplota();
@@ -2240,6 +2243,25 @@ pub fn spusti() {
                 || (tv && !pokus_hotovy_tu && nastavenie.as_ref().is_some_and(|(_, n)| n.pokus.is_none()));
             let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
             spusti_skusku_videa(skusat, spustaci, video_riadky.clone());
+        }
+        // R223: meranie vlastného dekodéra HEVC – pri prvom pokuse na zariadení (alebo hevc=ano), po skúške videa
+        if pid1
+            && !skuska
+            && !hevc_spustene
+            && novinka(&nastavenie, "hevc_meranie")
+            && hore >= 90.0
+            && nastavenie.is_some()
+            && Path::new(crate::hevc_meranie::PROGRAM).exists()
+        {
+            hevc_spustene = true;
+            let n = nastavenie.as_ref().map(|(_, n)| n);
+            let merat = n.and_then(|n| n.dlhy_test) == Some(true)
+                || n.and_then(|n| n.video) == Some(true)
+                || (!pokus_hotovy_tu && n.is_some_and(|n| n.pokus.is_none()))
+                || n.and_then(|n| n.pokus) == Some(true);
+            if merat {
+                crate::hevc_meranie::spusti(profil.strop, hevc_riadky.clone(), hlas);
+            }
         }
 
         // R158–R161: správca chladu – obraz, periférie a fázy tepelného pokusu
@@ -2911,6 +2933,14 @@ pub fn spusti() {
                         && !v.is_empty()
                     {
                         text += &nadpis("VIDEO – HARDVÉROVÝ DEKODÉR (R165)");
+                        for r in v.iter() {
+                            text += &format!("  {r}{NL}");
+                        }
+                    }
+                    if let Ok(v) = hevc_riadky.lock()
+                        && !v.is_empty()
+                    {
+                        text += &nadpis("HEVC – VLASTNÝ DEKODÉR (R223)");
                         for r in v.iter() {
                             text += &format!("  {r}{NL}");
                         }
