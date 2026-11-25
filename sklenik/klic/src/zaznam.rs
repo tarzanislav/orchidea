@@ -59,10 +59,15 @@ pub fn druh_disku(disk: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// R215: disky, ktoré vrátili chybu vstupu/výstupu (poškodená alebo nekompatibilná karta) – už sa neskúšajú,
-/// aby každý pokus neznamenal sekundy obnovy radiča a teplo navyše.
-static CHYBNE: std::sync::Mutex<std::collections::BTreeSet<String>> =
-    std::sync::Mutex::new(std::collections::BTreeSet::new());
+/// R215/R221: disky, ktoré opakovane vracajú chybu vstupu/výstupu (poškodená alebo nekompatibilná karta) –
+/// na chvíľu sa neskúšajú, aby každý pokus neznamenal sekundy obnovy radiča a teplo navyše.
+///
+/// R221 (X96 25. 11.): jediná chyba (USB kľúč pri prebúdzaní zo spánku) disk vyradila natrvalo a od 30. minúty
+/// sa nič nezapísalo. Teraz: vyradí až 3. chyba za sebou, len na 10 minút, a každé úspešné čítanie počet zmaže.
+static CHYBNE: std::sync::Mutex<std::collections::BTreeMap<String, (u32, Instant)>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+const CHYB_NA_VYRADENIE: u32 = 3;
+const VYRADENIE: Duration = Duration::from_secs(600);
 
 /// Disk oddielu („mmcblk0p1“ → „mmcblk0“, „sda1“ → „sda“).
 pub fn disk_oddielu(oddiel: &str) -> String {
@@ -73,14 +78,58 @@ pub fn disk_oddielu(oddiel: &str) -> String {
     }
 }
 
-/// Je disk označený ako nečitateľný?
+/// Je disk práve vyradený (opakované chyby čítania za posledných 10 minút)?
 pub fn je_chybny(disk: &str) -> bool {
-    CHYBNE.lock().is_ok_and(|c| c.contains(disk))
+    CHYBNE
+        .lock()
+        .is_ok_and(|c| c.get(disk).is_some_and(|&(n, t)| n >= CHYB_NA_VYRADENIE && t.elapsed() < VYRADENIE))
 }
 
-/// Chyba vstupu/výstupu (EIO) na disku: disk sa označí a vráti sa `true`, ak je to prvé označenie.
+/// Chyba vstupu/výstupu (EIO) na disku: započíta sa; vráti `true`, keď ho práve táto chyba vyradila.
 pub fn oznac_ak_chybny(disk: &str, e: &std::io::Error) -> bool {
-    e.raw_os_error() == Some(5) && CHYBNE.lock().is_ok_and(|mut c| c.insert(disk.to_string()))
+    if e.raw_os_error() != Some(5) {
+        return false;
+    }
+    CHYBNE.lock().is_ok_and(|mut c| {
+        let z = c.entry(disk.to_string()).or_insert((0, Instant::now()));
+        // po uplynutí vyradenia sa počíta odznova
+        if z.0 >= CHYB_NA_VYRADENIE && z.1.elapsed() >= VYRADENIE {
+            z.0 = 0;
+        }
+        z.0 += 1;
+        z.1 = Instant::now();
+        z.0 == CHYB_NA_VYRADENIE
+    })
+}
+
+/// Úspešné čítanie – disk je v poriadku, chyby sa zabúdajú.
+pub fn disk_v_poriadku(disk: &str) {
+    if let Ok(mut c) = CHYBNE.lock() {
+        c.remove(disk);
+    }
+}
+
+/// Prvý sektor oddielu; pri chybe ešte raz po chvíli (USB kľúč sa prebúdza zo spánku).
+pub fn citaj_prvy_sektor(f: &fs::File, disk: &str) -> std::io::Result<[u8; 512]> {
+    let mut s = [0u8; 512];
+    let r = f.read_exact_at(&mut s, 0).or_else(|_| {
+        std::thread::sleep(Duration::from_millis(500));
+        f.read_exact_at(&mut s, 0)
+    });
+    match r {
+        Ok(()) => {
+            disk_v_poriadku(disk);
+            Ok(s)
+        }
+        Err(e) => {
+            if oznac_ak_chybny(disk, &e) {
+                crate::linux::hlas(&format!(
+                    "úložisko {disk}: {CHYB_NA_VYRADENIE}× za sebou chyba čítania ({e}) – 10 min sa neskúša (R221)"
+                ));
+            }
+            Err(e)
+        }
+    }
 }
 
 fn je_fat(oddiel: &str) -> bool {
@@ -89,14 +138,7 @@ fn je_fat(oddiel: &str) -> bool {
         return false;
     }
     let Ok(f) = fs::File::open(format!("/dev/{oddiel}")) else { return false };
-    let mut s = [0u8; 512];
-    match f.read_exact_at(&mut s, 0) {
-        Ok(()) => samomeranie::je_fat(&s),
-        Err(e) => {
-            oznac_ak_chybny(&disk, &e);
-            false
-        }
-    }
+    citaj_prvy_sektor(&f, &disk).is_ok_and(|s| samomeranie::je_fat(&s))
 }
 
 /// Prvé oddiely diskov so súborovým systémom FAT: najprv disk, z ktorého SKLENÍK štartoval, potom USB
@@ -169,7 +211,19 @@ pub fn zapis(
         }
     }
     Err(if chyby.is_empty() {
-        "karta ani USB kľúč s FAT nie sú v systéme".into()
+        // R221: povedz aj prečo – disk vyradený po chybách čítania vyzerá inak ako chýbajúci kľúč
+        let vyradene: Vec<String> = CHYBNE
+            .lock()
+            .map(|c| c.iter().filter(|(_, (n, _))| *n >= CHYB_NA_VYRADENIE).map(|(d, _)| d.clone()).collect())
+            .unwrap_or_default();
+        if vyradene.is_empty() {
+            "karta ani USB kľúč s FAT nie sú v systéme".into()
+        } else {
+            format!(
+                "karta ani USB kľúč s FAT nie sú dostupné – po chybách čítania dočasne vyradené: {}",
+                vyradene.join(", ")
+            )
+        }
     } else {
         chyby.join("; ")
     })
@@ -964,5 +1018,31 @@ impl Riadenie {
                 milniky: self.milniky().to_vec(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod testy_r221 {
+    use super::*;
+
+    #[test]
+    fn jedna_chyba_disk_nevyradi() {
+        let eio = std::io::Error::from_raw_os_error(5);
+        let d = "skuska-r221";
+        assert!(!oznac_ak_chybny(d, &eio));
+        assert!(!je_chybny(d), "jediná chyba (prebúdzanie USB) nesmie disk vyradiť");
+        assert!(!oznac_ak_chybny(d, &eio));
+        assert!(oznac_ak_chybny(d, &eio), "tretia chyba za sebou vyradí");
+        assert!(je_chybny(d));
+        disk_v_poriadku(d);
+        assert!(!je_chybny(d), "úspešné čítanie vyradenie ruší");
+        // iné chyby ako EIO (napr. disk chýba) sa nepočítajú
+        let enoent = std::io::Error::from_raw_os_error(2);
+        for _ in 0..5 {
+            assert!(!oznac_ak_chybny(d, &enoent));
+        }
+        assert!(!je_chybny(d));
+        assert_eq!(disk_oddielu("mmcblk0p1"), "mmcblk0");
+        assert_eq!(disk_oddielu("sda1"), "sda");
     }
 }

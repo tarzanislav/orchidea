@@ -58,7 +58,7 @@ fn slovo_stavu(s: StavObrazu) -> &'static str {
 }
 
 /// Zápis do sériovej linky, na obrazovku (konzola jadra) aj do denníka jadra.
-fn hlas(sprava: &str) {
+pub(crate) fn hlas(sprava: &str) {
     println!("KLÍČ: {sprava}");
     // jeden zápis = jeden záznam denníka jadra
     if let Ok(mut k) = fs::OpenOptions::new().write(true).open("/dev/kmsg") {
@@ -1104,13 +1104,8 @@ fn nacitaj_nastavenie_z(mena: &[String]) -> Option<(String, NastavenieZariadenia
         }
         let cesta = format!("/dev/{meno}");
         let Ok(mut f) = fs::File::open(&cesta) else { continue };
-        let mut prvy = [0u8; 512];
-        if let Err(e) = f.read_exact_at(&mut prvy, 0) {
-            if zaznam::oznac_ak_chybny(meno, &e) {
-                hlas(&format!(
-                    "úložisko {meno}: chyba čítania ({e}) – správca systému ho už neskúša, záznamy idú na iný nosič (R215)"
-                ));
-            }
+        // R221: chyba sa ohlási a disk sa na chvíľu vyradí až pri opakovaní (citaj_prvy_sektor)
+        if zaznam::citaj_prvy_sektor(&f, meno).is_err() {
             continue;
         }
         if let Ok(text) = sklenik_karta::citaj_nastavenie(&mut f) {
