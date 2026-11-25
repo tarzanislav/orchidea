@@ -189,7 +189,12 @@ impl Dekoder {
             faktory: None,
             rezerva_stavu: None,
             spolocne: Arc::new(Spolocne::default()),
-            vlakien: std::thread::available_parallelism().map_or(1, |n| n.get()).min(8),
+            // bez vlákien (napr. wasm32-wasip1) sa dekóduje v hlavnom vlákne
+            vlakien: if cfg!(target_os = "wasi") {
+                1
+            } else {
+                std::thread::available_parallelism().map_or(1, |n| n.get()).min(8)
+            },
             vlakna: None,
             odoslane: 0,
             overovat_odtlacky: true,

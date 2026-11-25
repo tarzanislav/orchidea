@@ -283,6 +283,8 @@ mod testy {
     }
 
     #[test]
+    // wasm32-wasip1 nemá vlákna (skúška čaká na pás z iného vlákna)
+    #[cfg_attr(target_os = "wasi", ignore)]
     fn obraz_po_pasoch() {
         let mut o = Obraz::novy(48, 40);
         for (i, v) in o.roviny[0].data.iter_mut().enumerate() {
