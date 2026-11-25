@@ -641,15 +641,20 @@ impl Profil {
                 Err(chyba("tabuľka nesedí s priestorom profilu"))
             }
         };
+        // tabuľky iných typov (napr. „mpet“ z ICC v4.3+/iccMAX) sa vynechajú – profil sa použije cez maticu
+        // s krivkami alebo cez ostatné tabuľky; ak nezostane nič, je to chyba nižšie
+        let najdi_lut = |z: &[u8; 4]| {
+            najdi(z).filter(|&(p, _)| matches!(c.kus(p, 4), Ok(b"mft1" | b"mft2" | b"mAB " | b"mBA ")))
+        };
         for i in 0..3 {
             let za = [b'A', b'2', b'B', b'0' + i as u8];
             let zb = [b'B', b'2', b'A', b'0' + i as u8];
-            if let Some((p, _)) = najdi(&za) {
+            if let Some((p, _)) = najdi_lut(&za) {
                 let l = citaj_lut(&c, p, true, pcs, false)?;
                 sedi(&l, kanalov, 3)?;
                 a2b[i] = Some(l);
             }
-            if let Some((p, _)) = najdi(&zb) {
+            if let Some((p, _)) = najdi_lut(&zb) {
                 let mut l = citaj_lut(&c, p, false, pcs, !pcs_lab)?;
                 sedi(&l, 3, kanalov)?;
                 if pcs_lab && let Some(cl) = l.clut.as_mut() {
@@ -914,6 +919,23 @@ mod skusky {
             Zamer::RelativnyKolorimetricky,
         );
         assert!((s[0] - 0.2).abs() < 1e-6 && (s[1] - 0.5).abs() < 1e-6 && (s[2] - 0.9).abs() < 1e-6, "{s:?}");
+    }
+
+    #[test]
+    fn neznamy_typ_tabulky_sa_vynecha() {
+        // značka chad (sf32) sa premenuje na A2B0 typu „mpet“ – profil sa má prečítať cez maticu s krivkami
+        let mut d = zapis_rgb(&primarne::SRGB, &Prenos::Srgb, "sRGB");
+        let n = u32::from_be_bytes([d[128], d[129], d[130], d[131]]) as usize;
+        for i in 0..n {
+            let q = 132 + 12 * i;
+            if &d[q..q + 4] == b"chad" {
+                let p = u32::from_be_bytes([d[q + 4], d[q + 5], d[q + 6], d[q + 7]]) as usize;
+                d[q..q + 4].copy_from_slice(b"A2B0");
+                d[p..p + 4].copy_from_slice(b"mpet");
+            }
+        }
+        let p = Profil::citaj(&d).unwrap();
+        assert!(!p.ma_tabulku_do_pcs(Zamer::Percepcny) && p.matica().is_some());
     }
 
     #[test]

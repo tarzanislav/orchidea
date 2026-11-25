@@ -148,6 +148,12 @@ def icc():
             else:
                 continue
             meno = os.path.basename(cesta)
+            # profily, ktoré nevie použiť ani rozhodca (ICC v5 / iccMAX: len tabuľky „mpet“), sa preskočia
+            try:
+                ImageCms.buildTransform(profil, srgb, rezim, "RGB", renderingIntent=1)
+            except Exception:
+                print(f"PRESKOČENÉ {meno}: rozhodca ho nevie použiť (napr. ICC v5 / iccMAX)")
+                continue
             with open(cesta, "rb") as f:
                 tabulkovy = b"A2B0" in f.read(132 + 12 * 200)
             # percepčný zámer: Little CMS pri profile v4 (jeho sRGB) zapína kompenzáciu čierneho bodu (ISO 18619),
