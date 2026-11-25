@@ -1,18 +1,24 @@
-//! Príkazový riadok Pohľadu (aj pre nezávislé overenie v CI).
+//! Príkazový riadok Pohľadu (aj pre nezávislé overenie v CI). Okno je program `pohlad`.
 //!
-//! - `pohlad davka <vstupný priečinok> <výstupný priečinok> [--format jpg|png|tif|exr] [--max N] [--meno ŠABLÓNA]
+//! - `prikazy davka <vstupný priečinok> <výstupný priečinok> [--format jpg|png|tif|exr] [--max N] [--meno ŠABLÓNA]
 //!   [--vlakna N] [--kvalita Q] [--prestavka MS]` – riadok na každý súbor: `SUBOR poradie ms_od_začiatku ok|chyba text`
-//! - `pohlad nahlady <priečinok> <strana> [--vlakna N] [--vystup PRIEČINOK]` – zoznam obrázkov a náhľady na pozadí;
+//! - `prikazy nahlady <priečinok> <strana> [--vlakna N] [--vystup PRIEČINOK]` – zoznam obrázkov a náhľady na pozadí;
 //!   riadok `NAHLAD poradie ms šírka výška meno` (s `--vystup` sa náhľady uložia ako PNG)
-//! - `pohlad porovnaj <a> <b> [--rozdiel výstup.png] [--zosilnenie K] [--deleny výstup.png]` – riadok
+//! - `prikazy porovnaj <a> <b> [--rozdiel výstup.png] [--zosilnenie K] [--deleny výstup.png]` – riadok
 //!   `NAJVIAC x PRIEMER x PSNR x SSIM x ROZDIELNYCH n`
-//! - `pohlad zmensi <vstup> <výstup.surove> <šírka> <výška>` – zmenšenie a surové vzorky (ako `formaty prevod`)
+//! - `prikazy snimka <súbor|priečinok> <šírka> <výška> <výstup.png> [povely …]` – jadro okna bez okna: povely
+//!   `dalsi predosly prvy posledny priblizit oddialit 1:1 prisposobit oznac rezim pas udaje tahaj:dx,dy
+//!   koliesko:k,x,y delic:x`; po každom sa počká na prácu na pozadí; riadky `VYKRESLENI n ZOBUDENI n POKOJ ok|…`
+//! - `prikazy zmensi <vstup> <výstup.surove> <šírka> <výška>` – zmenšenie a surové vzorky (ako `formaty prevod`)
 
 use orchidea_formaty::obraz::Vzorky;
 use orchidea_formaty::{Format, Limity};
 use orchidea_pohlad::davka::{self, Nastavenie, Recept, Udalost};
+use orchidea_pohlad::prehliadac::{Povel, Prehliadac, Vstup};
 use orchidea_pohlad::{nahlady, porovnanie, zmensenie};
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 fn hodnota<'a>(a: &'a [String], meno: &str) -> Option<&'a str> {
@@ -120,6 +126,66 @@ fn spusti(a: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        Some("snimka") if a.len() >= 6 => {
+            let zobudeni = Arc::new(AtomicU64::new(0));
+            let z = zobudeni.clone();
+            let mut p = Prehliadac::novy(Arc::new(move || {
+                z.fetch_add(1, Ordering::Relaxed);
+            }));
+            let (w, h): (usize, usize) = (a[3].parse().map_err(|_| "šírka")?, a[4].parse().map_err(|_| "výška")?);
+            let cakaj = |p: &mut Prehliadac| {
+                let start = Instant::now();
+                while p.pracuje() && start.elapsed() < Duration::from_secs(60) {
+                    p.spracuj_pozadie();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                p.spracuj_pozadie();
+            };
+            p.vstup(Vstup::Velkost { sirka: w, vyska: h });
+            p.vstup(Vstup::Otvor(a[2].clone().into()));
+            cakaj(&mut p);
+            let cisla = |t: &str| -> Vec<f32> { t.split(',').filter_map(|x| x.parse().ok()).collect() };
+            for povel in &a[6..] {
+                let v = match povel.split_once(':').map_or((povel.as_str(), ""), |(x, y)| (x, y)) {
+                    ("dalsi", _) => Vstup::Povel(Povel::Dalsi),
+                    ("predosly", _) => Vstup::Povel(Povel::Predosly),
+                    ("prvy", _) => Vstup::Povel(Povel::Prvy),
+                    ("posledny", _) => Vstup::Povel(Povel::Posledny),
+                    ("priblizit", _) => Vstup::Povel(Povel::Priblizit),
+                    ("oddialit", _) => Vstup::Povel(Povel::Oddialit),
+                    ("1", "1") => Vstup::Povel(Povel::Skutocna),
+                    ("prisposobit", _) => Vstup::Povel(Povel::Prisposobit),
+                    ("oznac", _) => Vstup::Povel(Povel::Oznac),
+                    ("rezim", _) => Vstup::Povel(Povel::Rezim),
+                    ("pas", _) => Vstup::Povel(Povel::Pas),
+                    ("udaje", _) => Vstup::Povel(Povel::Udaje),
+                    ("tahaj", t) => {
+                        let c = cisla(t);
+                        Vstup::Tahaj { dx: c[0], dy: c[1] }
+                    }
+                    ("koliesko", t) => {
+                        let c = cisla(t);
+                        Vstup::Koliesko { krokov: c[0], x: c[1], y: c[2] }
+                    }
+                    ("delic", t) => Vstup::Delic { x: cisla(t)[0] },
+                    _ => return Err(format!("neznámy povel {povel}")),
+                };
+                p.vstup(v);
+                cakaj(&mut p);
+            }
+            let mut platno = orchidea_pismo::Platno::nove(w, h, 0);
+            p.vykresli(&mut platno);
+            // pokoj: bez vstupu sa nič nepočíta ani neprekresľuje
+            let pred = zobudeni.load(Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(500));
+            let pokoj = !p.spracuj_pozadie() && !p.potrebuje_prekreslit() && zobudeni.load(Ordering::Relaxed) == pred;
+            println!("VYKRESLENI {} ZOBUDENI {} POKOJ {}", p.vykresleni, pred, if pokoj { "ok" } else { "nie" });
+            println!("TITULOK {}", p.titulok());
+            let body: Vec<u8> = platno.body.iter().flat_map(|&f| [(f >> 16) as u8, (f >> 8) as u8, f as u8]).collect();
+            let o = orchidea_formaty::Obraz::novy(w, h, orchidea_formaty::obraz::Model::Rgb, false, Vzorky::U8(body))
+                .map_err(|e| e.to_string())?;
+            std::fs::write(&a[5], orchidea_formaty::zapis(&o, Format::Png).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        }
         Some("zmensi") if a.len() == 6 => {
             let d = std::fs::read(&a[2]).map_err(|e| e.to_string())?;
             let o = orchidea_formaty::citaj(&d, &Limity::default()).map_err(|e| e.to_string())?;
@@ -134,7 +200,7 @@ fn spusti(a: &[String]) -> Result<(), String> {
             von.extend(bajty);
             std::fs::write(&a[3], von).map_err(|e| e.to_string())
         }
-        _ => Err("použitie: pohlad davka <vstup> <výstup> [voľby] | zmensi <vstup> <výstup.surove> <šírka> <výška>".into()),
+        _ => Err("použitie: prikazy davka <vstup> <výstup> [voľby] | zmensi <vstup> <výstup.surove> <šírka> <výška>".into()),
     }
 }
 

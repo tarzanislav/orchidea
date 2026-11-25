@@ -15,6 +15,11 @@ vrstva = 3
 orchidea-jadro.workspace = true
 orchidea-formaty.workspace = true
 orchidea-farba.workspace = true
+orchidea-pismo.workspace = true
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "pohlad"
+path = "src/main.rs"

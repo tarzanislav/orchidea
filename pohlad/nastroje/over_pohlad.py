@@ -298,10 +298,53 @@ def porovnanie(rng):
         vysledok(f"porovnanie {meno}", ok, f"PSNR {psnr:.4f} (ich {ich_psnr:.4f}) dB, SSIM {ssim:.6f} (ich {ich_ssim:.6f})")
 
 
+
+def okno(rng):
+    """Jadro okna bez okna (príkaz `snimka`): zobrazenie 1:1 a zmenšené, delené porovnanie, rozdiel, pokoj."""
+    pr = os.path.join(PRAC, "okno")
+    os.makedirs(pr, exist_ok=True)
+    a = obraz(rng, 300, 400, 3, foto=True)
+    b = np.clip(a.astype(int) + rng.integers(-20, 21, a.shape), 0, 255).astype(np.uint8)
+    velky = obraz(rng, 1200, 1600, 3, foto=True)
+    Image.fromarray(a).save(os.path.join(pr, "a.png"))
+    Image.fromarray(b).save(os.path.join(pr, "b.png"))
+    Image.fromarray(velky).save(os.path.join(pr, "c_velky.png"))
+
+    def snimka(subor, *povely):
+        von = os.path.join(PRAC, "okno_snimka.png")
+        r = subprocess.run([PROGRAM, "snimka", os.path.join(pr, subor), "800", "600", von, "pas", "udaje", *povely],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return None, r.stdout + r.stderr
+        return np.asarray(Image.open(von).convert("RGB")).astype(int), r.stdout
+
+    obr, txt = snimka("a.png")
+    ok = obr is not None and np.array_equal(obr[150:450, 200:600], a) and "POKOJ ok" in txt and "VYKRESLENI 1 " in txt
+    vysledok("okno: obraz 1:1 v strede", ok, "bit po bite, jedno vykreslenie, v pokoji sa nič nepočíta" if ok else txt[-200:])
+    obr, txt = snimka("c_velky.png")
+    if obr is not None:
+        # zmenšenie na polovicu = priemer 2 × 2 v lineárnom svetle (úroveň pyramídy)
+        lin = do_lin(velky.astype(float))
+        ref = np.round(z_lin(lin.reshape(600, 2, 800, 2, 3).mean(axis=(1, 3))))
+        d = np.abs(obr - ref)
+        vysledok("okno: zmenšené na 50 %", d.max() <= 1, f"najviac {d.max():.0f}/255 voči priemeru v lineárnom svetle")
+    obr, txt = snimka("a.png", "oznac", "dalsi", "rezim", "delic:400")
+    if obr is not None:
+        vlavo, vpravo = obr[150:450, 200:400], obr[150:450, 401:600]
+        ok = np.array_equal(vlavo, a[:, :200]) and np.array_equal(vpravo, b[:, 201:])
+        vysledok("okno: delené porovnanie A / B", ok, "vľavo A, vpravo B bit po bite" if ok else txt[-200:])
+    obr, txt = snimka("a.png", "oznac", "dalsi", "rezim", "rezim")
+    if obr is not None:
+        ref = np.minimum(np.abs(a.astype(int) - b.astype(int)) * 8, 255)
+        ok = np.array_equal(obr[150:450, 200:600], ref)
+        vysledok("okno: rozdiel |A - B| × 8", ok, "bit po bite" if ok else "nezhoda")
+
+
 rng = np.random.default_rng(2026)
 zmensenie(rng)
 davka_bez_straty(rng)
 porovnanie(rng)
+okno(rng)
 brana(rng)
 nahlady(rng)
 nahlady_brana()

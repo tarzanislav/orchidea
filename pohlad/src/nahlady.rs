@@ -209,6 +209,11 @@ fn na_srgb8(o: Obraz) -> Vysledok<Obraz> {
     Ok(r)
 }
 
+/// Obraz na zobrazenie: 8-bitové sRGB (s alfou, ak ju má), natočené podľa Exif.
+pub fn na_zobrazenie(o: Obraz) -> Vysledok<Obraz> {
+    natoc(&na_srgb8(o)?)
+}
+
 /// Náhľad súboru: zmestí sa do štvorca `strana` × `strana`, 8-bitové sRGB, natočený podľa Exif.
 pub fn nahlad(cesta: &Path, strana: usize, limity: &Limity) -> Vysledok<Obraz> {
     let data = std::fs::read(cesta).map_err(|e| Chyba::VstupVystup(format!("{}: {e}", cesta.display())))?;

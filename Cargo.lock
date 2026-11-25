@@ -71,6 +71,7 @@ dependencies = [
  "orchidea-farba",
  "orchidea-formaty",
  "orchidea-jadro",
+ "orchidea-pismo",
 ]
 
 [[package]]
