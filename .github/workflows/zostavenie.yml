@@ -468,7 +468,7 @@ jobs:
           done
 
   pohlad:
-    name: Pohľad – zmenšenie proti Pillow a brána E1 (1000 fotiek, obmedzené vlákna)
+    name: Pohľad – zmenšenie a náhľady proti Pillow, brána E1 (1000 fotiek, obmedzené vlákna)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

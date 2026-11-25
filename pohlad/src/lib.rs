@@ -4,9 +4,11 @@
 //!
 //! - `zmensenie` – Lanczos-3 v lineárnom svetle, s alfou,
 //! - `davka` – hromadný prevod, premenovanie a zmenšenie (jedno pracovné vlákno, obmedzený počet vlákien,
-//!   jeden obraz v pamäti, zrušenie, udalosti pre rozhranie).
+//!   jeden obraz v pamäti, zrušenie, udalosti pre rozhranie),
+//! - `nahlady` – zoznam obrázkov priečinka bez importu a náhľady (sRGB, natočené podľa Exif) na pozadí.
 
 #![forbid(unsafe_code)]
 
 pub mod davka;
+pub mod nahlady;
 pub mod zmensenie;

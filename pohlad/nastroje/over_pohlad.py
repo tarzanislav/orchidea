@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Nezávislé overenie Pohľadu (CI): zmenšenie proti Pillow, hromadný prevod a brána E1 – 1000 fotiek bez
-zamrznutia, s obmedzeným počtom vlákien a ohraničenou pamäťou.
+"""Nezávislé overenie Pohľadu (CI): zmenšenie proti Pillow, hromadný prevod, brána E1 – 1000 fotiek bez
+zamrznutia, s obmedzeným počtom vlákien a ohraničenou pamäťou – a náhľady priečinka (natočenie, zoznam).
 
 Použitie: over_pohlad.py <program pohlad> <pracovný priečinok> [počet fotiek brány, predvolene 1000]
 Rozhodca: Pillow (prevzorkovanie Lanczos v plávajúcom režime „F“ v lineárnom svetle, čítanie výsledkov).
@@ -35,10 +35,13 @@ def z_lin(l):
     return np.where(l <= 0.0031308, 12.92 * l, 1.055 * l ** (1 / 2.4) - 0.055) * 255.0
 
 
-def obraz(rng, h, w, c):
+def obraz(rng, h, w, c, foto=False):
+    """Hladký obraz so šumom; `foto` = podobný fotke (pomalšie zmeny, menej šumu)."""
     y, x = np.mgrid[0:h, 0:w]
-    z = np.stack([(np.sin(x / (5 + 3 * k) + y / (9 + k)) + 1) / 2 for k in range(c)], -1)
-    return np.clip((z * 0.8 + rng.random((h, w, c)) * 0.2) * 255, 0, 255).astype(np.uint8)
+    s = 6.0 if foto else 1.0
+    z = np.stack([(np.sin(x / (s * (5 + 3 * k)) + y / (s * (9 + k))) + 1) / 2 for k in range(c)], -1)
+    sum_ = 0.05 if foto else 0.2
+    return np.clip((z * (1 - sum_) + rng.random((h, w, c)) * sum_) * 255, 0, 255).astype(np.uint8)
 
 
 def citaj_surove(cesta):
@@ -158,9 +161,102 @@ def brana(rng):
         vysledok("brána E1: rozmer, Exif a meno", ok, f"{vystupy[0]} {prvy.size} Make={prvy.getexif().get(0x010F)!r}")
 
 
+def rozmer_do(w, h, m):
+    if max(w, h) <= m:
+        return w, h
+    k = m / max(w, h)
+    return max(1, round(w * k)), max(1, round(h * k))
+
+
+def referencny_nahlad(cesta, strana):
+    from PIL import ImageOps
+    im = ImageOps.exif_transpose(Image.open(cesta))
+    if im.mode == "I;16":
+        p = (np.asarray(im).astype(float) / 257.0)[..., None]
+    else:
+        im = im.convert("RGBA" if "A" in im.mode else ("L" if im.mode in ("L", "I;16") else "RGB"))
+        p = np.asarray(im).astype(float)
+        if p.ndim == 2:
+            p = p[..., None]
+    h, w, c = p.shape
+    nw, nh = rozmer_do(w, h, strana)
+    lin = do_lin(p)
+    if c == 4:
+        a = p[..., 3:4] / 255.0
+        lin[..., :3] *= a
+        lin[..., 3:4] = a
+    kan = [np.asarray(Image.fromarray(lin[..., k].astype(np.float32), "F").resize((nw, nh), Image.LANCZOS)) for k in range(c)]
+    r = np.stack(kan, -1).astype(float)
+    if c == 4:
+        a = r[..., 3:4]
+        r[..., :3] = np.where(a > 1e-8, r[..., :3] / np.maximum(a, 1e-8), 0)
+        return np.concatenate([np.round(z_lin(r[..., :3])), np.round(np.clip(a, 0, 1) * 255)], -1)
+    return np.round(z_lin(r))
+
+
+def nahlady(rng):
+    pr = os.path.join(PRAC, "nahlady")
+    von = os.path.join(PRAC, "nahlady_von")
+    os.makedirs(pr, exist_ok=True)
+    # JPEG: obraz podobný fotke – zmenšenie v DCT priemeruje 8 × 8 v kódovaných hodnotách, pri ostrých pruhoch
+    # by sa líšilo od lineárneho svetla viac (vlastnosť rýchleho náhľadu, nie chyba)
+    zaklad = obraz(rng, 300, 400, 3, foto=True)
+    for n in range(1, 9):
+        e = Image.Exif()
+        e[0x0112] = n
+        Image.fromarray(zaklad).save(os.path.join(pr, f"natocenie_{n}.jpg"), quality=95, exif=e)
+    rgba = obraz(rng, 90, 150, 4)
+    Image.fromarray(rgba).save(os.path.join(pr, "alfa.png"))
+    Image.fromarray(obraz(rng, 200, 120, 1)[..., 0]).save(os.path.join(pr, "siva.png"))
+    Image.fromarray((obraz(rng, 100, 140, 1)[..., 0].astype(np.uint16) * 257)).save(os.path.join(pr, "hlboka16.tif"))
+    with open(os.path.join(pr, "poznamky.txt"), "w") as f:
+        f.write("nie je obrázok")
+    with open(os.path.join(pr, "falosny.jpg"), "w") as f:
+        f.write("ani toto nie je obrázok")
+    strana = 64
+    r = subprocess.run([PROGRAM, "nahlady", pr, str(strana), "--vystup", von], capture_output=True, text=True)
+    riadky = [x for x in r.stdout.splitlines() if x.startswith("NAHLAD")]
+    mena = [x.split()[5] for x in riadky if "chyba" not in x]
+    ocakavane = sorted([f"natocenie_{n}.jpg" for n in range(1, 9)] + ["alfa.png", "siva.png", "hlboka16.tif"])
+    vysledok("náhľady: zoznam podľa podpisu", sorted(mena) == ocakavane and r.returncode == 0,
+             f"{len(mena)} obrázkov, nepatrí tam .txt ani falošný .jpg" if sorted(mena) == ocakavane else f"{mena} {r.stderr[-200:]}")
+    for meno in ocakavane:
+        cesta_nahladu = os.path.join(von, meno + ".png")
+        if not os.path.exists(cesta_nahladu):
+            vysledok(f"náhľad {meno}", False, "chýba")
+            continue
+        nas = np.asarray(Image.open(cesta_nahladu)).astype(float)
+        if nas.ndim == 2:
+            nas = nas[..., None]
+        ref = referencny_nahlad(os.path.join(pr, meno), strana)
+        if nas.shape != ref.shape:
+            vysledok(f"náhľad {meno}", False, f"tvar {nas.shape} ≠ {ref.shape}")
+            continue
+        d = np.abs(nas - ref)
+        # JPEG sa dekóduje zmenšený v oblasti DCT – malý rozdiel voči plnému dekódovaniu je očakávaný
+        jpeg = meno.endswith(".jpg")
+        ok = d.mean() <= (1.0 if jpeg else 0.5) and d.max() <= (12 if jpeg else 1)
+        vysledok(f"náhľad {meno}", ok, f"{nas.shape[1]}×{nas.shape[0]}, priemer {d.mean():.2f}, najviac {d.max():.0f}/255 "
+                                       f"voči Pillow (natočenie podľa Exif, Lanczos)")
+
+
+def nahlady_brana():
+    pr = os.path.join(PRAC, "brana_vstup")
+    if not os.path.isdir(pr):
+        return
+    zaciatok = time.monotonic()
+    r = subprocess.run([PROGRAM, "nahlady", pr, "160", "--vlakna", "2"], capture_output=True, text=True)
+    casy = [int(x.split()[2]) for x in r.stdout.splitlines() if x.startswith("NAHLAD")]
+    medzery = np.diff([0] + casy) if casy else np.array([0])
+    vysledok("náhľady priečinka s 1000 fotkami", r.returncode == 0 and len(casy) == FOTIEK and "chyba" not in r.stdout,
+             f"{len(casy)} náhľadov 160 px za {time.monotonic() - zaciatok:.1f} s, najdlhšia medzera {medzery.max()} ms")
+
+
 rng = np.random.default_rng(2026)
 zmensenie(rng)
 davka_bez_straty(rng)
 brana(rng)
+nahlady(rng)
+nahlady_brana()
 print(f"\n{'Všetko v poriadku' if not zlyhania else 'Zlyhania: ' + ', '.join(zlyhania)}")
 sys.exit(1 if zlyhania else 0)

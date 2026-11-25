@@ -2,12 +2,14 @@
 //!
 //! - `pohlad davka <vstupný priečinok> <výstupný priečinok> [--format jpg|png|tif|exr] [--max N] [--meno ŠABLÓNA]
 //!   [--vlakna N] [--kvalita Q] [--prestavka MS]` – riadok na každý súbor: `SUBOR poradie ms_od_začiatku ok|chyba text`
+//! - `pohlad nahlady <priečinok> <strana> [--vlakna N] [--vystup PRIEČINOK]` – zoznam obrázkov a náhľady na pozadí;
+//!   riadok `NAHLAD poradie ms šírka výška meno` (s `--vystup` sa náhľady uložia ako PNG)
 //! - `pohlad zmensi <vstup> <výstup.surove> <šírka> <výška>` – zmenšenie a surové vzorky (ako `formaty prevod`)
 
 use orchidea_formaty::obraz::Vzorky;
 use orchidea_formaty::{Format, Limity};
 use orchidea_pohlad::davka::{self, Nastavenie, Recept, Udalost};
-use orchidea_pohlad::zmensenie;
+use orchidea_pohlad::{nahlady, zmensenie};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -58,6 +60,43 @@ fn spusti(a: &[String]) -> Result<(), String> {
             }
             beh.cakaj();
             if chyby > 0 { Err(format!("{chyby} súborov s chybou")) } else { Ok(()) }
+        }
+        Some("nahlady") if a.len() >= 4 => {
+            let zoznam = nahlady::zoznam(a[2].as_ref()).map_err(|e| e.to_string())?;
+            let strana: usize = a[3].parse().map_err(|_| "strana")?;
+            let vlakna = hodnota(a, "--vlakna").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let vystup = hodnota(a, "--vystup").map(std::path::PathBuf::from);
+            if let Some(v) = &vystup {
+                std::fs::create_dir_all(v).map_err(|e| e.to_string())?;
+            }
+            let start = Instant::now();
+            let cesty: Vec<_> = zoznam.iter().map(|p| p.cesta.clone()).collect();
+            let beh = nahlady::spusti(cesty, strana, vlakna, Limity::default());
+            let mut chyby = 0;
+            for u in beh.udalosti.iter() {
+                match u {
+                    nahlady::Udalost::Nahlad { poradie, vysledok } => {
+                        let ms = start.elapsed().as_millis();
+                        let meno = zoznam[poradie].cesta.file_name().map(|m| m.to_string_lossy().into_owned()).unwrap_or_default();
+                        match vysledok {
+                            Ok(o) => {
+                                println!("NAHLAD {poradie} {ms} {} {} {meno}", o.sirka, o.vyska);
+                                if let Some(v) = &vystup {
+                                    let d = orchidea_formaty::zapis(&o, Format::Png).map_err(|e| e.to_string())?;
+                                    std::fs::write(v.join(format!("{meno}.png")), d).map_err(|e| e.to_string())?;
+                                }
+                            }
+                            Err(e) => {
+                                chyby += 1;
+                                println!("NAHLAD {poradie} {ms} chyba {meno}: {e}");
+                            }
+                        }
+                    }
+                    nahlady::Udalost::Koniec { hotovych } => println!("KONIEC {hotovych} chyb={chyby}"),
+                }
+            }
+            beh.cakaj();
+            Ok(())
         }
         Some("zmensi") if a.len() == 6 => {
             let d = std::fs::read(&a[2]).map_err(|e| e.to_string())?;
