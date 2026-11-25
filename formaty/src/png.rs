@@ -223,6 +223,21 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
             _ => {}
         }
     }
+    // surové profily (konvencia ImageMagick/ExifTool): IPTC a Exif v textoch „Raw profile type …“
+    meta.texty.retain(|(k, t)| match k.as_str() {
+        "Raw profile type iptc" => {
+            meta.iptc = crate::exif::surovy_profil(t).map(|d| {
+                if d.starts_with(b"8BIM") { crate::exif::iptc_z_8bim(&d).unwrap_or_default() } else { d }
+            });
+            false
+        }
+        "Raw profile type exif" | "Raw profile type APP1" if meta.exif.is_none() => {
+            meta.exif = crate::exif::surovy_profil(t)
+                .map(|e| e.strip_prefix(b"Exif\0\0").map(<[u8]>::to_vec).unwrap_or(e));
+            false
+        }
+        _ => true,
+    });
     let h = hlavicka.ok_or_else(|| chyba("chýba IHDR"))?;
     if h.typ_farby == 3 && paleta.is_empty() {
         return Err(chyba("obrázok s paletou bez kúska PLTE"));
@@ -577,6 +592,11 @@ pub fn zapis(o: &Obraz, n: &NastaveniePng) -> Vysledok<Vec<u8>> {
         d.extend_from_slice(&[0, 0, 0, 0, 0]);
         d.extend_from_slice(t.as_bytes());
         kusok(&mut von, b"iTXt", &d);
+    }
+    if let Some(i) = &o.metadata.iptc {
+        let mut d = b"Raw profile type iptc\0\0".to_vec();
+        d.extend(deflate::zlib_zbal(crate::exif::zapis_surovy_profil("iptc", i).as_bytes(), 6));
+        kusok(&mut von, b"zTXt", &d);
     }
     if let Some(x) = &o.metadata.xmp {
         let mut d = b"XML:com.adobe.xmp\0\0\0\0\0".to_vec();

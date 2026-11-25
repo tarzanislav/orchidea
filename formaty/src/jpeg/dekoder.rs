@@ -531,6 +531,11 @@ fn app(s: &mut Stav, z: u8, seg: &[u8], limity: &Limity) -> Vysledok<()> {
         }
         0xE1 if seg.starts_with(b"Exif\0\0") => s.meta.exif = Some(seg[6..].to_vec()),
         0xE1 if seg.starts_with(b"http://ns.adobe.com/xap/1.0/\0") => s.meta.xmp = Some(seg[29..].to_vec()),
+        0xED if seg.starts_with(b"Photoshop 3.0\0") => {
+            if let Some(i) = crate::exif::iptc_z_photoshopu(seg) {
+                s.meta.iptc = Some(i);
+            }
+        }
         0xE2 if seg.starts_with(b"ICC_PROFILE\0") && seg.len() > 14 => {
             s.icc.push((seg[12], seg[14..].to_vec()))
         }

@@ -2,6 +2,7 @@
 //!
 //! - `formaty info <súbor>…` – formát, rozmery, kanály, bity
 //! - `formaty prevod <vstup> <výstup>` – prevod podľa prípony výstupu (`.surove` = surové vzorky na porovnanie)
+//! - `formaty metadata <súbor>` – položky Exif, IPTC a veľkosť XMP (riadky oddelené tabulátorom)
 //! - `formaty zlib-zbal <úroveň> <vstup> <výstup>`, `formaty zlib-rozbal <vstup> <výstup>`
 //!
 //! Formát `.surove`: riadok „šírka výška kanály typ“ (typ u8, u16 alebo f32) a vzorky little-endian.
@@ -79,6 +80,23 @@ fn spusti(a: &[String]) -> Result<(), String> {
                 }
             };
             std::fs::write(&a[3], d).map_err(|e| e.to_string())
+        }
+        Some("metadata") if a.len() == 3 => {
+            let o = citaj_subor(&a[2])?;
+            if let Some(e) = &o.metadata.exif {
+                for (skupina, meno, znacka, h) in orchidea_formaty::exif::polozky(e) {
+                    println!("EXIF\t{skupina}\t{meno}\t{znacka}\t{}", h.text());
+                }
+            }
+            if let Some(i) = &o.metadata.iptc {
+                for (meno, t) in orchidea_formaty::exif::polozky_iptc(i) {
+                    println!("IPTC\t{meno}\t{t}");
+                }
+            }
+            if let Some(x) = &o.metadata.xmp {
+                println!("XMP\t{}", x.len());
+            }
+            Ok(())
         }
         Some("zlib-zbal") if a.len() == 5 => {
             let d = std::fs::read(&a[3]).map_err(|e| e.to_string())?;

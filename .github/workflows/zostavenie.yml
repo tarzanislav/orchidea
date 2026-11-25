@@ -415,8 +415,10 @@ jobs:
       - uses: actions/checkout@v5
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
-      - name: Rozhodcovia (libpng, libjpeg-turbo, libtiff, libjxl, OpenEXR cez imagecodecs; Pillow)
-        run: python3 -m pip install --user --break-system-packages numpy Pillow imagecodecs tifffile OpenEXR
+      - name: Rozhodcovia (libpng, libjpeg-turbo, libtiff, libjxl, OpenEXR cez imagecodecs; Pillow; ExifTool)
+        run: |
+          python3 -m pip install --user --break-system-packages numpy Pillow imagecodecs tifffile OpenEXR
+          sh nastroje/balicky.sh libimage-exiftool-perl
       - name: Zostavenie
         run: cargo build --locked --release -p orchidea-formaty --example formaty
       - name: Súbory konformity JPEG XL (libjxl/conformance, len na čítanie)

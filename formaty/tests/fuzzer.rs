@@ -256,3 +256,44 @@ fn regresne_vstupy() {
     }
     let _ = jxl::citaj_hlavicku(jxl_65tb);
 }
+
+#[test]
+fn fuzzer_exif_iptc() {
+    use orchidea_formaty::exif;
+    let text = |z: u16, t: &str| exif::Polozka {
+        znacka: z,
+        typ: 2,
+        pocet: t.len() as u32 + 1,
+        hodnota: [t.as_bytes(), b"\0"].concat(),
+    };
+    let rac = exif::Polozka {
+        znacka: 33434,
+        typ: 5,
+        pocet: 1,
+        hodnota: [1u32.to_le_bytes(), 250u32.to_le_bytes()].concat(),
+    };
+    let e = exif::Exif {
+        ifd0: vec![text(271, "Výrobca"), text(272, "Model")],
+        exif: vec![rac.clone(), text(36867, "2026:11:25 12:00:00")],
+        gps: vec![rac],
+        interop: vec![text(1, "R98")],
+    };
+    let mut iptc = b"\x1C\x01\x5A\x00\x03\x1B%G".to_vec();
+    iptc.extend_from_slice(b"\x1C\x02\x19\x00\x04kvet\x1C\x02\x78\x80\x02\x00\x05popis");
+    let zaklady = vec![e.zapis(), exif::photoshop_s_iptc(&iptc), iptc];
+    fuzz(
+        "Exif a IPTC",
+        &zaklady,
+        |d| {
+            let _ = exif::polozky(d);
+            let _ = exif::natocenie(d);
+            let _ = exif::polozky_iptc(d);
+            let _ = exif::iptc_z_photoshopu(d);
+            let _ = exif::iptc_z_8bim(d);
+            if let Some(r) = exif::rozober(d) {
+                let _ = r.zapis();
+            }
+        },
+        17,
+    );
+}

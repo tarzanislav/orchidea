@@ -93,6 +93,8 @@ pub struct Metadata {
     pub exif: Option<Vec<u8>>,
     /// Údaje XMP (XML).
     pub xmp: Option<Vec<u8>>,
+    /// Údaje IPTC-IIM (množiny 0x1C …), ako ich uložil Photoshop (JPEG APP13, TIFF značka 33723).
+    pub iptc: Option<Vec<u8>>,
     /// Textové položky (kľúč, hodnota).
     pub texty: Vec<(String, String)>,
     /// Natočenie podľa Exif 1–8 (1 = bez zmeny).

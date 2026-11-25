@@ -216,13 +216,13 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
         let (a, dalsi) = s.adresar(p)?;
         let typ = a.cislo(254)?.unwrap_or(0);
         if typ & 1 == 0 {
-            return strana(&a, limity);
+            return s_exif(data, p, strana(&a, limity));
         }
         prvy.get_or_insert(p);
         p = dalsi;
     }
     match prvy {
-        Some(p) => strana(&s.adresar(p)?.0, limity),
+        Some(p) => s_exif(data, p, strana(&s.adresar(p)?.0, limity)),
         None => Err(chyba("súbor nemá žiadnu stranu")),
     }
 }
@@ -236,7 +236,16 @@ pub fn citaj_stranu(data: &[u8], n: usize, limity: &Limity) -> Vysledok<Obraz> {
             return Err(Chyba::MimoRozsahu(format!("TIFF nemá stranu {n}")));
         }
     }
-    strana(&s.adresar(p)?.0, limity)
+    s_exif(data, p, strana(&s.adresar(p)?.0, limity))
+}
+
+/// Doplní Exif strany (popisné značky IFD0 a podadresáre Exif a GPS) – len klasický TIFF.
+fn s_exif(data: &[u8], ifd: u64, o: Vysledok<Obraz>) -> Vysledok<Obraz> {
+    let mut o = o?;
+    if o.metadata.exif.is_none() {
+        o.metadata.exif = crate::exif::z_tiff(data, ifd as usize);
+    }
+    Ok(o)
 }
 
 /// Rozmery prvej strany bez dekódovania.
@@ -419,6 +428,9 @@ fn strana(a: &Adresar, limity: &Limity) -> Vysledok<Obraz> {
     };
     if let Some(x) = a.bajty(700, limity.metadat)? {
         meta.xmp = Some(x.to_vec());
+    }
+    if let Some(x) = a.bajty(33723, limity.metadat)? {
+        meta.iptc = Some(x.to_vec());
     }
     if let (Some(x), Some(y)) = (a.racionalne(282), a.racionalne(283)) {
         match a.cislo(296)?.unwrap_or(2) {
@@ -956,6 +968,27 @@ pub fn zapis(o: &Obraz, n: &NastavenieTiff) -> Vysledok<Vec<u8>> {
     if let Some(icc) = &o.farba.icc {
         polozky.push((34675, 7, icc.clone()));
     }
+    if let Some(i) = &o.metadata.iptc {
+        polozky.push((33723, 7, i.clone()));
+    }
+    // Exif: popisné značky IFD0, ktoré ešte nie sú zapísané, a podadresáre Exif a GPS (tie len v klasickom TIFF,
+    // zapíšu sa za pruhy, ukazovatele sa doplnia nižšie)
+    let exif = o.metadata.exif.as_deref().and_then(crate::exif::rozober);
+    if let Some(e) = &exif {
+        for q in &e.ifd0 {
+            if [270, 271, 272, 306, 315, 316, 33432].contains(&q.znacka)
+                && !polozky.iter().any(|p| p.0 == q.znacka)
+            {
+                polozky.push((q.znacka, q.typ, q.hodnota.clone()));
+            }
+        }
+        if !big && (!e.exif.is_empty() || !e.interop.is_empty()) {
+            polozky.push((34665, 4, vec![0; 4]));
+        }
+        if !big && !e.gps.is_empty() {
+            polozky.push((34853, 4, vec![0; 4]));
+        }
+    }
     // polohy pruhov sa doplnia po rozložení súboru
     polozky.push((273, if big { 16 } else { 4 }, vec![0; pruhy.len() * if big { 8 } else { 4 }]));
     polozky.push((279, if big { 16 } else { 4 }, vec![0; pruhy.len() * if big { 8 } else { 4 }]));
@@ -988,6 +1021,20 @@ pub fn zapis(o: &Obraz, n: &NastavenieTiff) -> Vysledok<Vec<u8>> {
         dalsie += dalsie % 2;
         polohy_pruhov.push(dalsie as u64);
         dalsie += p.len();
+    }
+    // podadresáre Exif a GPS na koniec súboru
+    dalsie += dalsie % 2;
+    let (podadresare, poloha_exif, poloha_gps) = match &exif {
+        Some(e) if !big => e.zapis_podadresare(dalsie),
+        _ => (Vec::new(), None, None),
+    };
+    let zaciatok_podadresarov = dalsie;
+    for p in polozky.iter_mut() {
+        match p.0 {
+            34665 => p.2 = poloha_exif.unwrap_or(0).to_le_bytes().to_vec(),
+            34853 => p.2 = poloha_gps.unwrap_or(0).to_le_bytes().to_vec(),
+            _ => {}
+        }
     }
     // doplnenie polôh a dĺžok pruhov
     for p in polozky.iter_mut() {
@@ -1036,6 +1083,10 @@ pub fn zapis(o: &Obraz, n: &NastavenieTiff) -> Vysledok<Vec<u8>> {
     for (p, &x) in pruhy.iter().zip(&polohy_pruhov) {
         von.resize(x as usize, 0);
         von.extend_from_slice(p);
+    }
+    if !podadresare.is_empty() {
+        von.resize(zaciatok_podadresarov, 0);
+        von.extend_from_slice(&podadresare);
     }
     Ok(von)
 }

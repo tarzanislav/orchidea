@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Nezávislé overenie obrazových formátov ORCHIDEE (R211) – len v CI, nie súčasť programu.
 
-Rozhodcami sú cudzie knižnice: libpng, libjpeg-turbo, libtiff, libjxl a OpenEXR (cez imagecodecs), Pillow;
+Rozhodcami sú cudzie knižnice: libpng, libjpeg-turbo, libtiff, libjxl a OpenEXR (cez imagecodecs), Pillow,
+ExifTool (metadáta);
 skúšobné súbory TIFF zapisuje tifffile. Skript vytvorí náhodné obrázky, uloží ich rozhodcom v mnohých
 variantoch a porovná s naším dekodérom; potom naopak – naše súbory musí prečítať rozhodca.
 
@@ -577,9 +578,90 @@ def over_jxl(rng):
                 zapis_vysledok("JPEG XL konformita", meno, False, str(e)[:160])
 
 
+def over_metadata(rng):
+    """Exif, IPTC a XMP: zápis rozhodcom ExifTool do JPEG, TIFF a PNG, náš prevod do všetkých troch formátov
+    a späť; ExifTool musí vo výsledku nájsť tie isté značky s tými istými hodnotami. Navyše naše čítanie
+    vybraných položiek proti hodnotám ExifToolu."""
+    import json
+    import shutil
+
+    et = os.environ.get("ORCHIDEA_EXIFTOOL", "").split() or ([shutil.which("exiftool")] if shutil.which("exiftool") else [])
+    if not et:
+        zapis_vysledok("Metadáta", "ExifTool", False, "rozhodca ExifTool chýba")
+        return
+    from PIL import Image
+
+    skupiny = ("IFD0", "ExifIFD", "GPS", "InteropIFD", "XMP-dc", "XMP-xmp", "IPTC")
+    # štruktúrne značky TIFF (rozlíšenie, poloha YCbCr) patria k uloženiu obrazu, nie k popisu
+    popisne = {"Make", "Model", "Artist", "Copyright", "ImageDescription", "ModifyDate", "HostComputer", "Orientation"}
+    struktura = {"IFD0:XResolution", "IFD0:YResolution", "IFD0:ResolutionUnit", "IFD0:YCbCrPositioning", "IFD0:Software"}
+
+    def znacky(f):
+        r = subprocess.run(et + ["-j", "-G1", "-n", f], capture_output=True, text=True)
+        d = json.loads(r.stdout)[0]
+        # z IFD0 len popisné značky (zvyšok IFD0 v TIFF opisuje uloženie obrazu)
+        return {k: v for k, v in d.items() if k.split(":")[0] in skupiny and k not in struktura
+                and (not k.startswith("IFD0:") or k[5:] in popisne)}
+
+    zapis = ["-Make=Výrobca", "-Model=Model X", "-Artist=Autor Ž", "-Copyright=(c) 2026", "-ImageDescription=Popis",
+             "-DateTimeOriginal=2026:11:25 12:00:00", "-ExposureTime=1/250", "-FNumber=2.8", "-ISO=200",
+             "-FocalLength=35", "-LensModel=Objektív 35", "-GPSLatitude=48.1486", "-GPSLatitudeRef=N",
+             "-GPSLongitude=17.1077", "-GPSLongitudeRef=E", "-GPSAltitude=140", "-XMP-dc:Title=Názov",
+             "-XMP-dc:Subject=kvet", "-XMP-dc:Subject=orchidea", "-IPTC:Keywords=kvet", "-IPTC:Keywords=orchidea",
+             "-IPTC:Caption-Abstract=Popis IPTC – ž", "-IPTC:By-line=Autor", "-IPTC:ObjectName=Názov",
+             "-codedcharacterset=utf8"]
+    pole = (rng.random((40, 60, 3)) * 255).astype(np.uint8)
+    for zdroj, ulozenie in (("jpg", "JPEG"), ("tif", "TIFF"), ("png", "PNG")):
+        cesta = os.path.join(PRAC, f"meta_zdroj.{zdroj}")
+        Image.fromarray(pole).save(cesta, ulozenie)
+        r = subprocess.run(et + ["-q", "-overwrite_original"] + zapis + [cesta], capture_output=True, text=True)
+        povodne = znacky(cesta)
+        if r.returncode != 0 or len(povodne) < 20:
+            zapis_vysledok("Metadáta", f"zdroj {zdroj}", False, f"ExifTool nezapísal značky: {r.stderr[:120]}")
+            continue
+        # naše čítanie vybraných položiek proti ExifToolu
+        nase_r = subprocess.run([PROGRAM, "metadata", cesta], capture_output=True, text=True).stdout.splitlines()
+        nase_p = {}
+        for riadok in nase_r:
+            c = riadok.split("\t")
+            if c[0] == "EXIF":
+                nase_p[c[2]] = c[4]
+            elif c[0] == "IPTC":
+                nase_p.setdefault("IPTC:" + c[1], []).append(c[2])
+        chyby = []
+        for k_et, k_nase in (("IFD0:Make", "Make"), ("IFD0:Model", "Model"), ("ExifIFD:DateTimeOriginal", "DateTimeOriginal"),
+                             ("ExifIFD:LensModel", "LensModel"), ("IFD0:Artist", "Artist")):
+            if str(povodne.get(k_et)) != nase_p.get(k_nase):
+                chyby.append(f"{k_nase}: {nase_p.get(k_nase)!r} ≠ {povodne.get(k_et)!r}")
+        for k_et, k_nase in (("ExifIFD:ExposureTime", "ExposureTime"), ("ExifIFD:FNumber", "FNumber"),
+                             ("ExifIFD:ISO", "ISO"), ("ExifIFD:FocalLength", "FocalLength"), ("GPS:GPSAltitude", "GPSAltitude")):
+            try:
+                if abs(float(nase_p[k_nase]) - float(povodne[k_et])) > 1e-6:
+                    chyby.append(f"{k_nase}: {nase_p[k_nase]} ≠ {povodne[k_et]}")
+            except (KeyError, ValueError):
+                chyby.append(f"{k_nase} chýba")
+        kl = povodne.get("IPTC:Keywords")
+        if (kl if isinstance(kl, list) else [kl]) != nase_p.get("IPTC:Keywords"):
+            chyby.append(f"IPTC Keywords {nase_p.get('IPTC:Keywords')} ≠ {kl}")
+        if [povodne.get("IPTC:Caption-Abstract")] != nase_p.get("IPTC:Caption-Abstract"):
+            chyby.append("IPTC Caption-Abstract")
+        zapis_vysledok("Metadáta", f"čítanie {zdroj}", not chyby, "; ".join(chyby)[:200] or f"{len(nase_r)} položiek ako ExifTool")
+        for ciel in ("jpg", "tif", "png"):
+            vystup = os.path.join(PRAC, f"meta_{zdroj}_na.{ciel}")
+            try:
+                nas_prevod(cesta, vystup)
+                nove = znacky(vystup)
+                rozdiel = {k: (v, nove.get(k)) for k, v in povodne.items() if nove.get(k) != v}
+                zapis_vysledok("Metadáta", f"{zdroj} → {ciel}", not rozdiel,
+                               str(rozdiel)[:200] if rozdiel else f"{len(povodne)} značiek Exif/GPS/XMP/IPTC zachovaných")
+            except Exception as e:  # noqa: BLE001
+                zapis_vysledok("Metadáta", f"{zdroj} → {ciel}", False, str(e)[:160])
+
+
 def main():
     rng = np.random.default_rng(2026)
-    overenia = {"png": over_png, "jpeg": over_jpeg, "tiff": over_tiff, "exr": over_exr, "jxl": over_jxl}
+    overenia = {"png": over_png, "jpeg": over_jpeg, "tiff": over_tiff, "exr": over_exr, "jxl": over_jxl,
+                "metadata": over_metadata}
     for meno, f in overenia.items():
         if not VYBER or meno in VYBER:
             f(rng)

@@ -366,6 +366,13 @@ fn segmenty_hlavicky(
         d.extend_from_slice(x);
         segment(von, 0xE1, &d);
     }
+    if let Some(i) = &o.metadata.iptc {
+        let d = crate::exif::photoshop_s_iptc(i);
+        if d.len() > 65_533 {
+            return Err(Chyba::Limit("JPEG: IPTC nad 64 kB".into()));
+        }
+        segment(von, 0xED, &d);
+    }
     if let Some(icc) = &o.farba.icc {
         let kusy: Vec<&[u8]> = icc.chunks(65_519).collect();
         if kusy.len() > 255 {
