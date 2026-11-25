@@ -549,14 +549,11 @@ pub fn odhad_ustalenej(body: &[(f64, f64)]) -> Option<Odhad> {
         najlepsi = Some((ss, a, tau, k));
     }
     let (ss, a, tau, _) = najlepsi?;
-    Some(Odhad {
-        zaciatok,
-        koniec,
-        ustalena: a,
-        tau_s: tau,
-        odchylka: (ss / n).sqrt(),
-        spolahlivy: tau <= 1.5 * dlzka.max(1.0),
-    })
+    let spolahlivy = tau <= 1.5 * dlzka.max(1.0);
+    // R224 (RPi 3 B+ 25. 11.): pri τ oveľa dlhšej ako fáza a malej zmene (šum snímača 0,5 °C) vyšla
+    // extrapolácia 20,9 °C – pod izbou. Neistý odhad sa preto drží blízko nameraného konca fázy.
+    let ustalena = if spolahlivy { a } else { koniec + (a - koniec).clamp(-0.5 * rozsah, 0.5 * rozsah) };
+    Some(Odhad { zaciatok, koniec, ustalena, tau_s: tau, odchylka: (ss / n).sqrt(), spolahlivy })
 }
 
 fn c(x: f64) -> String {
@@ -1051,6 +1048,27 @@ mod skusky {
         assert!(riadky.iter().any(|l| l.contains("všetko spolu") && l.contains("-8,7 °C")), "{v}");
         assert!(riadky.iter().any(|l| l.contains("pri vypnutom obraze") && l.contains("-3,2 °C")), "{v}");
         assert!(v.contains("líši o 0,2 °C"), "{v}");
+    }
+
+    #[test]
+    fn neisty_odhad_sa_drzi_pri_namerane() {
+        // RPi 3 B+ 25. 11., fáza 4: pomalý pokles 34,9 → 33,2 °C so šumom snímača (kroky ~0,5 °C)
+        let body: Vec<(f64, f64)> = (0..30)
+            .map(|i| {
+                let t = i as f64 * 30.0;
+                let v = 34.9 - 1.7 * t / 870.0;
+                (t, (v / 0.54).round() * 0.54)
+            })
+            .collect();
+        let o = odhad_ustalenej(&body).unwrap();
+        let koniec = body[body.len() - 1].1;
+        assert!(o.ustalena > 31.0 && o.ustalena <= koniec + 0.1, "{o:?}");
+        // neistý odhad najviac pol rozsahu fázy od konca (nie 20,9 °C ako v meraní)
+        let rozsah = body.iter().map(|b| b.1).fold(f64::MIN, f64::max)
+            - body.iter().map(|b| b.1).fold(f64::MAX, f64::min);
+        if !o.spolahlivy {
+            assert!((o.ustalena - koniec).abs() <= 0.5 * rozsah + 1e-9, "{o:?}");
+        }
     }
 
     #[test]

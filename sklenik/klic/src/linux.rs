@@ -1699,6 +1699,9 @@ pub fn spusti() {
     let mut pokus = false;
     // R192: fáza pokusu dovoľuje spánok siete s káblom (mimo pokusu vždy)
     let mut siet_spi_faza = true;
+    // R224: posledná vlastná zmena siete (rýchlosť, periférie) – zmeny spojenia vtedy nie sú výpadky
+    let mut zmena_siete: Option<Instant> = None;
+    let mut periferie_pre_eee: Option<bool> = None;
     // R215: práca s úložiskami na pozadí – hlavná slučka (strážny časovač) nikdy nečaká na kartu ani kľúč
     let mut hladanie_nastavenia: Option<uloziska::Cakanie<Option<(String, NastavenieZariadenia)>>> = None;
     let mut hladanie_nosicov: Option<uloziska::Cakanie<Vec<String>>> = None;
@@ -1879,6 +1882,7 @@ pub fn spusti() {
                                 match sys::ethernet_rychlost(&r.meno, g) {
                                     Ok(_) => {
                                         alr_prepnuti += 1;
+                                        zmena_siete = Some(Instant::now());
                                         hlas(&format!(
                                             "sieť {}: najviac {g} Mb/s (prenos {mbit:.1} Mb/s) – sieť podľa potreby",
                                             r.meno
@@ -1969,12 +1973,21 @@ pub fn spusti() {
             }
             if pid1 {
                 sys::zber_procesov();
+                // R224 (RPi 25. 11.): aj vlastné prepnutie rýchlosti siete a zmena periférií (fáza pokusu) mení
+                // spojenie – minútu potom to nie sú výpadky
+                if periferie_teraz != periferie_pre_eee {
+                    periferie_pre_eee = periferie_teraz;
+                    zmena_siete = Some(Instant::now());
+                }
+                let vlastna_zmena = zmena_siete.is_some_and(|t| t.elapsed() < Duration::from_secs(60));
                 // R191: zmeny spojenia, ktoré spôsobuje uspávanie čipu siete, nie sú výpadky
                 eee.krok(
-                    tv && periferie_teraz == Some(true)
-                        && novinka(&nastavenie, "siet")
-                        && novinka(&nastavenie, "siet_spi")
-                        && siet_spi_faza,
+                    vlastna_zmena
+                        || (tv
+                            && periferie_teraz == Some(true)
+                            && novinka(&nastavenie, "siet")
+                            && novinka(&nastavenie, "siet_spi")
+                            && siet_spi_faza),
                 );
             }
             // R215: výsledky práce s úložiskami na pozadí; zaseknuté úložisko sa len ohlási

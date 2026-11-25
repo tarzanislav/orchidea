@@ -222,6 +222,42 @@ pub fn toky(priecinok: &Path) -> Vec<PathBuf> {
     v
 }
 
+/// R224 (RPi 3 B+ 25. 11.): regulácia taktu „schedutil“ počas behu s 2 vláknami klesala až na 600 MHz, takže
+/// 1 → 2 vlákna zrýchlili len 1,36× a 2 → 4 vlákna 1,9×. Počas merania sa regulácia prepne na „performance“
+/// (takt = strop tepelného regulátora, ten ostáva v platnosti) a potom sa vráti.
+struct PevnyTakt {
+    povodne: Vec<(PathBuf, String)>,
+}
+
+impl PevnyTakt {
+    fn zapni() -> PevnyTakt {
+        let mut povodne = Vec::new();
+        for z in std::fs::read_dir("/sys/devices/system/cpu/cpufreq").into_iter().flatten().flatten() {
+            let p = z.path();
+            if !p.file_name().is_some_and(|m| m.to_string_lossy().starts_with("policy")) {
+                continue;
+            }
+            let g = p.join("scaling_governor");
+            let dostupne = std::fs::read_to_string(p.join("scaling_available_governors")).unwrap_or_default();
+            if let Ok(stary) = std::fs::read_to_string(&g)
+                && dostupne.split_whitespace().any(|x| x == "performance")
+                && std::fs::write(&g, "performance").is_ok()
+            {
+                povodne.push((g, stary.trim().to_string()));
+            }
+        }
+        PevnyTakt { povodne }
+    }
+}
+
+impl Drop for PevnyTakt {
+    fn drop(&mut self) {
+        for (g, stary) in &self.povodne {
+            let _ = std::fs::write(g, stary);
+        }
+    }
+}
+
 /// Spustí celé meranie vo vlastnom vlákne; riadky výsledku pribúdajú do `riadky`.
 pub fn spusti(strop_regulatora: f64, riadky: Arc<Mutex<Vec<String>>>, hlas: fn(&str)) {
     std::thread::spawn(move || {
@@ -249,11 +285,17 @@ pub fn spusti(strop_regulatora: f64, riadky: Arc<Mutex<Vec<String>>>, hlas: fn(&
         let jadra = std::thread::available_parallelism().map_or(1, |n| n.get());
         let vlakna: Vec<usize> = [1, 2, 4].into_iter().filter(|&n| n <= jadra.max(1)).collect();
         let strop_behu = strop_regulatora + 5.0;
+        let takt = PevnyTakt::zapni();
         pridaj(format!(
             "vlastný softvérový dekodér – {} tokov, vlákna {:?}; pred každým behom chlad pod {CHLADNA:.0} °C, \
-             strop behu {strop_behu:.0} °C",
+             strop behu {strop_behu:.0} °C; takt {} (R224)",
             toky.len(),
-            vlakna
+            vlakna,
+            if takt.povodne.is_empty() {
+                "podľa regulácie jadra"
+            } else {
+                "pevný (performance) počas merania"
+            }
         ));
         for tok in toky {
             let meno = tok.file_stem().map(|m| m.to_string_lossy().to_string()).unwrap_or_default();
@@ -290,6 +332,7 @@ pub fn spusti(strop_regulatora: f64, riadky: Arc<Mutex<Vec<String>>>, hlas: fn(&
                 pridaj(r);
             }
         }
+        drop(takt);
         pridaj("meranie HEVC hotové".into());
     });
 }
