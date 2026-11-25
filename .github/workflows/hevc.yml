@@ -144,9 +144,14 @@ jobs:
           for d in toky/norma/AMP_D* toky/norma/TILES_A* toky/norma/WPP_D_ericsson_MAIN_*; do
             if [ -d "$d" ]; then cp -r "$d" "$b/toky/"; fi
           done
-          cargo build --locked --release -p orchidea-hevc-dekoder --example hevc_meranie
-          cp target/release/examples/hevc_dekoduj target/release/examples/hevc_meranie hevc-dekoder/rpi/meraj_hevc.sh "$b/"
+          # balík pre dosky: plánovanie inštrukcií pre Cortex-A53 (RPi 3, Zero 2 W; RPi 4 a 5 – ARMv8.0 stačí)
+          RUSTFLAGS="-D warnings -C target-cpu=cortex-a53" cargo build --locked --release -p orchidea-hevc-dekoder \
+            --example hevc_dekoduj --example hevc_meranie --target-dir target-a53
+          r=target-a53/release/examples
+          cp "$r/hevc_dekoduj" "$r/hevc_meranie" hevc-dekoder/rpi/meraj_hevc.sh "$b/"
           chmod +x "$b/hevc_dekoduj" "$b/hevc_meranie" "$b/meraj_hevc.sh"
+          # rovnaký výsledok ako všeobecná zostava (bitová zhoda na skúšobných tokoch balíka)
+          for f in "$b"/toky/*.hevc; do "$b/hevc_meranie" "$f" | tail -n 1; done
           du -sh "$b"
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'ubuntu-24.04-arm'
