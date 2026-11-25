@@ -22,7 +22,10 @@
 //! - [`intra`] – vnútrosnímková predikcia (8.4.4.2),
 //! - [`transformacia`] – spätné kvantovanie a transformácie (8.6),
 //! - [`interpolacia`] – interpolácia vzoriek a vážená predikcia (8.5.3.3),
-//! - [`filtre`], [`odblokovanie`], [`sao`] – filtre v slučke (8.7).
+//! - [`filtre`], [`odblokovanie`], [`sao`] – filtre v slučke (8.7),
+//! - `neon` (len aarch64) – ručné NEON jadier interpolácie; jediné miesto s `unsafe`.
+
+#![deny(unsafe_code)]
 
 pub mod cabac;
 pub mod dekoder;
@@ -30,6 +33,8 @@ pub mod filtre;
 pub mod geometria;
 pub mod interpolacia;
 pub mod intra;
+#[cfg(target_arch = "aarch64")]
+mod neon;
 pub mod obraz;
 pub mod odblokovanie;
 pub mod pohyb;

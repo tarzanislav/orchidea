@@ -333,14 +333,7 @@ fn riadok_vodorovne<const N: usize>(
     if shift1 == 0 {
         // 8 bitov: výsledok (aj s odčítaním 8192) leží v −14 312 … 22 440, teda v i16 – počítanie v i16
         // modulo 2^16 je presné a vektor má 8 dráh namiesto 4
-        let odcitaj = odcitaj as i16;
-        for i in 0..w {
-            let mut s = 0i16;
-            for k in 0..N {
-                s = s.wrapping_add(koef[k].wrapping_mul(zdroj[i + k] as i16));
-            }
-            ciel[i] = s.wrapping_sub(odcitaj);
-        }
+        vodorovne8(zdroj, koef, ciel, odcitaj as i16);
     } else {
         for i in 0..w {
             let mut s = 0;
@@ -367,14 +360,7 @@ fn riadok_zvislo<const N: usize>(
     let riadky: [&[Vzorka]; N] = std::array::from_fn(|k| &zdroj[k * krok..][..w]);
     if shift1 == 0 {
         // 8 bitov: presné v i16 (pozri riadok_vodorovne)
-        let odcitaj = odcitaj as i16;
-        for i in 0..w {
-            let mut s = 0i16;
-            for k in 0..N {
-                s = s.wrapping_add(koef[k].wrapping_mul(riadky[k][i] as i16));
-            }
-            ciel[i] = s.wrapping_sub(odcitaj);
-        }
+        zvislo8(&riadky, koef, ciel, odcitaj as i16);
     } else {
         for i in 0..w {
             let mut s = 0;
@@ -389,17 +375,92 @@ fn riadok_zvislo<const N: usize>(
 /// Druhý stupeň 2D interpolácie (8.5.3.3.3.2): zvislý filter medzivýsledkov temp,
 /// `ciel[i] = ((Σ_k koef[k] · T_k[i]) >> shift2) − 8192`, kde T_k je riadok `medzi[k * w..]`. Súčet presahuje
 /// i16, preto súčiny i16 · i16 → i32.
-#[allow(clippy::needless_range_loop)]
 fn riadok_zvislo_medzi<const N: usize>(medzi: &[i16], koef: &[i16; N], ciel: &mut [i16]) {
     let w = ciel.len();
     let riadky: [&[i16]; N] = std::array::from_fn(|k| &medzi[k * w..][..w]);
+    zvislo_medzi(&riadky, koef, ciel);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Jadrá pre 8 bitov: skalárne (rozhodca, aj zvyšok riadka) a na aarch64 ručné NEON (modul `neon`) – bitovo rovnaké.
+// ---------------------------------------------------------------------------------------------------------------
+
+/// `ciel[i] = Σ_k koef[k] · zdroj[i + k] − odcitaj` v i16 modulo 2^16 (8 bitov, pozri riadok_vodorovne).
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn vodorovne8_skalarne<const N: usize>(
+    zdroj: &[Vzorka],
+    koef: &[i16; N],
+    ciel: &mut [i16],
+    odcitaj: i16,
+) {
+    let w = ciel.len();
+    let zdroj = &zdroj[..w + N - 1];
     for i in 0..w {
+        let mut s = 0i16;
+        for k in 0..N {
+            s = s.wrapping_add(koef[k].wrapping_mul(zdroj[i + k] as i16));
+        }
+        ciel[i] = s.wrapping_sub(odcitaj);
+    }
+}
+
+/// `ciel[i] = Σ_k koef[k] · riadky[k][i] − odcitaj` v i16 modulo 2^16 (8 bitov).
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn zvislo8_skalarne<const N: usize>(
+    riadky: &[&[Vzorka]; N],
+    koef: &[i16; N],
+    ciel: &mut [i16],
+    odcitaj: i16,
+) {
+    for i in 0..ciel.len() {
+        let mut s = 0i16;
+        for k in 0..N {
+            s = s.wrapping_add(koef[k].wrapping_mul(riadky[k][i] as i16));
+        }
+        ciel[i] = s.wrapping_sub(odcitaj);
+    }
+}
+
+/// `ciel[i] = ((Σ_k koef[k] · riadky[k][i]) >> 6) − 8192` (súčet v i32, výsledok skrátený na i16).
+#[allow(clippy::needless_range_loop)]
+pub(crate) fn zvislo_medzi_skalarne<const N: usize>(riadky: &[&[i16]; N], koef: &[i16; N], ciel: &mut [i16]) {
+    for i in 0..ciel.len() {
         let mut s = 0;
         for k in 0..N {
             s += koef[k] as i32 * riadky[k][i] as i32;
         }
         ciel[i] = ((s >> SHIFT2) - POSUN_MEDZI) as i16;
     }
+}
+
+#[cfg(target_arch = "aarch64")]
+fn vodorovne8<const N: usize>(zdroj: &[Vzorka], koef: &[i16; N], ciel: &mut [i16], odcitaj: i16) {
+    crate::neon::vodorovne8(zdroj, koef, ciel, odcitaj);
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn vodorovne8<const N: usize>(zdroj: &[Vzorka], koef: &[i16; N], ciel: &mut [i16], odcitaj: i16) {
+    vodorovne8_skalarne(zdroj, koef, ciel, odcitaj);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn zvislo8<const N: usize>(riadky: &[&[Vzorka]; N], koef: &[i16; N], ciel: &mut [i16], odcitaj: i16) {
+    crate::neon::zvislo8(riadky, koef, ciel, odcitaj);
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn zvislo8<const N: usize>(riadky: &[&[Vzorka]; N], koef: &[i16; N], ciel: &mut [i16], odcitaj: i16) {
+    zvislo8_skalarne(riadky, koef, ciel, odcitaj);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn zvislo_medzi<const N: usize>(riadky: &[&[i16]; N], koef: &[i16; N], ciel: &mut [i16]) {
+    crate::neon::zvislo_medzi(riadky, koef, ciel);
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn zvislo_medzi<const N: usize>(riadky: &[&[i16]; N], koef: &[i16; N], ciel: &mut [i16]) {
+    zvislo_medzi_skalarne(riadky, koef, ciel);
 }
 
 /// Váženie jednej referencie zo zoznamu `zoznam` (0 = L0, 1 = L1) pre celý blok šírky `w`.
@@ -475,6 +536,22 @@ fn vaz_dve(
 /// Predvolené váženie riadka jednej referencie: `Clip3(0, max, (p + pridaj) >> shift)`.
 fn riadok_predvolene_jedna(pred: &[i16], ciel: &mut [Vzorka], pridaj: i32, shift: u32, max: i32) {
     let pred = &pred[..ciel.len()];
+    #[cfg(target_arch = "aarch64")]
+    if max == 255 {
+        crate::neon::predvolene_jedna8(pred, ciel, pridaj, shift);
+        return;
+    }
+    predvolene_jedna_skalarne(pred, ciel, pridaj, shift, max);
+}
+
+/// `ciel[i] = Clip3(0, max, (pred[i] + pridaj) >> shift)`.
+pub(crate) fn predvolene_jedna_skalarne(
+    pred: &[i16],
+    ciel: &mut [Vzorka],
+    pridaj: i32,
+    shift: u32,
+    max: i32,
+) {
     for (c, &p) in ciel.iter_mut().zip(pred) {
         *c = ((p as i32 + pridaj) >> shift).clamp(0, max) as Vzorka;
     }
@@ -490,6 +567,23 @@ fn riadok_predvolene_dve(
     max: i32,
 ) {
     let (pred0, pred1) = (&pred0[..ciel.len()], &pred1[..ciel.len()]);
+    #[cfg(target_arch = "aarch64")]
+    if max == 255 {
+        crate::neon::predvolene_dve8(pred0, pred1, ciel, pridaj, shift);
+        return;
+    }
+    predvolene_dve_skalarne(pred0, pred1, ciel, pridaj, shift, max);
+}
+
+/// `ciel[i] = Clip3(0, max, (pred0[i] + pred1[i] + pridaj) >> shift)`.
+pub(crate) fn predvolene_dve_skalarne(
+    pred0: &[i16],
+    pred1: &[i16],
+    ciel: &mut [Vzorka],
+    pridaj: i32,
+    shift: u32,
+    max: i32,
+) {
     for ((c, &a), &b) in ciel.iter_mut().zip(pred0).zip(pred1) {
         *c = ((a as i32 + b as i32 + pridaj) >> shift).clamp(0, max) as Vzorka;
     }

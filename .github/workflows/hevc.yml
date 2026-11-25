@@ -96,6 +96,8 @@ jobs:
         run: |
           echo "### HEVC – rozbor syntaxe a príprava V4L2 (H0, H1) – ${{ matrix.meno }}" >> "$GITHUB_STEP_SUMMARY"
           cargo run --locked --release -p orchidea-hevc --example hevc_rozbor -- toky | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Skúšky dekodéra (na ARM64 aj NEON proti skalárnemu rozhodcovi)
+        run: cargo test --locked --release -p orchidea-hevc-dekoder
       - name: Vlastný dekodér – bitová zhoda (H2–H5)
         shell: bash
         env:
