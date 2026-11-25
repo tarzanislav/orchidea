@@ -143,16 +143,37 @@ pub fn natoc(o: &Obraz) -> Vysledok<Obraz> {
 fn na_srgb8(o: Obraz) -> Vysledok<Obraz> {
     let k = o.kanaly();
     let farebnych = if o.alfa { k - 1 } else { k };
-    // profil ICC → sRGB (tabuľkové aj maticové profily, aj CMYK)
-    if let (Some(icc), Vzorky::U8(d)) = (&o.farba.icc, &o.vzorky)
-        && let Ok(z) = Priestor::z_icc(icc)
+    // farebný priestor súboru (ICC, cICP, gAMA/cHRM …) → sRGB balíkom farba
+    let srgb = Priestor::srgb();
+    let uz_srgb = |p: &Priestor| match p {
+        Priestor::Rgb { primarne, prenos } => {
+            *primarne == orchidea_farba::primarne::SRGB && *prenos == Prenos::Srgb
+        }
+        Priestor::Sivy { prenos } => *prenos == Prenos::Srgb,
+        _ => false,
+    };
+    if let Some(z) = orchidea_formaty::priestor::priestor(&o)
+        && !uz_srgb(&z)
         && z.kanalov() == farebnych
-        && let Ok(p) = Prevod::novy(&z, &Priestor::srgb(), Zamer::Percepcny)
-        && let Ok(v) = p.preved_u8(d, k, 3 + o.alfa as usize)
+        && let Ok(p) = Prevod::novy(&z, &srgb, Zamer::Percepcny)
     {
-        let mut n = Obraz::novy(o.sirka, o.vyska, Model::Rgb, o.alfa, Vzorky::U8(v))?;
-        n.metadata = o.metadata;
-        return Ok(n);
+        let kc = 3 + o.alfa as usize;
+        let v: Option<Vec<u8>> = match &o.vzorky {
+            Vzorky::U8(d) => p.preved_u8(d, k, kc).ok(),
+            Vzorky::U16(d) => p
+                .preved_u16(d, k, kc)
+                .ok()
+                .map(|v| v.iter().map(|&x| ((x as u32 + 128) / 257) as u8).collect()),
+            Vzorky::F32(d) => p
+                .preved_f32(d, k, kc)
+                .ok()
+                .map(|v| v.iter().map(|&x| (x.clamp(0.0, 1.0) * 255.0).round() as u8).collect()),
+        };
+        if let Some(v) = v {
+            let mut n = Obraz::novy(o.sirka, o.vyska, Model::Rgb, o.alfa, Vzorky::U8(v))?;
+            n.metadata = o.metadata;
+            return Ok(n);
+        }
     }
     let linearne = matches!(o.vzorky, Vzorky::F32(_)) || o.farba.linearne;
     let srgb = Prenos::Srgb;

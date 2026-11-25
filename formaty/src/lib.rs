@@ -11,6 +11,7 @@ pub mod kontrola;
 pub mod obraz;
 pub mod png;
 pub mod polovicna;
+pub mod priestor;
 pub mod tiff;
 
 pub use obraz::{Cicp, Farba, Limity, Metadata, Model, Obraz, Vzorky};

@@ -13,6 +13,7 @@ vrstva = 2
 
 [dependencies]
 orchidea-jadro.workspace = true
+orchidea-farba.workspace = true
 orchidea-dlazdice.workspace = true
 orchidea-zariadenie.workspace = true
 

@@ -576,6 +576,29 @@ def over_jxl(rng):
                 zapis_vysledok("JPEG XL konformita", meno, ok, f"max {dd.max():.2f}/255 voči libjxl")
             except Exception as e:  # noqa: BLE001
                 zapis_vysledok("JPEG XL konformita", meno, False, str(e)[:160])
+        # XYB s vloženým profilom ICC: obraz sa prevedie do profilu (balík farba); rozhodcom je referenčný obraz
+        # sady (ref.png): v jeho profile priamo, v sRGB po prevode nášho výsledku Little CMS (8 b dvakrát → ±3)
+        import io
+        from PIL import Image, ImageCms
+        for meno in ["grayscale", "patches", "progressive"]:
+            try:
+                vystup = os.path.join(PRAC, f"konf_{meno}.png")
+                nas_prevod(os.path.join(konf, "testcases", meno, "input.jxl"), vystup)
+                o, ref = Image.open(vystup), Image.open(os.path.join(konf, "testcases", meno, "ref.png"))
+                if o.mode == "RGBA":
+                    o = o.convert("RGB")
+                if ref.info.get("icc_profile"):
+                    a, tol, ako = np.asarray(o), 1.0, "v profile ICC"
+                else:
+                    pr = ImageCms.ImageCmsProfile(io.BytesIO(o.info["icc_profile"]))
+                    t = ImageCms.buildTransform(pr, ImageCms.createProfile("sRGB"), o.mode, "RGB")
+                    a, tol, ako = np.asarray(ImageCms.applyTransform(o, t)), 3.0, "po prevode do sRGB (Little CMS)"
+                r = np.asarray(ref.convert("RGB" if np.asarray(a).ndim == 3 else ref.mode))
+                d = np.abs(a.astype(float).reshape(r.shape) - r.astype(float))
+                zapis_vysledok("JPEG XL konformita", f"{meno} (XYB → ICC)", d.max() <= tol,
+                               f"max {d.max():.0f}/255, priemer {d.mean():.3f} voči ref.png {ako}")
+            except Exception as e:  # noqa: BLE001
+                zapis_vysledok("JPEG XL konformita", f"{meno} (XYB → ICC)", False, str(e)[:160])
 
 
 def over_metadata(rng):

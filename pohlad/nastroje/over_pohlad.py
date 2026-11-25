@@ -340,6 +340,37 @@ def okno(rng):
         vysledok("okno: rozdiel |A - B| × 8", ok, "bit po bite" if ok else "nezhoda")
 
 
+
+def png_s_gamou(cesta, pole, gama):
+    """PNG s blokom gAMA (Pillow ho nezapíše) – vloží sa za IHDR."""
+    import struct
+    import zlib
+    Image.fromarray(pole).save(cesta)
+    d = open(cesta, "rb").read()
+    telo = b"gAMA" + struct.pack(">I", round(gama * 100000))
+    blok = struct.pack(">I", 4) + telo + struct.pack(">I", zlib.crc32(telo) & 0xFFFFFFFF)
+    with open(cesta, "wb") as f:
+        f.write(d[:33] + blok + d[33:])
+
+
+def priestor_farby(rng):
+    """Náhľad zobrazí súbor v sRGB podľa jeho farebného priestoru (tu PNG s gAMA 1/1,8)."""
+    pr = os.path.join(PRAC, "priestor")
+    os.makedirs(pr, exist_ok=True)
+    p = obraz(rng, 40, 50, 3)
+    png_s_gamou(os.path.join(pr, "gama18.png"), p, 1 / 1.8)
+    von = os.path.join(PRAC, "priestor_von")
+    r = subprocess.run([PROGRAM, "nahlady", pr, "64", "--vystup", von], capture_output=True, text=True)
+    try:
+        nas = np.asarray(Image.open(os.path.join(von, "gama18.png.png"))).astype(float)
+    except OSError:
+        vysledok("náhľad v sRGB podľa gAMA", False, r.stdout + r.stderr)
+        return
+    ref = np.round(z_lin((p / 255.0) ** 1.8))
+    d = np.abs(nas - ref)
+    vysledok("náhľad v sRGB podľa gAMA 1/1,8", d.max() <= 1, f"najviac {d.max():.0f}/255 (gama 1,8 → sRGB)")
+
+
 rng = np.random.default_rng(2026)
 zmensenie(rng)
 davka_bez_straty(rng)
@@ -347,6 +378,7 @@ porovnanie(rng)
 okno(rng)
 brana(rng)
 nahlady(rng)
+priestor_farby(rng)
 nahlady_brana()
 print(f"\n{'Všetko v poriadku' if not zlyhania else 'Zlyhania: ' + ', '.join(zlyhania)}")
 sys.exit(1 if zlyhania else 0)

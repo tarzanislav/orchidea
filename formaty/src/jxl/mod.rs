@@ -12,6 +12,8 @@ mod bity;
 mod entropia;
 mod hlavicky;
 mod icc;
+
+use orchidea_farba::{Adaptacia, Prenos, Prevod, Priestor, Primarne, Zamer, primarne};
 mod modular;
 mod skladanie;
 mod snimka;
@@ -113,6 +115,7 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
     let icc = if m.farba.chce_icc { Some(icc::citaj(&mut c, limity.metadat)?) } else { None };
     c.zarovnaj();
     c.over()?;
+    let ciel = ciel_xyb(&m, icc.as_deref());
     let mut posun = (c.precitane() / 8) as usize;
     if let Some((nw, nh)) = m.nahlad {
         // náhľad sa dekóduje len na preskočenie
@@ -159,7 +162,7 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
             break Konecne::Snimka(s.vysledok);
         }
         let nova = na_platno(s.vysledok, &m);
-        let nova = if hl.uloz_pred_ct && !zobrazena { nova } else { prevod_farieb(nova, &m) };
+        let nova = if hl.uloz_pred_ct && !zobrazena { nova } else { prevod_farieb(nova, &m, &ciel) };
         let zaklad = referencie[hl.prekrytie.zdroj as usize].as_ref().map(|r| &r.platno);
         let p = skladanie::prekry(
             zaklad,
@@ -183,7 +186,9 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
     let bodove = m.dodatocne.iter().any(|d| d.bodova.is_some());
     let mut o = match vysledok {
         Konecne::Snimka(Vysledok3::Cele(k)) if !bodove => vystup_cele(k, &m, wu, hu)?,
-        Konecne::Snimka(v) => vystup_platno(vykresli_bodove(prevod_farieb(na_platno(v, &m), &m), &m), &m)?,
+        Konecne::Snimka(v) => {
+            vystup_platno(vykresli_bodove(prevod_farieb(na_platno(v, &m), &m, &ciel), &m), &m)?
+        }
         Konecne::Platno(p) => vystup_platno(vykresli_bodove(p, &m), &m)?,
     };
     o.bitov = m.hlbka.bitov.min(32) as u8;
@@ -191,10 +196,10 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
     if alfa_i.is_some_and(|i| m.dodatocne[i].alfa_nasobena) {
         crate::obraz::rozdel_alfu(&mut o);
     }
-    popis_farby(&mut o, &m);
+    popis_farby(&mut o, &m, &ciel);
     if let Some(p) = icc {
-        if xyb_s_icc {
-            // pixely sú prevedené do sRGB; prevod do vloženého profilu príde s balíkom farba
+        if xyb_s_icc && !matches!(ciel, CielXyb::Icc(_)) {
+            // profil sa nedal použiť (nepodporovaný druh) – pixely ostali v sRGB
             o.farba.cicp = Some(Cicp { zakladne: 1, prenos: 13, matica: 0, plny_rozsah: true });
             o.farba.srgb = Some(0);
         } else {
@@ -205,24 +210,6 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
     o.metadata.exif = obsah.exif;
     o.metadata.xmp = obsah.xmp;
     Ok(o)
-}
-
-/// Prenosová funkcia sRGB z lineárneho svetla.
-fn srgb_z_lin(v: f32) -> f32 {
-    if v <= 0.003_130_8 {
-        12.92 * v
-    } else {
-        (1.055 * orchidea_jadro::matematika::mocnina(v as f64, 1.0 / 2.4) - 0.055) as f32
-    }
-}
-
-/// BT.709 z lineárneho svetla.
-fn bt709_z_lin(v: f32) -> f32 {
-    if v < 0.018 {
-        4.5 * v
-    } else {
-        (1.099 * orchidea_jadro::matematika::mocnina(v as f64, 0.45) - 0.099) as f32
-    }
 }
 
 /// Výsledok skladania snímok.
@@ -260,24 +247,93 @@ fn na_platno(v: Vysledok3, m: &hlavicky::Metadata) -> skladanie::Platno {
 }
 
 /// Prevod farieb plátna: XYB → lineárne RGB → prenosová funkcia súboru (pri sivom obraze jedna rovina).
-fn prevod_farieb(mut p: skladanie::Platno, m: &hlavicky::Metadata) -> skladanie::Platno {
+/// Kam sa prevedie lineárne sRGB, ktoré vznikne z XYB.
+#[derive(Debug)]
+enum CielXyb {
+    /// Kódovanie podľa hlavičky: matica z lineárneho sRGB (ak iné základné farby), prenosová funkcia, mierka
+    /// lineárneho svetla pred prenosom (PQ: cieľový jas / 10 000 cd/m²).
+    Kodovanie { matica: Option<[[f32; 3]; 3]>, prenos: Prenos, mierka: f32 },
+    /// Vložený profil ICC (prevod balíkom farba).
+    Icc(Box<Prevod>),
+}
+
+fn ciel_xyb(m: &hlavicky::Metadata, icc: Option<&[u8]>) -> CielXyb {
+    let f = &m.farba;
+    let srgb = CielXyb::Kodovanie { matica: None, prenos: Prenos::Srgb, mierka: 1.0 };
+    if let Some(d) = icc {
+        let linearne_srgb = Priestor::Rgb { primarne: primarne::SRGB, prenos: Prenos::Linearny };
+        return Priestor::z_icc(d)
+            .and_then(|p| {
+                let zamer = match &p {
+                    Priestor::Icc(pr) if pr.zamer <= 3 => [
+                        Zamer::Percepcny,
+                        Zamer::RelativnyKolorimetricky,
+                        Zamer::Sytost,
+                        Zamer::AbsolutnyKolorimetricky,
+                    ][pr.zamer as usize],
+                    _ => Zamer::Percepcny,
+                };
+                Prevod::novy(&linearne_srgb, &p, zamer)
+            })
+            .map(|p| CielXyb::Icc(Box::new(p)))
+            .unwrap_or(srgb);
+    }
+    let (prenos, mierka) = match (f.gama, f.prenos) {
+        (Some(g), _) if g > 0.0 => (Prenos::Gama(1.0 / g), 1.0),
+        (_, 1) => (Prenos::Bt709, 1.0),
+        (_, 8) => (Prenos::Linearny, 1.0),
+        (_, 16) => (Prenos::Pq, m.cielovy_jas / 10_000.0),
+        (_, 17) => (Prenos::Gama(2.6), 1.0),
+        // HLG potrebuje OOTF podľa jasu displeja – zatiaľ sRGB
+        _ => (Prenos::Srgb, 1.0),
+    };
+    let matica = (f.priestor != 1 && (f.zakladne != 1 || f.biela != 1)).then(|| {
+        let [r, g, b] = f.zakladne_xy;
+        let ciel = Primarne { r, g, b, biely: f.biela_xy };
+        primarne::rgb_na_rgb(&primarne::SRGB, &ciel, Adaptacia::Bradford).map(|r| r.map(|x| x as f32))
+    });
+    CielXyb::Kodovanie { matica, prenos, mierka }
+}
+
+#[allow(clippy::needless_range_loop)]
+fn prevod_farieb(mut p: skladanie::Platno, m: &hlavicky::Metadata, ciel: &CielXyb) -> skladanie::Platno {
     if !m.xyb || p.farba.len() != 3 {
         return p;
     }
     let [x, y, b]: [Vec<f32>; 3] = std::mem::take(&mut p.farba).try_into().unwrap_or_else(|_| unreachable!());
-    let roviny = vardct::xyb_na_rgb([x, y, b], m);
-    let prenos = |x: f32| -> f32 {
-        match (m.farba.gama, m.farba.prenos) {
-            (Some(g), _) => orchidea_jadro::matematika::mocnina(x.max(0.0) as f64, g) as f32,
-            (None, 8) => x,
-            (None, 1) => bt709_z_lin(x),
-            _ => srgb_z_lin(x),
+    let mut roviny = vardct::xyb_na_rgb([x, y, b], m);
+    let sivy = m.farba.priestor == 1;
+    let (matica, prenos, mierka) = match ciel {
+        CielXyb::Icc(prevod) => {
+            // lineárne sRGB → zariadenie profilu (presne, paralelne)
+            let n = roviny[0].len();
+            let mut v = Vec::with_capacity(3 * n);
+            for i in 0..n {
+                v.extend([roviny[0][i], roviny[1][i], roviny[2][i]]);
+            }
+            let kc = prevod.vystupov();
+            if let Ok(o) = prevod.preved_f32(&v, 3, kc) {
+                p.farba = (0..kc).map(|c| o.iter().skip(c).step_by(kc).copied().collect()).collect();
+                return p;
+            }
+            (&None, &Prenos::Srgb, &1.0)
         }
+        CielXyb::Kodovanie { matica, prenos, mierka } => (matica, prenos, mierka),
     };
+    if let Some(mt) = matica {
+        let n = roviny[0].len();
+        for i in 0..n {
+            let v = [roviny[0][i], roviny[1][i], roviny[2][i]];
+            for (c, r) in mt.iter().enumerate() {
+                roviny[c][i] = r[0] * v[0] + r[1] * v[1] + r[2] * v[2];
+            }
+        }
+    }
     // pre celé vzorky stačí tabuľka s lineárnou interpoláciou (chyba < 1e-7)
     const N: usize = 65_536;
+    let kod = |x: f32| prenos.z_linearneho((x * *mierka) as f64) as f32;
     let tabulka: Option<Vec<f32>> =
-        (!m.hlbka.plavajuca).then(|| (0..=N).map(|i| prenos(i as f32 / N as f32)).collect());
+        (!m.hlbka.plavajuca).then(|| (0..=N).map(|i| kod(i as f32 / N as f32)).collect());
     let zakoduj = |x: f32| -> f32 {
         match &tabulka {
             Some(t) => {
@@ -285,10 +341,9 @@ fn prevod_farieb(mut p: skladanie::Platno, m: &hlavicky::Metadata) -> skladanie:
                 let i = (q as usize).min(N - 1);
                 t[i] + (t[i + 1] - t[i]) * (q - i as f32)
             }
-            None => prenos(x),
+            None => kod(x),
         }
     };
-    let sivy = m.farba.priestor == 1;
     p.farba = roviny
         .into_iter()
         .enumerate()
@@ -397,13 +452,14 @@ fn vystup_platno(p: skladanie::Platno, m: &hlavicky::Metadata) -> Vysledok<Obraz
 }
 
 /// Popis farby z hlavičky (cICP, sRGB, gama).
-fn popis_farby(o: &mut Obraz, m: &hlavicky::Metadata) {
+fn popis_farby(o: &mut Obraz, m: &hlavicky::Metadata, ciel: &CielXyb) {
     let f = &m.farba;
     if f.priestor != 2 && !f.chce_icc {
-        let mut zakladne = match f.zakladne {
-            1 => 1,
-            9 => 9,
-            11 => 12,
+        let mut zakladne = match (f.zakladne, f.biela) {
+            (1, 1) => 1,
+            (9, 1) => 9,
+            (11, 11) => 11,
+            (11, _) => 12,
             _ => 2,
         };
         let mut prenos = match (f.gama, f.prenos) {
@@ -411,10 +467,11 @@ fn popis_farby(o: &mut Obraz, m: &hlavicky::Metadata) {
             (None, p) => p as u8,
         };
         if m.xyb {
-            // z XYB sa zatiaľ vydáva lineárne sRGB s prenosovou funkciou súboru (sRGB, BT.709, lineárna,
-            // gama); iné základné farby a PQ/HLG prídu s balíkom farba
-            zakladne = 1;
-            if !matches!(prenos, 1 | 2 | 8 | 13) {
+            // z XYB sa obraz prevedie do kódovania z hlavičky (základné farby, prenos); HLG zatiaľ do sRGB
+            if let CielXyb::Kodovanie { prenos: Prenos::Srgb, .. } = ciel
+                && prenos != 13
+            {
+                zakladne = 1;
                 prenos = 13;
             }
         }
