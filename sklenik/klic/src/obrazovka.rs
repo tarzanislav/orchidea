@@ -775,9 +775,9 @@ fn riadok_okolia(o: &orchidea_teplo::okolie::StavOkolia, uspora: bool, j: Jazyk)
         }
         (None, Some(false)) => v.push((
             j.t(
-                "neznáme – reštart zohriatej dosky",
-                "neznámé – restart zahřáté desky",
-                "unknown – warm restart",
+                "neznáme – čip bol pri štarte už teplý",
+                "neznámé – čip byl při startu už teplý",
+                "unknown – chip already warm at start",
             )
             .into(),
             TLMENY,

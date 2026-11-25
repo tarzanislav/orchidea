@@ -121,6 +121,9 @@ pub struct Okolie {
     /// Okolie v okamihu, keď sa zmenil nečinný príkon (R126), a minúta zmeny – vlastný ohrev sa
     /// prepočíta, až keď sa teplota znova ustáli (najskôr po 3 τ).
     prekalibrovat: Option<(f64, u64)>,
+    /// R222: minúta poslednej zmeny nečinného príkonu (fáza pokusu, periférie, obraz) – rast teploty po nej
+    /// je ohrev zariadenia, nie zdroj tepla v okolí.
+    zmena_prikonu: Option<u64>,
     prostredie: Option<Prostredie>,
     ohrev_pri_praci: Option<f64>,
     /// R195: teplota v izbe z teplomera (SKLENIK.TXT) – okolie sa neodhaduje.
@@ -177,8 +180,9 @@ impl Okolie {
     /// Nečinný príkon sa zmenil (napr. Ethernet 100 Mb/s – R126): okolie sa drží, vlastný ohrev sa
     /// prepočíta pri najbližšom ustálení.
     pub fn prekalibruj(&mut self) {
+        let minuta = self.rozpracovana.map_or(0, |r| r.0);
+        self.zmena_prikonu = Some(minuta);
         if let Some(o) = self.odhad {
-            let minuta = self.rozpracovana.map_or(0, |r| r.0);
             self.prekalibrovat = Some((o, minuta));
         }
     }
@@ -345,7 +349,11 @@ impl Okolie {
             if n >= 45 {
                 let m = &self.minuty[n - 10..];
                 let rast = m[9].teplota - m[0].teplota;
-                if m.iter().all(Minuta::necinna)
+                // R222 (X96 25. 11.): kontrolná fáza pokusu zvýšila príkon a doska sa 13 min ohrievala –
+                // okno musí začať až po ustálení (15 min) od poslednej zmeny príkonu
+                let po_zmene = self.zmena_prikonu.is_none_or(|z| m[0].index >= z + 15);
+                if po_zmene
+                    && m.iter().all(Minuta::necinna)
                     && m.windows(2).all(|w| w[1].teplota >= w[0].teplota - 0.1)
                     && rast >= 2.0
                 {
@@ -585,6 +593,27 @@ mod skusky {
         let po = o.stav();
         assert!(matches!(po.prostredie, Prostredie::ZdrojTepla(n) if n >= 5.0), "{po:?}");
         assert!((po.okolie.unwrap() - 33.0).abs() < 3.0, "{po:?}");
+    }
+
+    #[test]
+    fn ohrev_po_zmene_prikonu_nie_je_zdroj_tepla() {
+        // X96 25. 11.: teplý štart bez modelu, 2 h nečinne pri 50 °C, potom vyšší príkon (kontrolná fáza
+        // pokusu) – doska sa 13 min ohrieva o 19 °C; to nie je radiátor v okolí
+        let mut o = Okolie::nove();
+        let mut s = 0.0;
+        while s < 120.0 * 60.0 {
+            o.krok(s, 50.3, Some(0.0));
+            s += 10.0;
+        }
+        o.prekalibruj();
+        let start = s;
+        while s < start + 14.0 * 60.0 {
+            let t = 50.3 + 19.0 * (1.0 - (-(s - start) / 300.0f64).exp());
+            o.krok(s, t, Some(0.0));
+            s += 10.0;
+        }
+        let st = o.stav();
+        assert!(!matches!(st.prostredie, Prostredie::ZdrojTepla(_)), "{st:?}");
     }
 
     #[test]
