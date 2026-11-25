@@ -1216,7 +1216,7 @@ mod skusky {
             StavOkolia { okolie: None, studeny_start: Some(false), prostredie: Prostredie::Nezname, ..o };
         st.okolie = Some(&teply);
         let (_, opis) = nakresli_s_opisom(&pismo, 800, 480, &st, Jazyk::Cs);
-        assert!(opis.iter().any(|r| r.contains("restart zahřáté desky")), "{opis:?}");
+        assert!(opis.iter().any(|r| r.contains("čip byl při startu už teplý")), "{opis:?}");
     }
 
     #[test]
