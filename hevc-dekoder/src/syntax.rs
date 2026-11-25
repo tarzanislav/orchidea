@@ -171,9 +171,8 @@ impl StavObrazu {
     }
 
     /// CTB v riadku `ry` je zrekonštruovaný. Keď je celých prvých `n` riadkov CTB, zverejní sa pohyb týchto
-    /// riadkov, odblokujú sa riadky do `n − 2` (riadok `r` až po rekonštrukcii riadka `r + 1`: vnútrosnímková
-    /// predikcia v ňom číta nefiltrovaný spodný riadok vzoriek riadka `r`) a po SAO sa zverejnia riadky do `n − 3`
-    /// (SAO riadka `r` číta odblokovaný horný riadok vzoriek riadka `r + 1`).
+    /// riadkov, odblokujú sa úseky do `n − 1` a po SAO sa zverejnia riadky CTB do `n − 2` – obraz zaostáva za
+    /// rekonštrukciou len o jeden riadok CTB (pozri [`StavObrazu::posun`]).
     pub fn ctb_hotovy(&mut self, ry: usize) {
         let Some(h) = self.hotove_v_riadku.get_mut(ry) else { return };
         *h = h.saturating_add(1);
@@ -201,14 +200,21 @@ impl StavObrazu {
             ciel.kol.zverejni_z(self.pohyb_zverejnenych, &self.kol);
             self.pohyb_zverejnenych += 1;
         }
+        // Odblokovanie po úsekoch posunutých o 8 riadkov hore: úsek u sú riadky u·CTB − 8 … (u + 1)·CTB − 9 (prvý
+        // od 0, posledný po koniec obrazu). Úsek u stačí rekonštrukcia riadka CTB u – spodných 8 riadkov vzoriek
+        // ostáva nefiltrovaných, takže vnútrosnímková predikcia riadka u + 1 (číta riadok (u + 1)·CTB − 1) ich vidí
+        // pred filtrom. Hranice sú na mriežke 8, preto je výsledok rovnaký ako pre celý obraz (odblokuj_pas).
         let ctb = 1usize << self.info.log2_ctb;
-        let odblokovat = if koniec { vyska_ctb } else { n.saturating_sub(1) };
+        let odblokovat = if koniec { vyska_ctb } else { n };
         while self.odblokovanych < odblokovat {
-            let r = self.odblokovanych;
-            let (y0, y1) = (r * ctb, ((r + 1) * ctb).min(self.info.vyska));
+            let u = self.odblokovanych;
+            let y0 = (u * ctb).saturating_sub(8);
+            let y1 = if u + 1 == vyska_ctb { self.info.vyska } else { (u + 1) * ctb - 8 };
             odblokovanie::odblokuj_pas(&mut self.obraz, &self.mapy, &self.info, y0, y1);
             self.odblokovanych += 1;
         }
+        // SAO riadka CTB r číta odblokované vzorky o riadok nad ním a pod ním: treba úseky do r + 1
+        // (teda rekonštrukciu riadka CTB r + 1)
         let zverejnit = if koniec { vyska_ctb } else { self.odblokovanych.saturating_sub(1) };
         while self.zverejnenych < zverejnit {
             self.zverejni_riadok(&ciel.obraz, self.zverejnenych);

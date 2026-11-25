@@ -93,8 +93,7 @@ pub fn odblokuj(obraz: &mut Obraz, mapy: &MapyFiltra, info: &InfoObrazu) {
 /// dá ten istý výsledok ako [`odblokuj`] – vodorovná hrana na hornom okraji pásu číta 4 riadky predošlého pásu
 /// (už zvislo filtrované) a mení najviac 3 z nich; hrany v rámci pásu sa neprekrývajú (mriežka 8).
 ///
-/// Pás sa smie odblokovať až po rekonštrukcii nasledujúceho pásu (vnútrosnímková predikcia v ňom číta
-/// nefiltrovaný spodný riadok tohto pásu).
+/// Pás nesmie zasiahnuť riadky, ktoré ešte číta vnútrosnímková predikcia (spodný riadok rekonštruovanej časti).
 pub fn odblokuj_pas(obraz: &mut Obraz, mapy: &MapyFiltra, info: &InfoObrazu, y0: usize, y1: usize) {
     let hlbka = obraz.bitova_hlbka;
     let s = Spolocne {
