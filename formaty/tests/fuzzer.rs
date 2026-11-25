@@ -242,3 +242,17 @@ fn rozpoznanie_a_obrovske_rozmery() {
     assert!(matches!(jpeg::citaj(&j, &limity()), Err(orchidea_jadro::Chyba::Limit(_))));
     assert_eq!(orchidea_formaty::rozpoznaj(&j), Some(orchidea_formaty::Format::Jpeg));
 }
+
+/// Regresné vstupy z dlhého fuzzera v CI – každý raz zhodil čítačku. Musia skončiť chybou alebo obrazom, nikdy
+/// pádom ani obrovskou alokáciou.
+#[test]
+fn regresne_vstupy() {
+    // JPEG XL, semienko 2, 100 000 pokusov (beh 45482947475, commit d1b0a5b): hlavička snímky s rozmerom,
+    // pre ktorý čítačka chcela vyhradiť 65 TB – teraz ju zastaví limit skôr, než sa alokuje
+    let jxl_65tb = include_bytes!("data/regresia/jxl_65tb_semienko2.jxl").as_slice();
+    for l in [limity(), Limity::default()] {
+        let _ = jxl::citaj(jxl_65tb, &l);
+        let _ = orchidea_formaty::citaj(jxl_65tb, &l);
+    }
+    let _ = jxl::citaj_hlavicku(jxl_65tb);
+}

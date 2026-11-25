@@ -22,7 +22,11 @@ skusok = 0
 
 
 def spusti(argumenty, vstup):
-    return subprocess.run([PROGRAM] + argumenty, input=vstup, capture_output=True, check=True).stdout
+    v = subprocess.run([PROGRAM] + argumenty, input=vstup, capture_output=True)
+    if v.returncode != 0:
+        # zlyhanie nášho programu je výsledok skúšky (ZLYHALO), nie pád overovania
+        raise RuntimeError(f"rozhodca {' '.join(argumenty[:3])}: {v.stderr.decode(errors='replace').strip()[-300:]}")
+    return v.stdout
 
 
 def cisla(argumenty, hodnoty):
@@ -129,57 +133,70 @@ def icc():
     cesty = sorted({c for p in PROFILY for c in glob.glob(os.path.join(p, "**", "*.ic[cm]"), recursive=True)})
     for cesta in cesty:
         try:
-            profil = ImageCms.getOpenProfile(cesta)
-        except Exception:
-            continue
-        priestor = profil.profile.xcolor_space.strip()
-        if priestor == "RGB":
-            rezim, vstup, k = "RGB", rgb, 3
-        elif priestor == "GRAY":
-            rezim, vstup, k = "L", rgb[:, :1].copy(), 1
-        elif priestor == "CMYK":
-            g = np.stack(np.meshgrid(*[np.linspace(0, 255, 9).round()] * 4, indexing="ij"), -1).reshape(-1, 4)
-            rezim, vstup, k = "CMYK", g.astype(np.uint8), 4
-        else:
-            continue
-        meno = os.path.basename(cesta)
-        with open(cesta, "rb") as f:
-            tabulkovy = b"A2B0" in f.read(132 + 12 * 200)
-        # percepčný zámer: Little CMS pri profile v4 (jeho sRGB) zapína kompenzáciu čierneho bodu (ISO 18619),
-        # ktorú farba zatiaľ nemá – porovnáva sa len pri profiloch bez tabuliek
-        zamery = (1,) if tabulkovy else (0, 1)
-        for zamer in zamery:
-            n = nase(cesta, "srgb", zamer, k, vstup, 3)
-            i = lcms(profil, srgb, rezim, "RGB", zamer, vstup, 3)
-            j = lcms(profil, srgb, rezim, "RGB", zamer, vstup, 3, BEZ_OPTIMALIZACIE)
-            i = np.where(np.abs(n - i).max(1, keepdims=True) <= np.abs(n - j).max(1, keepdims=True), i, j)
-            porovnaj(f"ICC {meno} → sRGB, zámer {zamer}", n, i, 2)
-            porovnaj(f"ICC {meno} → sRGB, zámer {zamer}, presne", nase(cesta, "srgb", zamer, k, vstup, 3, True),
-                     lcms(profil, srgb, rezim, "RGB", zamer, vstup, 3, BEZ_OPTIMALIZACIE), 2)
-        if priestor not in ("RGB", "CMYK"):
-            continue
-        kc = 3 if priestor == "RGB" else 4
-        for presne in (False, True):
-            n = nase("srgb", cesta, 1, 3, rgb, kc, presne)
-            i = lcms(srgb, profil, "RGB", rezim, 1, rgb, kc, BEZ_OPTIMALIZACIE if presne else 0)
-            if not presne:
-                # pri málo bodoch počíta farba presne aj bez voľby (mriežka by bola zbytočná) – uzná sa zhoda
-                # s optimalizovaným aj presným výsledkom rozhodcu
-                j = lcms(srgb, profil, "RGB", rezim, 1, rgb, kc, BEZ_OPTIMALIZACIE)
-                i = np.where(np.abs(n - i).max(1, keepdims=True) <= np.abs(n - j).max(1, keepdims=True), i, j)
-            # krivky s plochými úsekmi (Cineon: čierna a biela orezané) nemajú jednoznačnú inverziu – bod sa
-            # uzná aj vtedy, keď oba výsledky dajú späť v sRGB tú istú farbu (to, čo z hodnôt naozaj vznikne)
+            try:
+                profil = ImageCms.getOpenProfile(cesta)
+            except Exception:
+                continue
+            priestor = profil.profile.xcolor_space.strip()
             if priestor == "RGB":
-                spat_n = lcms(profil, srgb, "RGB", "RGB", 1, n.astype(np.uint8), 3)
-                spat_i = lcms(profil, srgb, "RGB", "RGB", 1, i.astype(np.uint8), 3)
-                rozdiel = np.minimum(np.abs(n - i).max(1), np.abs(spat_n - spat_i).max(1))
-                n, i = rozdiel, np.zeros_like(rozdiel)
-            porovnaj(f"ICC sRGB → {meno}, zámer 1{', presne' if presne else ''}", n, i, 2)
+                rezim, vstup, k = "RGB", rgb, 3
+            elif priestor == "GRAY":
+                rezim, vstup, k = "L", rgb[:, :1].copy(), 1
+            elif priestor == "CMYK":
+                g = np.stack(np.meshgrid(*[np.linspace(0, 255, 9).round()] * 4, indexing="ij"), -1).reshape(-1, 4)
+                rezim, vstup, k = "CMYK", g.astype(np.uint8), 4
+            else:
+                continue
+            meno = os.path.basename(cesta)
+            with open(cesta, "rb") as f:
+                tabulkovy = b"A2B0" in f.read(132 + 12 * 200)
+            # percepčný zámer: Little CMS pri profile v4 (jeho sRGB) zapína kompenzáciu čierneho bodu (ISO 18619),
+            # ktorú farba zatiaľ nemá – porovnáva sa len pri profiloch bez tabuliek
+            zamery = (1,) if tabulkovy else (0, 1)
+            for zamer in zamery:
+                n = nase(cesta, "srgb", zamer, k, vstup, 3)
+                i = lcms(profil, srgb, rezim, "RGB", zamer, vstup, 3)
+                j = lcms(profil, srgb, rezim, "RGB", zamer, vstup, 3, BEZ_OPTIMALIZACIE)
+                i = np.where(np.abs(n - i).max(1, keepdims=True) <= np.abs(n - j).max(1, keepdims=True), i, j)
+                porovnaj(f"ICC {meno} → sRGB, zámer {zamer}", n, i, 2)
+                porovnaj(f"ICC {meno} → sRGB, zámer {zamer}, presne", nase(cesta, "srgb", zamer, k, vstup, 3, True),
+                         lcms(profil, srgb, rezim, "RGB", zamer, vstup, 3, BEZ_OPTIMALIZACIE), 2)
+            if priestor not in ("RGB", "CMYK"):
+                continue
+            kc = 3 if priestor == "RGB" else 4
+            # profil len so smerom do PCS (napr. CMYK „micro“ bez B2A) – cieľom byť nemôže ani pre rozhodcu
+            try:
+                ImageCms.buildTransform(srgb, profil, "RGB", rezim, renderingIntent=1)
+            except Exception:
+                print(f"PRESKOČENÉ sRGB → {meno}: profil nemá spätný smer (ani rozhodca ho nevie použiť ako cieľ)")
+                continue
+            for presne in (False, True):
+                n = nase("srgb", cesta, 1, 3, rgb, kc, presne)
+                i = lcms(srgb, profil, "RGB", rezim, 1, rgb, kc, BEZ_OPTIMALIZACIE if presne else 0)
+                if not presne:
+                    # pri málo bodoch počíta farba presne aj bez voľby (mriežka by bola zbytočná) – uzná sa zhoda
+                    # s optimalizovaným aj presným výsledkom rozhodcu
+                    j = lcms(srgb, profil, "RGB", rezim, 1, rgb, kc, BEZ_OPTIMALIZACIE)
+                    i = np.where(np.abs(n - i).max(1, keepdims=True) <= np.abs(n - j).max(1, keepdims=True), i, j)
+                # krivky s plochými úsekmi (Cineon: čierna a biela orezané) nemajú jednoznačnú inverziu – bod sa
+                # uzná aj vtedy, keď oba výsledky dajú späť v sRGB tú istú farbu (to, čo z hodnôt naozaj vznikne)
+                if priestor == "RGB":
+                    spat_n = lcms(profil, srgb, "RGB", "RGB", 1, n.astype(np.uint8), 3)
+                    spat_i = lcms(profil, srgb, "RGB", "RGB", 1, i.astype(np.uint8), 3)
+                    rozdiel = np.minimum(np.abs(n - i).max(1), np.abs(spat_n - spat_i).max(1))
+                    n, i = rozdiel, np.zeros_like(rozdiel)
+                porovnaj(f"ICC sRGB → {meno}, zámer 1{', presne' if presne else ''}", n, i, 2)
+        except RuntimeError as e:
+            print(f"ZLYHALO   {os.path.basename(cesta)}: {e}")
+            zlyhania.append(os.path.basename(cesta))
 
 
 for cast in (prenosy, matice, aces, icc):
     try:
         cast()
+    except RuntimeError as e:
+        print(f"ZLYHALO   {cast.__name__}: {e}")
+        zlyhania.append(cast.__name__)
     except ImportError as e:
         print(f"rozhodca chýba ({e}) – časť {cast.__name__} preskočená")
         if os.environ.get("CI"):
