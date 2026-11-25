@@ -468,14 +468,14 @@ jobs:
           done
 
   pohlad:
-    name: Pohľad – zmenšenie a náhľady proti Pillow, brána E1 (1000 fotiek, obmedzené vlákna)
+    name: Pohľad – zmenšenie, náhľady a porovnanie proti Pillow a scikit-image, brána E1 (1000 fotiek)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
-      - name: Rozhodca (Pillow)
-        run: python3 -m pip install --user --break-system-packages numpy Pillow
+      - name: Rozhodcovia (Pillow, scikit-image)
+        run: python3 -m pip install --user --break-system-packages numpy Pillow scikit-image
       - name: Zostavenie
         run: cargo build --locked --release -p orchidea-pohlad --example pohlad
       - name: Overenie

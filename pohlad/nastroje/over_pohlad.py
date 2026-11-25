@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Nezávislé overenie Pohľadu (CI): zmenšenie proti Pillow, hromadný prevod, brána E1 – 1000 fotiek bez
-zamrznutia, s obmedzeným počtom vlákien a ohraničenou pamäťou – a náhľady priečinka (natočenie, zoznam).
+zamrznutia, s obmedzeným počtom vlákien a ohraničenou pamäťou – náhľady priečinka (natočenie, zoznam) a
+porovnanie obrázkov (PSNR, SSIM proti scikit-image).
 
 Použitie: over_pohlad.py <program pohlad> <pracovný priečinok> [počet fotiek brány, predvolene 1000]
 Rozhodca: Pillow (prevzorkovanie Lanczos v plávajúcom režime „F“ v lineárnom svetle, čítanie výsledkov).
@@ -252,9 +253,55 @@ def nahlady_brana():
              f"{len(casy)} náhľadov 160 px za {time.monotonic() - zaciatok:.1f} s, najdlhšia medzera {medzery.max()} ms")
 
 
+
+def porovnanie(rng):
+    """PSNR a SSIM proti scikit-image (structural_similarity s Gaussovým oknom σ = 1,5 ako Wang 2004)."""
+    try:
+        from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+    except ImportError:
+        vysledok("porovnanie", False, "rozhodca scikit-image chýba")
+        return
+    pripady = []
+    a = obraz(rng, 120, 160, 3, foto=True)
+    sum_ = np.clip(a.astype(int) + rng.integers(-12, 13, a.shape), 0, 255).astype(np.uint8)
+    pripady.append(("šum ±12", a, sum_))
+    jpeg_cesta = os.path.join(PRAC, "por_jpeg.jpg")
+    Image.fromarray(a).save(jpeg_cesta, quality=40)
+    pripady.append(("JPEG kvalita 40", a, np.asarray(Image.open(jpeg_cesta))))
+    s = obraz(rng, 64, 80, 1)[..., 0]
+    pripady.append(("sivý posun o 1 bod", s, np.roll(s, 1, axis=1)))
+    hl = (obraz(rng, 50, 70, 3).astype(np.uint16) * 257)
+    pripady.append(("16 bitov", hl, np.clip(hl.astype(int) + 300, 0, 65535).astype(np.uint16)))
+    for meno, x, y in pripady:
+        ca, cb = os.path.join(PRAC, "por_a.png"), os.path.join(PRAC, "por_b.png")
+        if x.dtype == np.uint16:
+            ca, cb = ca[:-4] + ".tif", cb[:-4] + ".tif"
+            # 16 bitov: Pillow zapíše len jednokanálový 16-bitový TIFF – porovná sa prvý kanál
+            for cesta, pole in ((ca, x), (cb, y)):
+                Image.fromarray(pole[..., 0]).save(cesta)
+            x, y = x[..., 0], y[..., 0]
+        else:
+            Image.fromarray(x).save(ca)
+            Image.fromarray(y).save(cb)
+        rozsah = 65535 if x.dtype == np.uint16 else 255
+        r = subprocess.run([PROGRAM, "porovnaj", ca, cb], capture_output=True, text=True)
+        try:
+            c = r.stdout.split()
+            psnr, ssim = float(c[5]), float(c[7])
+        except (IndexError, ValueError):
+            vysledok(f"porovnanie {meno}", False, r.stdout + r.stderr)
+            continue
+        ich_psnr = peak_signal_noise_ratio(x, y, data_range=rozsah)
+        ich_ssim = structural_similarity(x, y, data_range=rozsah, gaussian_weights=True, sigma=1.5,
+                                         use_sample_covariance=False, channel_axis=-1 if x.ndim == 3 else None)
+        ok = abs(psnr - ich_psnr) < 1e-6 and abs(ssim - ich_ssim) < 1e-6
+        vysledok(f"porovnanie {meno}", ok, f"PSNR {psnr:.4f} (ich {ich_psnr:.4f}) dB, SSIM {ssim:.6f} (ich {ich_ssim:.6f})")
+
+
 rng = np.random.default_rng(2026)
 zmensenie(rng)
 davka_bez_straty(rng)
+porovnanie(rng)
 brana(rng)
 nahlady(rng)
 nahlady_brana()

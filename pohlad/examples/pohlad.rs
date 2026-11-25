@@ -4,12 +4,14 @@
 //!   [--vlakna N] [--kvalita Q] [--prestavka MS]` – riadok na každý súbor: `SUBOR poradie ms_od_začiatku ok|chyba text`
 //! - `pohlad nahlady <priečinok> <strana> [--vlakna N] [--vystup PRIEČINOK]` – zoznam obrázkov a náhľady na pozadí;
 //!   riadok `NAHLAD poradie ms šírka výška meno` (s `--vystup` sa náhľady uložia ako PNG)
+//! - `pohlad porovnaj <a> <b> [--rozdiel výstup.png] [--zosilnenie K] [--deleny výstup.png]` – riadok
+//!   `NAJVIAC x PRIEMER x PSNR x SSIM x ROZDIELNYCH n`
 //! - `pohlad zmensi <vstup> <výstup.surove> <šírka> <výška>` – zmenšenie a surové vzorky (ako `formaty prevod`)
 
 use orchidea_formaty::obraz::Vzorky;
 use orchidea_formaty::{Format, Limity};
 use orchidea_pohlad::davka::{self, Nastavenie, Recept, Udalost};
-use orchidea_pohlad::{nahlady, zmensenie};
+use orchidea_pohlad::{nahlady, porovnanie, zmensenie};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -96,6 +98,26 @@ fn spusti(a: &[String]) -> Result<(), String> {
                 }
             }
             beh.cakaj();
+            Ok(())
+        }
+        Some("porovnaj") if a.len() >= 4 => {
+            let citaj = |c: &str| -> Result<orchidea_formaty::Obraz, String> {
+                let d = std::fs::read(c).map_err(|e| e.to_string())?;
+                orchidea_formaty::citaj(&d, &Limity::default()).map_err(|e| e.to_string())
+            };
+            let (x, y) = (citaj(&a[2])?, citaj(&a[3])?);
+            let m = porovnanie::porovnaj(&x, &y).map_err(|e| e.to_string())?;
+            let ssim = m.ssim.map_or("-".into(), |s| format!("{s:.10}"));
+            println!("NAJVIAC {} PRIEMER {:.10} PSNR {:.10} SSIM {ssim} ROZDIELNYCH {}", m.najviac, m.priemer, m.psnr, m.rozdielnych_bodov);
+            if let Some(c) = hodnota(a, "--rozdiel") {
+                let k = hodnota(a, "--zosilnenie").and_then(|v| v.parse().ok()).unwrap_or(10.0);
+                let r = porovnanie::obraz_rozdielu(&x, &y, k).map_err(|e| e.to_string())?;
+                std::fs::write(c, orchidea_formaty::zapis(&r, Format::Png).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            }
+            if let Some(c) = hodnota(a, "--deleny") {
+                let r = porovnanie::deleny(&x, &y, x.sirka / 2).map_err(|e| e.to_string())?;
+                std::fs::write(c, orchidea_formaty::zapis(&r, Format::Png).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            }
             Ok(())
         }
         Some("zmensi") if a.len() == 6 => {

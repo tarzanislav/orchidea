@@ -224,6 +224,14 @@
       "posudenie_charty": "slobodné knižnice bez vojenského účelu; použité len ako rozhodcovia správnosti, žiadny ich kód nie je v ORCHIDEI"
     },
     {
+      "meno": "rozhodcovia Pohľadu: Pillow, scikit-image (PSNR, SSIM), NumPy",
+      "trieda": "B",
+      "licencia": "MIT-CMU (Pillow), BSD-3-Clause (scikit-image, NumPy)",
+      "kde": "len CI – pohlad/nastroje/over_pohlad.py (inštalácia cez pip pri behu), nie je v repozitári ani v programe",
+      "ucel": "nezávislé overenie zmenšenia, náhľadov a mier porovnania (PSNR, SSIM podľa Wang 2004)",
+      "posudenie_charty": "slobodné knižnice bez vojenského účelu; použité len ako rozhodcovia správnosti"
+    },
+    {
       "meno": "rozhodcovia farby: colour-science, OpenColorIO (PyOpenColorIO), Little CMS (cez Pillow ImageCms), NumPy",
       "trieda": "B",
       "licencia": "BSD-3-Clause (colour-science, OpenColorIO, NumPy), MIT (Little CMS), MIT-CMU (Pillow)",
