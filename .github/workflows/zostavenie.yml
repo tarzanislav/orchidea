@@ -467,6 +467,27 @@ jobs:
             ORCHIDEA_FUZZER=200000 ORCHIDEA_FUZZER_SEMIENKO=$s cargo test --locked --release -p orchidea-farba --test fuzzer
           done
 
+  pohlad:
+    name: Pohľad – zmenšenie proti Pillow a brána E1 (1000 fotiek, obmedzené vlákna)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Rozhodca (Pillow)
+        run: python3 -m pip install --user --break-system-packages numpy Pillow
+      - name: Zostavenie
+        run: cargo build --locked --release -p orchidea-pohlad --example pohlad
+      - name: Overenie
+        shell: bash
+        run: |
+          echo "### Pohľad – nezávislé overenie a brána E1" >> "$GITHUB_STEP_SUMMARY"
+          kod=0
+          python3 pohlad/nastroje/over_pohlad.py target/release/examples/pohlad "$RUNNER_TEMP/pohlad" 1000 > vysledok.md || kod=$?
+          { echo '```'; cat vysledok.md; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat vysledok.md
+          exit $kod
+
   shadery:
     name: Overenie shaderov – ${{ matrix.meno }}
     strategy:

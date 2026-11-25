@@ -1,0 +1,20 @@
+[package]
+name = "orchidea-pohlad"
+description = "Pohľad – prehliadač obrázkov: hromadný prevod, premenovanie a zmenšenie, náhľady priečinka (bez importu)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 3
+
+[dependencies]
+orchidea-jadro.workspace = true
+orchidea-formaty.workspace = true
+orchidea-farba.workspace = true
+
+[lints]
+workspace = true

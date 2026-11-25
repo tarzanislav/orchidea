@@ -65,6 +65,15 @@ name = "orchidea-pismo"
 version = "0.1.0"
 
 [[package]]
+name = "orchidea-pohlad"
+version = "0.1.0"
+dependencies = [
+ "orchidea-farba",
+ "orchidea-formaty",
+ "orchidea-jadro",
+]
+
+[[package]]
 name = "orchidea-teplo"
 version = "0.1.0"
 
