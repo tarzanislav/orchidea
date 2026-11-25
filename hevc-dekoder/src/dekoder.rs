@@ -683,4 +683,30 @@ mod testy {
         assert_eq!(d.statistika.preskocene, 1, "RASL za CRA nového toku sa nedekóduje");
         assert_eq!(poc, vec![0, 8, 12]);
     }
+
+    fn yuv(tok: &[u8], vlakien: usize) -> Vec<u8> {
+        let mut d = Dekoder::novy().s_vlaknami(vlakien);
+        let mut obrazy = Vec::new();
+        for j in orchidea_hevc::jednotky_annex_b(tok) {
+            obrazy.extend(d.nal(j));
+        }
+        obrazy.extend(d.koniec());
+        let mut v = Vec::new();
+        for o in obrazy {
+            v.extend(o.poc.to_le_bytes());
+            o.zapis_yuv(&mut v);
+        }
+        v
+    }
+
+    /// Súbežnosť po obrazoch nesmie zmeniť ani poradie výstupu, ani jeden bit (1 vlákno = rozhodca).
+    #[test]
+    #[cfg_attr(target_os = "wasi", ignore)]
+    fn rovnaky_vysledok_pri_vlaknach() {
+        let jedno = yuv(&TOK_EOB, 1);
+        assert!(!jedno.is_empty());
+        for n in [2, 4, 8] {
+            assert_eq!(yuv(&TOK_EOB, n), jedno, "{n} vlákien");
+        }
+    }
 }
