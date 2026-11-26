@@ -1,0 +1,19 @@
+[package]
+name = "orchidea-media"
+description = "Kodeky a kontajnery (Médiá) – základ prehrávača LÝRA: Matroska/WebM, MP4/MOV, MPEG-TS, dekodéry zvuku, hodiny prehrávania a rozhranie R5 pre ORCHIDEA OS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[dependencies]
+orchidea-jadro.workspace = true
+orchidea-zariadenie.workspace = true
+
+[lints]
+workspace = true

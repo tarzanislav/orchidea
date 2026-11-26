@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["jadro", "gpu", "neuron", "pismo", "zariadenie", "teplo", "dlazdice", "farba", "formaty", "pohlad", "hevc", "hevc-dekoder", "sklenik/karta", "sklenik/klic", "sklenik/korene", "sklenik/sadic"]
+members = ["jadro", "gpu", "neuron", "pismo", "zariadenie", "teplo", "dlazdice", "farba", "formaty", "pohlad", "hevc", "hevc-dekoder", "media", "sklenik/karta", "sklenik/klic", "sklenik/korene", "sklenik/sadic"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,6 +24,7 @@ orchidea-formaty = { path = "formaty" }
 orchidea-pohlad = { path = "pohlad" }
 orchidea-hevc = { path = "hevc" }
 orchidea-hevc-dekoder = { path = "hevc-dekoder" }
+orchidea-media = { path = "media" }
 sklenik-karta = { path = "sklenik/karta" }
 
 [workspace.lints.rust]

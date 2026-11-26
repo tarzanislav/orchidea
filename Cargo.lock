@@ -54,6 +54,14 @@ name = "orchidea-jadro"
 version = "0.1.0"
 
 [[package]]
+name = "orchidea-media"
+version = "0.1.0"
+dependencies = [
+ "orchidea-jadro",
+ "orchidea-zariadenie",
+]
+
+[[package]]
 name = "orchidea-neuron"
 version = "0.1.0"
 dependencies = [
