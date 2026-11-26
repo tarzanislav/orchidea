@@ -115,6 +115,55 @@ pub fn zlyhanie_sd(sprava: &str) -> Option<String> {
     (host.starts_with("mmc") && zvysok.contains("whilst initialising SD card")).then(|| host.to_string())
 }
 
+/// R235: z hlásenia jadra „I/O error, dev mmcblk0, sector …“ vráti blokové zariadenie (`mmcblk0`).
+pub fn chyba_citania_mmc(sprava: &str) -> Option<String> {
+    let zvysok = sprava.split_once("I/O error, dev ")?.1;
+    let disk = zvysok.split([',', ' ']).next()?;
+    (disk.starts_with("mmcblk") && !disk.contains("boot") && !disk.contains("rpmb")).then(|| disk.to_string())
+}
+
+/// R235: radič (`mmcN`), na ktorom je blokové zariadenie `mmcblkN` (cez sysfs, nie podľa čísla).
+pub fn host_disku(koren: &Path, disk: &str) -> Option<String> {
+    let cesta = fs::canonicalize(koren.join("sys/block").join(disk).join("device")).ok()?;
+    let host = cesta.parent()?.file_name()?.to_string_lossy().to_string();
+    host.starts_with("mmc").then_some(host)
+}
+
+/// R235: stupne taktu karty pri chybách čítania (karta sa rozpozná, ale čítanie dát má chyby CRC – Odroid C4
+/// 26. 11.: 50 MHz, chyby takmer pri každom čítaní). Radič sa neodpojí – karta nesie záznamy.
+pub const SD_STUPNE_KHZ: [u32; 2] = [25_000, 12_500];
+/// Koľko chýb čítania od posledného kroku (a najskôr po 30 s) spustí ďalší, nižší takt.
+pub const SD_CHYB_NA_KROK: u32 = 3;
+
+#[derive(Debug, Default)]
+pub struct StrazCitania {
+    /// mmcN → (chyby od posledného kroku, stupeň 0 = pôvodný takt, čas posledného kroku)
+    stav: std::collections::HashMap<String, (u32, usize, Option<std::time::Instant>)>,
+}
+
+impl StrazCitania {
+    /// Zapíše chybu čítania na radiči; vráti nový strop taktu v kHz, ak treba ďalší krok.
+    pub fn chyba(&mut self, host: &str) -> Option<u32> {
+        let (n, stupen, od) = self.stav.entry(host.to_string()).or_insert((0, 0, None));
+        *n += 1;
+        let pokoj = od.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(30));
+        if *n < SD_CHYB_NA_KROK || !pokoj || *stupen >= SD_STUPNE_KHZ.len() {
+            return None;
+        }
+        let khz = SD_STUPNE_KHZ[*stupen];
+        *stupen += 1;
+        *n = 0;
+        *od = Some(std::time::Instant::now());
+        Some(khz)
+    }
+
+    /// Súčasný strop taktu radiča (kHz), ak sa už znížil.
+    pub fn strop(&self, host: &str) -> Option<u32> {
+        let (_, stupen, _) = self.stav.get(host)?;
+        (*stupen > 0).then(|| SD_STUPNE_KHZ[*stupen - 1])
+    }
+}
+
 /// R189: radič karty `mmcN` (platformové zariadenie a jeho ovládač) a či je v ňom rozpoznaná karta.
 pub fn radic_sd(koren: &Path, host: &str) -> Option<(Radic, bool)> {
     let h = koren.join("sys/class/mmc_host").join(host);
@@ -448,5 +497,26 @@ mod skusky {
             b.zlyhanie("mmc1", false);
         }
         assert_eq!(b.zlyhanie("mmc1", false), Some(KrokSd::Odpoj("mmc1".into())));
+    }
+
+    #[test]
+    fn r235_chyby_citania_karty() {
+        assert_eq!(
+            chyba_citania_mmc("I/O error, dev mmcblk0, sector 60831744 op 0x0:(READ) flags 0x80700"),
+            Some("mmcblk0".into())
+        );
+        assert_eq!(chyba_citania_mmc("Buffer I/O error on dev mmcblk0, logical block 0"), None);
+        assert_eq!(chyba_citania_mmc("I/O error, dev sda, sector 0"), None);
+        assert_eq!(chyba_citania_mmc("I/O error, dev mmcblk1boot0, sector 0"), None);
+        let mut s = StrazCitania::default();
+        assert_eq!(s.chyba("mmc0"), None);
+        assert_eq!(s.chyba("mmc0"), None);
+        assert_eq!(s.chyba("mmc0"), Some(25_000));
+        assert_eq!(s.strop("mmc0"), Some(25_000));
+        // ďalší krok najskôr po 30 s – dávka chýb hneď po prepnutí nič nespraví
+        for _ in 0..5 {
+            assert_eq!(s.chyba("mmc0"), None);
+        }
+        assert_eq!(s.strop("mmc1"), None);
     }
 }

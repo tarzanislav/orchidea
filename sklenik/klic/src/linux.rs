@@ -874,6 +874,15 @@ fn kms_rpi_zlyhal() -> bool {
 /// R227: RPi – vc4 nemá na vývod HPD prerušenie (rozširovač firmvéru), jadro sa preto každých 10 s pýta monitora
 /// a pri zapojenom monitore zakaždým prečíta celý popis EDID cez I2C (3f805000.i2c, ~2,5 budenia/s). KLÍČ dopyt
 /// jadra vypne a pýta sa sám raz za 2 min; keď monitor zmizne, dopyt jadra zapne späť (zapojenie sa zachytí hneď).
+/// Takt v kHz ako MHz s čiarkou („12,5“).
+fn cislo_mhz(khz: u32) -> String {
+    if khz.is_multiple_of(1000) {
+        (khz / 1000).to_string()
+    } else {
+        format!("{},{}", khz / 1000, (khz % 1000) / 100)
+    }
+}
+
 /// R231: kontrolky, ktoré blikajú časovačom („tep srdca“ na Odroide C4, „timer“, „activity“), budia procesor
 /// niekoľkokrát za sekundu – namiesto blikania svietia trvalo (zariadenie stále ukazuje, že je zapnuté).
 fn pokojne_kontrolky() -> Vec<String> {
@@ -1698,7 +1707,17 @@ pub fn spusti() {
     // R194: parkovať jadrá sa dá len tam, kde ich platforma vie vypnúť (RPi 1–3 nie, RPi 5 zle)
     let parkovat_mozno = !hw.vypinatelne.is_empty();
     // R123–R128: odhad okolia, zdroj tepla, predpoveď, úspora v horúcom okolí, tepelný rozpočet
-    let mut okolie = if je_tv_krabicka(&model) { Okolie::s_dlhym_startom() } else { Okolie::nove() };
+    // R234: posun prvého merania nad izbou podľa zariadenia (zmerané s teplomerom 25. a 26. 11.)
+    let posun_startu =
+        if model.contains("Raspberry Pi 3") || model.contains("Raspberry Pi 2") || model.contains("Zero 2") {
+            5.5
+        } else if model.contains("ODROID-C4") {
+            2.5
+        } else {
+            0.5
+        };
+    let mut okolie = if je_tv_krabicka(&model) { Okolie::s_dlhym_startom() } else { Okolie::nove() }
+        .s_posunom_startu(posun_startu);
     // R195: teplota v izbe z teplomera (SKLENIK.TXT izba=) – presné okolie a vlastný ohrev
     if let Some(t) = nastavenie.as_ref().and_then(|(_, n)| n.izba).map(|d| d as f64 / 10.0) {
         okolie.nastav_izbu(t);
@@ -1896,6 +1915,8 @@ pub fn spusti() {
     let mut vytazenie = Vytazenie::nove();
     let mut kmsg = Hlasenia::otvor(&model);
     let mut straz_sd = radice::StrazSd::default();
+    // R235: chyby čítania z karty SD – nižší takt
+    let mut straz_citania = radice::StrazCitania::default();
     kmsg.citaj();
     let mut usb_ozivene = false;
     // R165: hardvérový dekodér videa – výsledky skúšky (vlákno) a či už bežala
@@ -2286,6 +2307,26 @@ pub fn spusti() {
         } else {
             false
         };
+        // R235: karta sa rozpozná, ale čítanie dát má chyby (Odroid C4 + karta pri 50 MHz) – nižší takt a radič
+        // nanovo (karta sa znova rozpozná), najviac 2 kroky (25 a 12,5 MHz); záznam sa potom skúsi hneď
+        if pid1 && !skuska && radice::sd_strop_je(Path::new("/")) {
+            for disk in std::mem::take(&mut kmsg.sd_chyby_citania) {
+                let Some(host) = radice::host_disku(Path::new("/"), &disk) else { continue };
+                let Some(khz) = straz_citania.chyba(&host) else { continue };
+                let Some((rd, _)) = radice::radic_sd(Path::new("/"), &host) else { continue };
+                let ok = radice::nastav_sd_strop(Path::new("/"), khz).is_ok()
+                    && radice::odpoj(&rd).is_ok()
+                    && radice::pripoj(&rd).is_ok();
+                zaznam::disk_v_poriadku(&disk);
+                hlas(&format!(
+                    "karta SD ({host}, {disk}): chyby čítania – takt karty najviac {} MHz, radič nanovo (R235){}",
+                    cislo_mhz(khz),
+                    if ok { "" } else { " – nepodarilo sa" }
+                ));
+            }
+        } else {
+            kmsg.sd_chyby_citania.clear();
+        }
         // R189: karta SD, ktorú jadro opakovane nevie spustiť – nižší takt, potom odpojený radič
         if pid1 && !skuska {
             for host in std::mem::take(&mut kmsg.sd_zlyhania) {
@@ -3062,7 +3103,17 @@ pub fn spusti() {
                 }
             }
             let up = uptime().unwrap_or(0.0);
-            if ((!pamat_bezi && !meranie_bezi && (skuska || up >= 10.0)) || up >= 120.0) && m.zacni(up as u64)
+            // R233: monitor ešte nie je zapojený/zapnutý (výstup HDMI je, vlastný ovládač obrazu ešte nie) –
+            // počkať najviac 3 min, aby sa namiesto 30-min samomerania urobil tepelný pokus (RPi 3 B+ v kove
+            // 26. 11.: monitor sa ozval v 53. s, pokus sa už nespustil)
+            let cakat_na_obraz = tv
+                && up < 180.0
+                && nastavenie.as_ref().and_then(|(_, n)| n.pokus).unwrap_or(!pokus_hotovy_tu)
+                && !displej.as_ref().is_some_and(|d| d.je_kms())
+                && !vystupy_hdmi().is_empty();
+            if !cakat_na_obraz
+                && ((!pamat_bezi && !meranie_bezi && (skuska || up >= 10.0)) || up >= 180.0)
+                && m.zacni(up as u64)
             {
                 hlas(
                     "samomeranie: začiatok – záznamy v 0., 5., 10. a 30. minúte, krivka teploty každých 30 s",
@@ -3363,6 +3414,15 @@ pub fn spusti() {
                         );
                         if let Some(h) = straz_sd.hlasenie.as_ref() {
                             text += &format!("  {h}{NL}");
+                        }
+                        // R235: znížený takt karty po chybách čítania
+                        for host in ["mmc0", "mmc1", "mmc2"] {
+                            if let Some(khz) = straz_citania.strop(host) {
+                                text += &format!(
+                                    "  karta SD {host}: po chybách čítania takt najviac {} MHz (R235){NL}",
+                                    cislo_mhz(khz)
+                                );
+                            }
                         }
                         if radice::casovac_budenia_je(Path::new("/")) {
                             text += &format!(
@@ -3995,6 +4055,8 @@ struct Hlasenia {
     obraz: Vec<String>,
     /// R189: radiče kariet SD, ktoré ohlásili zlyhanie pri rozpoznaní karty (od posledného prevzatia).
     sd_zlyhania: Vec<String>,
+    /// R235: chyby čítania z kariet (blokové zariadenie mmcblkN)
+    sd_chyby_citania: Vec<String>,
     obraz_nahlasene: usize,
     /// Najvyššia (najmenej závažná) úroveň, ktorá sa ešte ukáže: na RPi len chyby (ovládač USB RPi 1–3
     /// pri každom štarte píše neškodné varovanie), inde aj varovania.
@@ -4014,6 +4076,7 @@ impl Hlasenia {
             obraz: Vec::new(),
             obraz_nahlasene: 0,
             sd_zlyhania: Vec::new(),
+            sd_chyby_citania: Vec::new(),
             uroven: if model.contains("Raspberry Pi") { 3 } else { 4 },
         }
     }
@@ -4031,6 +4094,12 @@ impl Hlasenia {
                         zaznam.split_once(';').and_then(|(_, sprava)| radice::zlyhanie_sd(sprava.trim_end()))
                     {
                         self.sd_zlyhania.push(host);
+                    }
+                    if let Some(disk) = zaznam
+                        .split_once(';')
+                        .and_then(|(_, sprava)| radice::chyba_citania_mmc(sprava.trim_end()))
+                    {
+                        self.sd_chyby_citania.push(disk);
                     }
                     if let Some(h) = hlasenie_obrazu(&zaznam) {
                         if self.obraz.len() >= 160 {

@@ -128,6 +128,9 @@ pub struct Okolie {
     ohrev_pri_praci: Option<f64>,
     /// R195: teplota v izbe z teplomera (SKLENIK.TXT) – okolie sa neodhaduje.
     izba: Option<f64>,
+    /// R234: o koľko je čip pri prvom meraní po studenom štarte nad izbou (zavádzač ho pár sekúnd zohrieva);
+    /// None = 0,5 °C.
+    posun_startu: Option<f64>,
 }
 
 impl Okolie {
@@ -138,6 +141,13 @@ impl Okolie {
     /// Pre TV krabičky (dlhý štart zohreje čip skôr, než KLÍČ prvý raz zmeria).
     pub fn s_dlhym_startom() -> Okolie {
         Okolie { dlhy_start: true, ..Okolie::default() }
+    }
+
+    /// R234: posun prvého merania nad izbou podľa zariadenia (zmerané 26. 11. pri izbe 25,0 °C z teplomera:
+    /// RPi 3 B+ v plaste +7,2 °C, v kove +3,4 °C (25. 11.: +4,2), Odroid C4 +2,5 °C).
+    pub fn s_posunom_startu(mut self, posun: f64) -> Okolie {
+        self.posun_startu = Some(posun);
+        self
     }
 
     /// R195: teplota v izbe z teplomera – okolie je známe, vlastný ohrev = ustálená teplota − izba (aj pri
@@ -231,8 +241,8 @@ impl Okolie {
             let studeny = priemer - t0 >= 1.0 && rastie && !(self.dlhy_start && t0 >= STUDENY_START_NAJVIAC);
             self.studeny = Some(studeny);
             if studeny {
-                // čip je pri prvom meraní o kúsok teplejší než doska (pár sekúnd práce zavádzača)
-                let o = t0 - 0.5;
+                // čip je pri prvom meraní teplejší než izba (pár sekúnd práce zavádzača) – R234 podľa zariadenia
+                let o = t0 - self.posun_startu.unwrap_or(0.5);
                 self.okolie_start = Some(o);
                 self.odhad = Some(o);
                 self.zdroj = Some(Zdroj::Start);
@@ -549,6 +559,29 @@ mod skusky {
         let st = o.stav();
         assert_eq!(st.studeny_start, Some(true), "{st:?}");
         assert!((st.okolie.unwrap() - 25.0).abs() < 1.5, "{st:?}");
+    }
+
+    #[test]
+    fn posun_startu_rpi3_v_plaste() {
+        // RPi 3 B+ v plaste 26. 11. (izba 25,0 °C z teplomera): prvé meranie 32,2 °C, doska sa zohrieva τ ≈ 9 min
+        let priebeh = |s: f64| 25.0 + 7.2 + 18.0 * (1.0 - (-s / 540.0f64).exp());
+        let spusti = |o: &mut Okolie| {
+            let mut s = 10.0;
+            while s < 10.0 * 60.0 {
+                o.krok(s, (priebeh(s) * 2.0).round() / 2.0, Some(0.01));
+                s += 4.0;
+            }
+            o.stav()
+        };
+        let bez = spusti(&mut Okolie::nove());
+        let s_posunom = spusti(&mut Okolie::nove().s_posunom_startu(5.5));
+        assert_eq!(s_posunom.studeny_start, Some(true), "{s_posunom:?}");
+        let (a, b) = (bez.okolie_start.unwrap(), s_posunom.okolie_start.unwrap());
+        // prvé meranie 32,0–32,5 (snímač po 0,5 °C): chyba okolia zo štartu ≈ +7 °C → ≈ +2 °C
+        assert!((a - 31.7).abs() < 0.6, "{bez:?}");
+        assert!((b - 25.0).abs() < 2.2 && (a - b - 5.0).abs() < 1e-9, "{s_posunom:?}");
+        // odhad z modelu sa drží okolia zo štartu
+        assert!(s_posunom.okolie.unwrap() < bez.okolie.unwrap() - 4.0, "{s_posunom:?}");
     }
 
     #[test]
