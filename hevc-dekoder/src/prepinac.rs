@@ -8,7 +8,7 @@ use crate::b16;
 use crate::statistika::Statistika;
 use orchidea_hevc::bity::Citac;
 use orchidea_hevc::nal::typ;
-use orchidea_hevc::{HlavickaNal, Sady, rbsp};
+use orchidea_hevc::{HlavickaNal, Pps, Sady, Sps, Vps, rbsp};
 use std::sync::Arc;
 
 /// Dekódovaný obraz na výstup (8 alebo 10 bitov).
@@ -93,9 +93,10 @@ enum Vnutorny {
 #[allow(missing_debug_implementations)]
 pub struct Dekoder {
     vnutorny: Option<Vnutorny>,
-    /// sady parametrov na zistenie hĺbky a na odovzdanie novému dekodéru (surové jednotky NAL v poradí)
+    /// sady parametrov na zistenie hĺbky a na odovzdanie novému dekodéru: posledná jednotka NAL každej sady
+    /// (typ, id) v poradí príchodu – najviac 16 VPS, 16 SPS a 64 PPS (VPSSPSPPS_A ich posiela stovky)
     sady: Sady,
-    parametre: Vec<Vec<u8>>,
+    parametre: Vec<((u8, u32), Vec<u8>)>,
     /// jednotky NAL pred prvým rezom (SEI a pod.), kým nie je jasná hĺbka
     cakajuce: Vec<Vec<u8>>,
     predosla: Statistika,
@@ -145,11 +146,17 @@ impl Dekoder {
         };
         match h.typ {
             typ::VPS | typ::SPS | typ::PPS if h.vrstva == 0 => {
-                let _ = self.sady.pridaj(&h, &rbsp(&nal[2..]));
-                if self.parametre.len() >= 256 {
-                    self.parametre.remove(0);
+                let r = rbsp(&nal[2..]);
+                let _ = self.sady.pridaj(&h, &r);
+                let id = match h.typ {
+                    typ::VPS => Vps::citaj(&r).ok().map(|v| u32::from(v.id)),
+                    typ::SPS => Sps::citaj(&r).ok().map(|s| s.id),
+                    _ => Pps::citaj(&r).ok().map(|p| p.id),
+                };
+                if let Some(id) = id {
+                    self.parametre.retain(|(k, _)| *k != (h.typ, id));
+                    self.parametre.push(((h.typ, id), nal.to_vec()));
                 }
-                self.parametre.push(nal.to_vec());
                 if self.vnutorny.is_none() {
                     return vystup;
                 }
@@ -253,7 +260,8 @@ impl Dekoder {
             let _ = desat;
             Vnutorny::B8(novy!(b8))
         };
-        let predtym: Vec<Vec<u8>> = self.parametre.iter().chain(&self.cakajuce).cloned().collect();
+        let predtym: Vec<Vec<u8>> =
+            self.parametre.iter().map(|(_, n)| n).chain(&self.cakajuce).cloned().collect();
         self.cakajuce.clear();
         for p in &predtym {
             match &mut n {
