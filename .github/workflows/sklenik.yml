@@ -17,10 +17,11 @@ on:
       - ".github/workflows/sklenik.yml"
   workflow_dispatch:
 
-# novší beh na tej istej vetve zruší starší – karta sa zostaví z najnovšieho stavu
+# R228: beh, ktorý už beží, dobehne (inak by ho každý push iného prúdu zrušil a jadro S905X3 sa nedostavalo do
+# pamäte); čaká najviac jeden – najnovší – a karta sa potom zostaví z najnovšieho stavu
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
