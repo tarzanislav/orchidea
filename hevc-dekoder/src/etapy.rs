@@ -170,27 +170,49 @@ mod testy {
         LOKALNE.with(|l| std::array::from_fn(|i| l[i].replace(0)))
     }
 
-    /// Súčty tohto vlákna (iné skúšky bežiace naraz ich neovplyvnia).
+    /// Súčty tohto vlákna (iné skúšky bežiace naraz ich neovplyvnia). Bez horných hraníc jednotlivých etáp –
+    /// spánok môže na vyťaženom stroji trvať ľubovoľne dlho (CI macOS); overuje sa len to, čo platí vždy:
+    /// spánok trvá aspoň zadaný čas a vlastné časy vnorených úsekov spolu dajú presne čas vonkajšieho úseku.
     #[test]
     fn vnorene_useky_maju_vlastny_cas() {
+        const SPANOK: std::time::Duration = std::time::Duration::from_millis(2);
         zapni(true);
         let _ = lokalne();
+        let zvonka = Instant::now();
         {
             let _rez = meraj(Etapa::Cabac);
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(SPANOK);
             {
                 let _inter = meraj(Etapa::Inter);
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(SPANOK);
                 let _cak = meraj(Etapa::CakanieRef);
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(SPANOK);
             }
         }
+        let spolu_zvonka = zvonka.elapsed().as_nanos() as u64;
         let v = lokalne();
-        let ms = |e: Etapa| v[e as usize] as f64 / 1e6;
-        assert!((4.0..20.0).contains(&ms(Etapa::Cabac)), "cabac {}", ms(Etapa::Cabac));
-        assert!((4.0..20.0).contains(&ms(Etapa::Inter)), "inter {}", ms(Etapa::Inter));
-        assert!((4.0..20.0).contains(&ms(Etapa::CakanieRef)), "čakanie {}", ms(Etapa::CakanieRef));
-        assert!(ms(Etapa::Cabac) + ms(Etapa::Inter) + ms(Etapa::CakanieRef) < 40.0);
+        let min = SPANOK.as_nanos() as u64;
+        for e in [Etapa::Cabac, Etapa::Inter, Etapa::CakanieRef] {
+            assert!(v[e as usize] >= min, "{}: {} ns < {min} ns", e.meno(), v[e as usize]);
+        }
+        let sucet: u64 = v.iter().sum();
+        assert_eq!(
+            sucet,
+            v[Etapa::Cabac as usize] + v[Etapa::Inter as usize] + v[Etapa::CakanieRef as usize]
+        );
+        assert!(sucet <= spolu_zvonka, "súčet etáp {sucet} ns > čas zvonka {spolu_zvonka} ns");
         zapni(false);
+    }
+
+    /// Vypnuté meranie nič nepripočíta.
+    #[test]
+    fn vypnute_meranie_nic_nepripocita() {
+        let _ = lokalne();
+        {
+            let u = Usek { etapa: Etapa::Sao, zaciatok: None };
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            drop(u);
+        }
+        assert_eq!(lokalne().iter().sum::<u64>(), 0);
     }
 }
