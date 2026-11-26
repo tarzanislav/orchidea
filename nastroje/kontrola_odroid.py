@@ -227,6 +227,13 @@ def main() -> int:
                 f"{subor}: SD karta bez rýchlych režimov UHS – reštart zo SD funguje (R96)",
                 f"{subor}: SD karta má režimy {uhs or 'uzol chýba'} – reštart zo SD by zamrzol",
             )
+            hz = uzol_vlastnost(dtb, "mmc@ffe05000", "max-frequency")
+            hz = struct.unpack(">I", hz)[0] if hz and len(hz) == 4 else None
+            over(
+                hz is not None and hz <= 25_000_000,
+                f"{subor}: SD karta najviac {hz // 1_000_000 if hz else '?'} MHz – bez chýb CRC (R238)",
+                f"{subor}: SD karta až {hz} Hz – pri 50 MHz chyby CRC (R238)",
+            )
         if bez_wifi:
             stav = uzol_vlastnost(dtb, "mmc@ffe03000", "status")
             over(

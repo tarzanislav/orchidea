@@ -71,6 +71,75 @@ pub(crate) fn hlas(sprava: &str) {
     }
 }
 
+/// R238: riadok len do záznamníka pádov (nie na obrazovku ani do merania) – tep hlavnej slučky raz za minútu.
+/// Po zamrznutí a reštarte ukáže, čo KLÍČ robil v posledných minútach (či slučka žila, či stál zápis).
+fn tep(sprava: &str) {
+    if let Ok(mut p) = fs::OpenOptions::new().write(true).open("/dev/pmsg0") {
+        let s = uptime().unwrap_or(0.0) as u64;
+        let _ = p
+            .write_all(format!("[{}:{:02}:{:02}] tep: {sprava}\n", s / 3600, s / 60 % 60, s % 60).as_bytes());
+    }
+}
+
+/// R238: čo hovorí koniec predošlého štartu – posledný riadok KLÍČA pred reštartom (bez tepu) a či reštartu
+/// predchádzala panika jadra. Odroid C4 24. aj 26. 11.: posledný riadok „hlboký spánok jadier: zapnutý“.
+pub(crate) fn vyklad_predosleho(riadky: &[String]) -> Option<String> {
+    if riadky.is_empty() {
+        return None;
+    }
+    let panika =
+        riadky.iter().any(|r| r.starts_with("dmesg") && (r.contains("Kernel panic") || r.contains("panic")));
+    let posledny = riadky
+        .iter()
+        .rev()
+        .filter(|r| r.starts_with("pmsg"))
+        .map(|r| r.split_once(": ").map_or(r.as_str(), |(_, t)| t))
+        .find(|t| !t.contains("] tep: "));
+    let posledny_tep = riadky
+        .iter()
+        .rev()
+        .filter(|r| r.starts_with("pmsg"))
+        .map(|r| r.split_once(": ").map_or(r.as_str(), |(_, t)| t))
+        .find(|t| t.contains("] tep: "));
+    let mut t = if panika {
+        "pred reštartom panika jadra (výpis zásobníka vyššie)".to_string()
+    } else {
+        "pred reštartom bez paniky jadra – zamrznutie, ktoré ukončil strážny časovač".to_string()
+    };
+    if let Some(p) = posledny {
+        t += &format!("; posledná činnosť KLÍČA: {p}");
+        if p.contains("hlboký spánok jadier: zapnutý") {
+            t += " – zamrzlo hneď po zapnutí hlbokého spánku jadier (R167); poistka ho na tejto karte už nezapne";
+        }
+    }
+    if let Some(p) = posledny_tep {
+        t += &format!("; posledný tep: {p}");
+    }
+    Some(t)
+}
+
+/// R238: posledných `kolko` riadkov – tep (raz za minútu) ich nevytlačí: z tepu len posledných 5, ostatné
+/// riadky KLÍČA a jadra v plnom počte, všetko v pôvodnom poradí.
+fn posledne_riadky<'a>(vsetky: &[&'a str], kolko: usize) -> Vec<&'a str> {
+    let je_tep = |r: &str| r.contains("] tep: ");
+    let mut tepy = 0;
+    let mut ostatne = 0;
+    let mut vybrane: Vec<&str> = Vec::new();
+    for r in vsetky.iter().rev() {
+        if je_tep(r) {
+            if tepy < 5 {
+                tepy += 1;
+                vybrane.push(r);
+            }
+        } else if ostatne < kolko {
+            ostatne += 1;
+            vybrane.push(r);
+        }
+    }
+    vybrane.reverse();
+    vybrane
+}
+
 /// R216: posledné riadky predošlého štartu zo záznamníka pádov (pstore) – po nečakanom reštarte
 /// ukážu, čo sa dialo tesne pred ním. Súbory sa potom zmažú, aby sa uvoľnila pamäť pre ďalší záznam.
 fn predosly_start() -> Vec<String> {
@@ -84,10 +153,16 @@ fn predosly_start() -> Vec<String> {
         let meno = cesta.file_name().and_then(|m| m.to_str()).unwrap_or("").to_string();
         let Ok(obsah) = fs::read(&cesta) else { continue };
         let text = String::from_utf8_lossy(&obsah);
-        // z KLÍČA (pmsg) posledných 25 riadkov, z jadra (dmesg pri páde, konzola) posledných 15
-        let kolko = if meno.starts_with("pmsg") { 25 } else { 15 };
+        // z KLÍČA (pmsg) posledných 25 riadkov, z konzoly jadra 15; R238: pri páde (dmesg) 60 – výpis zásobníka
+        let kolko = if meno.starts_with("pmsg") {
+            25
+        } else if meno.starts_with("dmesg") {
+            60
+        } else {
+            15
+        };
         let vsetky: Vec<&str> = text.lines().filter(|r| !r.trim().is_empty()).collect();
-        for r in &vsetky[vsetky.len().saturating_sub(kolko)..] {
+        for r in posledne_riadky(&vsetky, kolko) {
             riadky.push(format!("{meno}: {}", r.chars().take(200).collect::<String>()));
         }
         let _ = fs::remove_file(&cesta);
@@ -1540,8 +1615,12 @@ pub fn spusti() {
             );
         } else {
             hlas(&format!("záznamník pádov (R216): PREDOŠLÝ ŠTART – posledných {} riadkov:", predosly.len()));
+            let vyklad = vyklad_predosleho(&predosly);
             for r in predosly {
                 hlas(&format!("  predošlý štart: {r}"));
+            }
+            if let Some(v) = vyklad {
+                hlas(&format!("záznamník pádov (R238): {v}"));
             }
         }
     }
@@ -1838,6 +1917,7 @@ pub fn spusti() {
         (Option<i64>, &'static str, Option<bool>, Option<i64>, Option<i64>, bool),
     )> = None;
     let mut krokov = 0u32;
+    let mut tep_posledny: Option<Instant> = None;
     // R99: hardvérový strážny časovač – ak sa KLÍČ zasekne na 15 s, doska sa sama reštartuje
     // v emulátore QEMU sa časovač nespráva ako na doske (reštartuje hneď) – v skúške sa vynechá
     let mut strazny = if pid1 && skuska {
@@ -3016,11 +3096,22 @@ pub fn spusti() {
             }
             // R167: hlboký spánok jadier – vlastný ovládač jadra; len pri bežiacom strážnom časovači, s poistkou
             // na karte a nie počas tepelného pokusu (fázy sa porovnávajú s predošlými pokusmi)
+            // R238: až keď je meranie celé zapísané a nič nečaká na kartu – Odroid C4 24. aj 26. 11. zamrzol
+            // hneď po zapnutí hlbokého spánku, keď sa ešte zapisoval posledný záznam pokusu (stratil sa)
+            let meranie_dobehlo = merania.as_ref().is_none_or(|m| match m.stav() {
+                obrazovka::Samomeranie::Hotove { .. } => true,
+                obrazovka::Samomeranie::Pripravuje => {
+                    nastavenie.as_ref().is_some_and(|(_, n)| n.meranie == Some(false))
+                }
+                _ => false,
+            });
             let chce_spanok = pid1
                 && !skuska
                 && r.jadra_spia
                 && strazny.is_some()
                 && hore >= 120.0
+                && meranie_dobehlo
+                && pozadie.is_empty()
                 && novinka(&nastavenie, "spanok_jadier");
             let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
             if spanok_jadier.krok(chce_spanok, spustaci.as_deref(), novinka(&nastavenie, "casovac_budenia")) {
@@ -3711,6 +3802,28 @@ pub fn spusti() {
             prekreslit = false;
         }
         krokov += 1;
+        // R238: tep do záznamníka pádov raz za minútu – po zamrznutí ukáže posledné minúty
+        if pid1 && tep_posledny.is_none_or(|t: Instant| t.elapsed() >= Duration::from_secs(60)) {
+            tep_posledny = Some(Instant::now());
+            let zaznam_stav = merania.as_ref().map_or("–".to_string(), |m| match m.stav() {
+                obrazovka::Samomeranie::Pripravuje => "pripravuje sa".into(),
+                obrazovka::Samomeranie::Bezi { zaznamy, .. } => {
+                    let z: Vec<String> =
+                        zaznamy.iter().map(|(m, ok)| format!("{m}{}", if *ok { "✓" } else { "✗" })).collect();
+                    format!("beží ({})", z.join(" "))
+                }
+                obrazovka::Samomeranie::Hotove { .. } => "hotové".into(),
+                obrazovka::Samomeranie::Nezapisane(d) => format!("nezapísané ({d})"),
+            });
+            let ulohy: Vec<&str> = pozadie.iter().map(|c| c.meno()).collect();
+            tep(&format!(
+                "teplota {} · pokus fáza {} · obraz {} · meranie {zaznam_stav} · úlohy na pozadí {}",
+                teplota.map_or("–".into(), |t| format!("{t:.1} °C")),
+                faza_teraz.map_or("–".into(), |f| (f + 1).to_string()),
+                displej.as_ref().map_or("–", |d| slovo_stavu(d.stav_obrazu())),
+                if ulohy.is_empty() { "žiadne".to_string() } else { ulohy.join(", ") }
+            ));
+        }
         // R184: po dlhom teste (všetky záznamy zapísané, 10 min bez človeka) uspí televízor a vypne krabičku
         if dlhy
             && pid1
@@ -4381,6 +4494,43 @@ fn dolezite_hlasenie(zaznam: &str, najvyssia_uroven: u32) -> Option<String> {
 
 #[cfg(test)]
 mod skusky {
+    #[test]
+    fn r238_vyklad_zamrznutia_po_spanku() {
+        // Odroid C4 26. 11.: posledné riadky predošlého štartu
+        let riadky: Vec<String> = [
+            "console-ramoops-0: [    3.278941] Buffer I/O error on dev mmcblk0, logical block 0, async page read",
+            "pmsg-ramoops-0: [2:14:20] tep: teplota 36.2 °C · pokus fáza 9 · obraz zapnutý · meranie beží (0✓) · úlohy na pozadí žiadne",
+            "pmsg-ramoops-0: [2:15:21] tepelný pokus: hotový – ďalej bežný chladný režim",
+            "pmsg-ramoops-0: [2:15:21] hlboký spánok jadier: zapnutý – PSCI 1.0, pôvodný formát, stav 0x00010000 – poistka na karte 5 min",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let v = vyklad_predosleho(&riadky).expect("výklad");
+        assert!(v.contains("bez paniky"), "{v}");
+        assert!(v.contains("hneď po zapnutí hlbokého spánku"), "{v}");
+        assert!(v.contains("posledný tep: [2:14:20]"), "{v}");
+        let mut s_panikou = riadky.clone();
+        s_panikou.push("dmesg-ramoops-0: Kernel panic - not syncing: hung_task: blocked tasks".into());
+        assert!(vyklad_predosleho(&s_panikou).expect("výklad").contains("panika jadra"));
+        assert!(vyklad_predosleho(&[]).is_none());
+    }
+
+    #[test]
+    fn r238_tep_nevytlaci_riadky() {
+        let mut v: Vec<String> = (0..10).map(|i| format!("[0:0{i}:00] riadok {i}")).collect();
+        for i in 0..100 {
+            v.push(format!("[1:{:02}:00] tep: {i}", i % 60));
+        }
+        v.push("[2:15:21] hlboký spánok jadier: zapnutý".into());
+        let r: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
+        let vyber = posledne_riadky(&r, 5);
+        assert_eq!(vyber.len(), 10);
+        assert_eq!(vyber.iter().filter(|r| r.contains("] tep: ")).count(), 5);
+        assert_eq!(vyber.last(), Some(&"[2:15:21] hlboký spánok jadier: zapnutý"));
+        assert!(vyber.contains(&"[0:09:00] riadok 9"));
+    }
+
     use super::*;
 
     #[test]

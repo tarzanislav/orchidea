@@ -620,6 +620,14 @@ jobs:
           for v in sd-uhs-sdr12 sd-uhs-sdr25 sd-uhs-sdr50 sd-uhs-sdr104; do
             fdtput -d boot/dtb/amlogic/meson-sm1-odroid-c4.dtb /soc/mmc@ffe05000 "$v"
           done
+          # R238: Odroid C4 – karta SD najviac 25 MHz. Merania 24. a 26. 11. (dve karty, studený aj teplý štart): pri
+          # 50 MHz chyby CRC (-84) pri inicializácii aj čítaní – po reštarte strážnym časovačom (teplý čip) sa karta
+          # 9 s nedala spustiť; pri 25 MHz 2 h bez jedinej chyby. Príčina je časovanie signálu radiča SD, nie karta
+          # (tá istá karta na RPi 3 B+ pri 50 MHz bez chyby) – vlastné nastavenie fáz taktu je ďalší krok výskumu.
+          # Pri ďalších chybách KLÍČ znižuje ďalej (R235: 12,5 MHz).
+          f=boot/dtb/amlogic/meson-sm1-odroid-c4.dtb
+          fdtput -t u "$f" /soc/mmc@ffe05000 max-frequency 25000000
+          echo "$f: karta SD najviac $(fdtget "$f" /soc/mmc@ffe05000 max-frequency) Hz (R238)"
           # R117: X96 Max Plus – popis referenčnej dosky krabičiek S905X3 (X96 Air) s menom krabičky; Wi-Fi
           # (mmc@ffe03000) bez napájania – zatiaľ ju nepodporujeme a v plastovej krabičke by len hriala (R112)
           for d in meson-sm1-x96-air-gbit:"Amediatech X96 Max Plus" meson-sm1-x96-air:"Amediatech X96 Max Plus (Ethernet 100 Mb/s)"; do
