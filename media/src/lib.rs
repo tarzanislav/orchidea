@@ -29,6 +29,7 @@ pub mod cas;
 pub mod flac;
 pub mod flac_subor;
 pub mod hdmi;
+pub mod hodiny;
 pub mod kontajner;
 pub mod limity;
 pub mod mkv;

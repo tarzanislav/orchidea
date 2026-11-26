@@ -451,3 +451,52 @@ fn prevodnik_zvuku_hdmi() {
         }
     }
 }
+
+#[test]
+fn hodiny_a_synchronizacia() {
+    use orchidea_media::hodiny::{HodinyPrehravania, Synchronizacia};
+    use orchidea_media::r5::{MeranieZvuku, Obnova};
+    let mut n = nahoda(11);
+    for _ in 0..pocet_pokusov() / 200 {
+        let mut h = if n.mensie_ako(4) == 0 {
+            HodinyPrehravania::monotonne(n.dalsie() as i64, n.dalsie() as i64)
+        } else {
+            HodinyPrehravania::zo_zvuku(n.dalsie() as u32, n.dalsie() as i64)
+        };
+        let mut s = Synchronizacia::nova(n.dalsie() as i64);
+        let mut t = n.dalsie() as i64 / 4;
+        let mut posledny: Option<i64> = None;
+        for _ in 0..200 {
+            let skok =
+                if n.mensie_ako(8) == 0 { n.dalsie() as i64 } else { n.mensie_ako(300_000_000) as i64 };
+            t = t.saturating_add(skok);
+            match n.mensie_ako(10) {
+                0 => h.pauza(t),
+                1 => h.pokracuj(t),
+                2 => {
+                    h.posun(n.dalsie() as i64, t);
+                    posledny = None;
+                    s.prerusenie();
+                }
+                _ => {
+                    let m = MeranieZvuku {
+                        odovzdanych_ramcov: n.dalsie(),
+                        oneskorenie_ramcov: n.dalsie() >> n.mensie_ako(64),
+                        monotonny_ns: t.saturating_add(n.dalsie() as i64 >> 40),
+                    };
+                    let _ = h.meranie(&m);
+                }
+            }
+            let fronta: Vec<i64> = {
+                let mut f: Vec<i64> = (0..n.mensie_ako(6)).map(|_| n.dalsie() as i64).collect();
+                f.sort();
+                f
+            };
+            let r = s.obnova(&h, Obnova { monotonny_ns: t, perioda_ns: n.dalsie() as i64 }, &fronta);
+            if let Some(i) = r.zobraz {
+                assert!(i < fronta.len() && r.vynechat == i);
+            }
+            let _ = posledny.replace(h.cas_ns(t).unwrap_or(0));
+        }
+    }
+}
