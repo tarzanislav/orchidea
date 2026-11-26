@@ -8,7 +8,8 @@
 //!   značku buffera (ako `dpb[i].timestamp` v R1), `pts_ns` slúži synchronizácii.
 //! - **R5b – zvuk pre HDMI:** prúd A opíše, čo vie ovládač a televízor ([`SchopnostiHdmi`]); prevodník zvuku
 //!   (etapa L5) zvolí bitovo presné PCM, priechod IEC 61937 alebo PCM s prevodom a dá [`NastavenieHdmi`]
-//!   a [`ZvukHdmi`]. Základ – prekladanie a prevod hĺbky so zaokrúhlením – je [`prekladaj`].
+//!   a [`ZvukHdmi`]. Základ – prekladanie a prevod hĺbky so zaokrúhlením – je [`prekladaj`]. Zápis do ALSA
+//!   a balenie do podrámcov IEC 60958 robí prúd A (R226).
 //! - **R5c – merania (A → D):** [`MeranieZvuku`] po zápise do zvukového zariadenia a [`Obnova`] pri každom
 //!   obnovení displeja – vstupy hodín prehrávania (etapa L6).
 
@@ -287,6 +288,8 @@ pub enum FormatVzoriekHdmi {
     /// 32 bitov so znamienkom, malokoncové (24 bitov zvuku v hornej časti slova).
     S32Le,
     /// Podrámce IEC 60958 v 32-bitových slovách (ovládač vc4 HDMI na Raspberry Pi prijíma len tento formát).
+    /// Prevodník zvuku vtedy dá `S32Le` a bajty stavu kanála; do podrámcov ich zabalí zapisovač prúdu A
+    /// (R226, `sklenik/klic/src/zvuk.rs`) – jedno balenie v systéme, nie dve.
     Iec958PodramecLe,
 }
 
