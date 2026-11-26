@@ -10,7 +10,8 @@ Porovnáva sa:
 2. **vzorky** – odstup signálu od rozdielu (SNR) celého výstupu po zarovnaní o normatívne oneskorenie
    prevzorkovania; rekonštrukcia SILK podľa RFC 6716 §4.2.7.9 nie je bitovo predpísaná (my f32, libopus pevná
    čiarka), požaduje sa SNR ≥ prah variantu (40 dB; pre porovnanie: natívny dekodér FFmpeg v plávajúcej čiarke
-   dáva voči libopus 17–28 dB pri 48 kHz).
+   dáva voči libopus 17–28 dB pri 48 kHz). CELT (48 kHz, plávajúca čiarka ako libopus): prah 120 dB – zhoda až
+   na zaokrúhlenie f32; vypíše sa aj pokrytie nástrojov CELT (prechodové rámce, postfilter, intenzita, …).
 
 Použitie: `over_opus.py <media_opus> <pracovný adresár>`; návratový kód 0 = všetko sedí.
 """
@@ -37,17 +38,34 @@ def _hlas(f0, vibrato, sum_seed, fazy=(0.5, 1.0)):
 HLAS = f"aevalsrc='{_hlas(140, 20, 0)}|{_hlas(220, 30, 1, (1.2, 0.3))}':s=48000:d=6"
 
 
-def zvuk(kanalov):
-    vyraz = HLAS if kanalov == 2 else f"aevalsrc='{_hlas(140, 20, 0)}':s=48000:d=6"
+def _hudba(f0, seed, rytmus):
+    # akord s vibratom, šumové údery (prechodové rámce CELT) a tichý šum v pozadí
+    t0 = f"({f0}*(1+0.003*sin(2*PI*5*t)))"
+    return (f"(0.18*sin(2*PI*{t0}*t)+0.12*sin(2*PI*1.26*{t0}*t+0.4)+0.1*sin(2*PI*1.5*{t0}*t+1.1)"
+            f"+0.05*sin(2*PI*4.02*{t0}*t))*(0.6+0.4*sin(2*PI*0.37*t))"
+            f"+0.35*(random({seed})-0.5)*exp(-25*mod(t,{rytmus}))+0.02*(random({seed + 7})-0.5)")
+
+
+HUDBA = f"aevalsrc='{_hudba(196, 3, 0.5)}|{_hudba(247, 5, 0.75)}':s=48000:d=6"
+
+
+def zvuk(kanalov, hudba=False, ticho=False):
+    if ticho:  # každá druhá sekunda digitálne ticho (rámce CELT s príznakom ticha)
+        vyraz = f"aevalsrc='({_hudba(196, 3, 0.5)})*gt(mod(t,2),1)':s=48000:d=6"
+    elif hudba:
+        vyraz = HUDBA if kanalov == 2 else f"aevalsrc='{_hudba(196, 3, 0.5)}':s=48000:d=6"
+    else:
+        vyraz = HLAS if kanalov == 2 else f"aevalsrc='{_hlas(140, 20, 0)}':s=48000:d=6"
     return ["-f", "lavfi", "-i", vyraz]
 
 
 # normatívne oneskorenie prevzorkovania SILK (RFC 6716 §4.2.9, tabuľka 54) – libopus ho drží aj pri výstupe na
 # vnútornej frekvencii: NB 0,538 ms ≈ 4, MB 0,692 ms ≈ 9 (8,3), WB 0,706 ms ≈ 12 (11,3) vzoriek
-ONESKORENIE = {8000: 4, 12000: 9, 16000: 12}
+ONESKORENIE = {8000: 4, 12000: 9, 16000: 12, 48000: 0}
 
 
-# (meno, kanálov, argumenty kodéra, frekvencia porovnania, najmenší SNR v dB)
+# (meno, kanálov, argumenty kodéra, frekvencia porovnania, najmenší SNR v dB); CELT: „-application lowdelay“
+CELT = ["-application", "lowdelay"]
 VARIANTY = [
     ("silk_nb_20", 1, ["-b:a", "8k", "-cutoff", "4000"], 8000, 40),
     ("silk_mb_20", 1, ["-b:a", "12k", "-cutoff", "6000"], 12000, 40),
@@ -61,6 +79,19 @@ VARIANTY = [
     ("silk_wb_lbrr", 1, ["-b:a", "24k", "-cutoff", "8000", "-packet_loss", "20", "-fec", "1"], 16000, 40),
     ("silk_wb_stereo_lbrr", 2, ["-b:a", "32k", "-cutoff", "8000", "-packet_loss", "15", "-fec", "1",
                                 "-frame_duration", "60"], 16000, 25),
+    ("celt_fb_20", 1, CELT + ["-b:a", "64k"], 48000, 120),
+    ("celt_fb_20_stereo", 2, CELT + ["-b:a", "128k"], 48000, 120),
+    ("celt_fb_10_stereo", 2, CELT + ["-b:a", "96k", "-frame_duration", "10"], 48000, 120),
+    ("celt_fb_5", 1, CELT + ["-b:a", "64k", "-frame_duration", "5"], 48000, 120),
+    ("celt_fb_2.5", 1, CELT + ["-b:a", "64k", "-frame_duration", "2.5"], 48000, 120),
+    ("celt_nb_20", 1, CELT + ["-b:a", "16k", "-cutoff", "4000"], 48000, 120),
+    ("celt_wb_20", 1, CELT + ["-b:a", "24k", "-cutoff", "8000"], 48000, 120),
+    ("celt_swb_20_stereo", 2, CELT + ["-b:a", "40k", "-cutoff", "12000"], 48000, 120),
+    ("celt_nizky_stereo", 2, CELT + ["-b:a", "24k"], 48000, 120),
+    ("celt_vysoky_stereo", 2, CELT + ["-b:a", "320k", "-frame_duration", "10"], 48000, 120),
+    ("celt_cbr_stereo", 2, CELT + ["-b:a", "48k", "-vbr", "off", "-frame_duration", "5"], 48000, 120),
+    ("celt_256k", 1, CELT + ["-b:a", "256k", "-frame_duration", "2.5"], 48000, 120),
+    ("celt_ticho", 1, CELT + ["-b:a", "32k", "-frame_duration", "10"], 48000, 120),
 ]
 
 
@@ -105,10 +136,15 @@ def main():
     print("| variant | paketov | TOC | konečný stav rozsahového dekodéra | SNR | výsledok |")
     print("|---|---|---|---|---|---|")
     chyb = 0
+    pokrytie = []
+    vyber = re.compile(os.environ.get("OPUS_VARIANT", "."))  # na ladenie: len varianty podľa regulárneho výrazu
     for meno, kanalov, kodovanie, frekvencia, prah in VARIANTY:
+        if not vyber.search(meno):
+            continue
         cesta = os.path.join(adresar, meno + ".mka")
-        subprocess.run(["ffmpeg", "-v", "error", "-y"] + zvuk(kanalov) + ["-c:a", "libopus", "-application", "voip"]
-                       + kodovanie + [cesta], check=True)
+        aplikacia = [] if "-application" in kodovanie else ["-application", "voip"]
+        subprocess.run(["ffmpeg", "-v", "error", "-y"] + zvuk(kanalov, meno.startswith("celt"), "ticho" in meno) + ["-c:a", "libopus"]
+                       + aplikacia + kodovanie + [cesta], check=True)
         pp = pakety(cesta)
         konfig = sorted({p[0] >> 3 for p in pp if p})
         ref, ref_stavy = referencia(pp, frekvencia, kanalov)
@@ -125,9 +161,14 @@ def main():
         prva = next((i for i, (a, b) in enumerate(zip(nase_stavy, ref_stavy)) if a != b), None)
         # zarovnanie: najlepšie oneskorenie referencie musí byť normatívne
         def skore(lag):
+            if lag < 0:
+                return sum(x * y for x, y in zip(ref[:200000], nase[-lag * kanalov:-lag * kanalov + 200000]))
             return sum(x * y for x, y in zip(ref[lag * kanalov:lag * kanalov + 200000], nase[:200000]))
-        lag = max(range(0, 30), key=skore)
-        x, y = ref[lag * kanalov:], nase[: len(ref) - lag * kanalov]
+        lag = max(range(-30, 30), key=skore)
+        if lag >= 0:
+            x, y = ref[lag * kanalov:], nase[: len(ref) - lag * kanalov]
+        else:
+            x, y = ref[: len(ref) + lag * kanalov], nase[-lag * kanalov:]
         sig = sum(v * v for v in x)
         sum_r = sum((a - b) ** 2 for a, b in zip(x, y))
         snr = 10 * math.log10(sig / sum_r) if sum_r > 0 else float("inf")
@@ -146,7 +187,13 @@ def main():
         chyb += not ok
         stav = f"{zhoda}/{len(pp)}" + ("" if prva is None else f" (prvý rozdiel v pakete {prva})")
         dlzka = "" if len(nase) == len(ref) else f", dĺžka {len(nase)} ≠ {len(ref)}"
+        if "CELT " in r.stdout:
+            pokrytie.append((meno, re.search(r"CELT (.*)", r.stdout).group(1)))
         print(f"| {meno} | {len(pp)} | {konfig} | {stav} | {snr:.1f} dB{"" if kanalov == 1 else f", stred {snr_stred:.1f} dB"} (oneskorenie {lag}) | {'✅' if ok else '❌'}{dlzka} |")
+    if pokrytie:
+        print("\nPokrytie nástrojov CELT (počty rámcov):")
+        for meno, riadok in pokrytie:
+            print(f"- {meno}: {riadok}")
     sys.exit(1 if chyb else 0)
 
 

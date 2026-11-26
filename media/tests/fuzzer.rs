@@ -510,14 +510,17 @@ fn opus_pakety() {
     for i in 0..pocet_pokusov() / 20 {
         let mut p = bajty(&mut n, 1300);
         if let Some(b) = p.first_mut() {
-            // väčšinou SILK (konfigurácie 0–11), aby sa skúšal dekodér, nielen balenie
-            if i % 4 != 0 {
-                *b = (*b % 96) | (*b & 7);
+            // polovica SILK (konfigurácie 0–11), štvrtina CELT (16–31), zvyšok ľubovoľná TOC
+            match i % 4 {
+                0 | 1 => *b = (*b % 96) | (*b & 7),
+                2 => *b |= 0x80,
+                _ => {}
             }
         }
         let _ = rozbal(&p, n.mensie_ako(2) == 0);
         if let Ok(v) = d.dekoduj_paket(&p) {
-            assert!(v.kanaly.iter().all(|k| k.iter().all(|s| s.is_finite() && s.abs() <= 1.0)));
+            // CELT z náhodných bitov môže mať energiu až 2^32 (strop RFC 8251) – podmienkou je konečná hodnota
+            assert!(v.kanaly.iter().all(|k| k.iter().all(|s| s.is_finite())));
         }
         if n.mensie_ako(50) == 0 {
             d = DekoderOpus::novy();

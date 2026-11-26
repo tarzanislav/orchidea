@@ -220,6 +220,12 @@ impl<'a> RozsahovyDekoder<'a> {
         self.rng
     }
 
+    /// Celý rámec sa považuje za prečítaný (ticho CELT, RFC 6716 §4.3: „silence“ – zvyšok rámca sa nedekóduje):
+    /// `tell()` potom vráti `bajtov` · 8; stav `rng` sa nemení.
+    pub fn preskoc_na_koniec(&mut self, bajtov: usize) {
+        self.nbits_total += bajtov as i32 * 8 - self.tell();
+    }
+
     /// Zostávajúce celé bity rámca (dĺžka · 8 − tell).
     pub fn zostava_bitov(&self) -> i32 {
         self.data.len() as i32 * 8 - self.tell()

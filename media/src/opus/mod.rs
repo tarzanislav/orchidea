@@ -2,13 +2,20 @@
 //! nejasnosti rozhodujú skúšobné vektory a nezávislý rozhodca).
 //!
 //! Moduly: [`rozsah`] – rozsahový dekodér (§4.1), [`balenie`] – TOC a balenie rámcov v pakete (§3), [`silk`] –
-//! vrstva LP (§4.2).
+//! vrstva LP (§4.2), [`celt`] – vrstva MDCT (§4.3). CELT podľa rozhodnutia vlastníka A (#15): z prílohy A sa berú
+//! iba číselné tabuľky (`celt_tabulky`), čo text neopisuje, je odvodené meraním proti libopus.
 
 use balenie::{Rezim, Toc};
+use celt::DekoderCelt;
 use orchidea_jadro::{Chyba, Vysledok};
 use silk::{DekoderSilk, PasmoSilk, VystupSilk};
 
 pub mod balenie;
+pub mod celt;
+mod celt_pasma;
+#[allow(clippy::excessive_precision, clippy::unreadable_literal)]
+mod celt_tabulky;
+pub mod mdct;
 pub mod rozsah;
 pub mod silk;
 mod silk_tabulky;
@@ -46,10 +53,13 @@ pub struct VystupPaketu {
     pub konecny_rng: u32,
 }
 
-/// Dekodér Opus (zatiaľ vrstva SILK – režim SILK-only; CELT a hybrid pribudnú).
+/// Dekodér Opus (režimy SILK-only a CELT-only; hybrid pribudne).
 #[derive(Debug, Clone, Default)]
 pub struct DekoderOpus {
     silk: DekoderSilk,
+    celt: Option<DekoderCelt>,
+    /// Výstupné kanály dekodéra (z hlavičky toku alebo z prvého paketu).
+    kanalov: Option<usize>,
     posledny_rezim: Option<Rezim>,
 }
 
@@ -58,16 +68,59 @@ impl DekoderOpus {
         DekoderOpus::default()
     }
 
-    /// Dekóduje paket; výstup SILK pri vnútornej frekvencii (8, 12 alebo 16 kHz).
+    /// Dekodér s pevným počtom výstupných kanálov (1 alebo 2) – pakety s iným počtom kanálov sa zmiešajú
+    /// alebo zdvoja.
+    pub fn s_kanalmi(kanalov: usize) -> DekoderOpus {
+        DekoderOpus { kanalov: Some(kanalov.clamp(1, 2)), ..DekoderOpus::default() }
+    }
+
+    /// Pokrytie nástrojov CELT (na skúšky a hlásenia rozhodcu).
+    pub fn statistika_celt(&self) -> celt::StatistikaCelt {
+        self.celt.as_ref().map(|c| c.statistika()).unwrap_or_default()
+    }
+
+    /// Dekóduje paket; výstup SILK pri vnútornej frekvencii (8, 12 alebo 16 kHz), CELT pri 48 kHz.
     pub fn dekoduj_paket(&mut self, data: &[u8]) -> Vysledok<VystupPaketu> {
         let p = balenie::rozbal(data, false)?;
         let toc: Toc = p.toc;
-        let mut vystup =
-            VystupPaketu { kanaly: vec![Vec::new(); 1 + toc.stereo as usize], ..VystupPaketu::default() };
+        let kanalov = *self.kanalov.get_or_insert(1 + toc.stereo as usize);
+        let mut vystup = VystupPaketu {
+            kanaly: vec![
+                Vec::new();
+                if toc.rezim == Rezim::Celt { kanalov } else { 1 + toc.stereo as usize }
+            ],
+            ..VystupPaketu::default()
+        };
         for r in &p.ramce {
             let ramec = &data[r.clone()];
+            if toc.rezim == Rezim::Celt {
+                let celt = self.celt.get_or_insert_with(|| DekoderCelt::novy(kanalov));
+                if self.posledny_rezim.is_some_and(|r| r != Rezim::Celt) {
+                    celt.reset();
+                }
+                self.posledny_rezim = Some(Rezim::Celt);
+                let koniec = match toc.pasmo {
+                    balenie::Pasmo::Uzke => 13,
+                    balenie::Pasmo::Stredne | balenie::Pasmo::Siroke => 17,
+                    balenie::Pasmo::Supersiroke => 19,
+                    balenie::Pasmo::Plne => 21,
+                };
+                let mut rd = rozsah::RozsahovyDekoder::novy(ramec);
+                let n = toc.vzoriek_48k as usize;
+                let kanaly = if ramec.len() <= 1 {
+                    vec![vec![0.0; n]; kanalov] // strata alebo DTX: ticho (PLC nie je normatívne)
+                } else {
+                    celt.dekoduj(&mut rd, ramec.len(), n, toc.stereo, 0, koniec)
+                };
+                vystup.frekvencia = 48_000;
+                for (v, k) in vystup.kanaly.iter_mut().zip(kanaly) {
+                    v.extend(k);
+                }
+                vystup.konecny_rng = rd.rng();
+                continue;
+            }
             if toc.rezim != Rezim::Silk {
-                return Err(Chyba::MimoRozsahu("Opus: režim CELT a hybrid ešte nie je (etapa L7)".into()));
+                return Err(Chyba::MimoRozsahu("Opus: hybridný režim ešte nie je (etapa L7)".into()));
             }
             if self.posledny_rezim == Some(Rezim::Celt) {
                 self.silk.reset();
