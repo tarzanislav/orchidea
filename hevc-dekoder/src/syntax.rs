@@ -9,6 +9,7 @@ use super::odblokovanie;
 use super::sao::{self, CielSao, SaoCtb};
 use super::transformacia::{self, FaktorySkalovania, ParametreTb};
 use crate::cabac::{Cabac, Kontexty, k};
+use crate::etapy::{self, Etapa};
 use crate::filtre::{InfoObrazu, MapyFiltra, PohybBloku};
 use crate::geometria::Geometria;
 use crate::pohyb::{Blok, Okolie, PohybKol, PohybPu, PoleKol, PoleKolPasov, Rozdelenie};
@@ -200,6 +201,7 @@ impl StavObrazu {
         let vyska_ctb = self.info.vyska_ctb;
         let n = n.min(vyska_ctb);
         while self.pohyb_zverejnenych < n {
+            let _m = etapy::meraj(Etapa::Zverejnenie);
             ciel.kol.zverejni_z(self.pohyb_zverejnenych, &self.kol);
             self.pohyb_zverejnenych += 1;
         }
@@ -213,6 +215,7 @@ impl StavObrazu {
             let u = self.odblokovanych;
             let y0 = (u * ctb).saturating_sub(8);
             let y1 = if u + 1 == vyska_ctb { self.info.vyska } else { (u + 1) * ctb - 8 };
+            let _m = etapy::meraj(Etapa::Odblokovanie);
             odblokovanie::odblokuj_pas(&mut self.obraz, &self.mapy, &self.info, y0, y1);
             self.odblokovanych += 1;
         }
@@ -229,6 +232,7 @@ impl StavObrazu {
     fn zverejni_riadok(&self, ciel: &ObrazPasov, r: usize) {
         let s = self.info.sirka_ctb;
         if !self.sao[r * s..(r + 1) * s].iter().any(|p| p.typ != [0; 3]) {
+            let _m = etapy::meraj(Etapa::Zverejnenie);
             for c in 0..3 {
                 ciel.zverejni_z(c, r, &self.obraz.roviny[c]);
             }
@@ -246,6 +250,7 @@ impl StavObrazu {
                 ciel_sao(&mut b[..], &ciel.roviny[1]),
                 ciel_sao(&mut c[..], &ciel.roviny[2]),
             ];
+            let _m = etapy::meraj(Etapa::Sao);
             sao::sao_riadok(&self.obraz, &mut ciele, &self.sao, &self.mapy, &self.info, r);
         }
         for (i, d) in [a, b, c].into_iter().enumerate() {
@@ -446,6 +451,7 @@ impl<'a> DekoderRezu<'a> {
 
     /// Dekóduje všetky CTU segmentu rezu.
     pub fn dekoduj(&mut self) -> Vysledok<()> {
+        let _m = etapy::meraj(Etapa::Cabac);
         let g = self.g;
         let n_ctb = g.sirka_ctb * g.vyska_ctb;
         let mut ts = g.rs_na_ts[self.h.adresa as usize] as usize;
@@ -1134,6 +1140,7 @@ impl<'a> DekoderRezu<'a> {
             let rov = &mut self.s.obraz.roviny[c];
             let krok = rov.krok;
             let ciel = &mut rov.data[sy * krok + sx..];
+            let _m = etapy::meraj(Etapa::Inter);
             interpolacia::predikuj(
                 c == 0,
                 r0,
@@ -1418,6 +1425,7 @@ impl<'a> DekoderRezu<'a> {
         let hlbka = self.hlbka(c);
         let rov = &mut self.s.obraz.roviny[c];
         let krok = rov.krok;
+        let _m = etapy::meraj(Etapa::Intra);
         intra::predikuj(&sus, log2, rezim, c == 0, hlbka, silne, &mut rov.data[y * krok + x..], krok);
     }
 
@@ -1473,6 +1481,7 @@ impl<'a> DekoderRezu<'a> {
         let n = 1usize << log2;
         let rov = &mut self.s.obraz.roviny[c];
         let krok = rov.krok;
+        let _m = etapy::meraj(Etapa::Transformacia);
         transformacia::rekonstruuj(
             &mut self.koef[..n * n],
             max_x,

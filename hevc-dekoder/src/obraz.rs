@@ -176,7 +176,13 @@ impl RovinaPasov {
     /// Vzorky pásu `i` – počká, kým nie je zverejnený.
     #[inline]
     pub fn pas(&self, i: usize) -> &[Vzorka] {
-        self.pasy[i].wait()
+        match self.pasy[i].get() {
+            Some(p) => p,
+            None => {
+                let _m = crate::etapy::meraj(crate::etapy::Etapa::CakanieRef);
+                self.pasy[i].wait()
+            }
+        }
     }
 
     /// Doplní nezverejnené pásy hodnotou `hodnota` (obraz s chybou – nikto nesmie čakať naveky).

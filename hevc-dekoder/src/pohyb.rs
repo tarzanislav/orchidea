@@ -95,7 +95,14 @@ impl PoleKolPasov {
             return None;
         }
         let i = by / self.riadkov_pasu;
-        self.pasy[i].wait().get((by - i * self.riadkov_pasu) * self.sirka16 + bx)
+        let pas = match self.pasy[i].get() {
+            Some(p) => p,
+            None => {
+                let _m = crate::etapy::meraj(crate::etapy::Etapa::CakanieRef);
+                self.pasy[i].wait()
+            }
+        };
+        pas.get((by - i * self.riadkov_pasu) * self.sirka16 + bx)
     }
 
     /// Doplní nezverejnené pásy (obraz s chybou): bloky bez pohybu.

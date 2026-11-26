@@ -4,6 +4,7 @@
 use super::obraz::{ObrazPasov, Vzorka, Zdroj};
 use super::syntax::{DekoderRezu, DekodovanyObraz, ReferencieRezu, StavObrazu};
 use super::transformacia::FaktorySkalovania;
+use crate::etapy::{self, Etapa};
 use crate::filtre::RezFiltra;
 use crate::geometria::Geometria;
 use crate::vzorka::TypVzorky;
@@ -215,7 +216,10 @@ impl Dekoder {
         self.dokonci_obraz();
         let u = self.sprava.vyprazdni();
         self.udalosti(&u, (0, 0));
-        self.cakaj_na_vsetky();
+        {
+            let _m = etapy::meraj(Etapa::CakanieHlavne);
+            self.cakaj_na_vsetky();
+        }
         self.statistika = zamkni(&self.spolocne.statistika).clone();
         std::mem::take(&mut self.vystup)
     }
@@ -234,10 +238,16 @@ impl Dekoder {
             self.vlakna = spusti_vlakna(self.vlakien, &self.spolocne);
         }
         let u = match self.vlakna.as_ref().and_then(|v| v.odoslat.as_ref()) {
-            Some(o) => match o.send(u) {
-                Ok(()) => return,
-                Err(e) => e.0,
-            },
+            Some(o) => {
+                let odoslane = {
+                    let _m = etapy::meraj(Etapa::CakanieHlavne);
+                    o.send(u)
+                };
+                match odoslane {
+                    Ok(()) => return,
+                    Err(e) => e.0,
+                }
+            }
             None => u,
         };
         vykonaj(u, &mut self.rezerva_stavu, &self.spolocne);
@@ -485,7 +495,10 @@ fn spusti_vlakna(n: usize, spolocne: &Arc<Spolocne>) -> Option<Vlakna> {
             let mut rezerva = None;
             loop {
                 // úlohy v poradí dekódovania – každá čaká len na skoršie, ktoré už niekto dekóduje
-                let u = zamkni(&prijat).recv();
+                let u = {
+                    let _m = etapy::meraj(Etapa::Necinnost);
+                    zamkni(&prijat).recv()
+                };
                 match u {
                     Ok(u) => vykonaj(u, &mut rezerva, &spolocne),
                     Err(_) => break,
@@ -516,6 +529,7 @@ impl Drop for Strazca<'_> {
 
 /// Dekódovanie obrazu (všetky segmenty rezov, filtre, zverejnenie) a overenie odtlačku.
 fn vykonaj(u: Uloha, rezerva: &mut Option<StavObrazu>, spolocne: &Spolocne) {
+    let meranie = etapy::meraj(Etapa::Ostatne);
     let strazca = Strazca { ciel: &u.ciel, spolocne };
     let chyby = match std::panic::catch_unwind(AssertUnwindSafe(|| dekoduj_obraz(&u, rezerva))) {
         Ok(chyby) => chyby,
@@ -526,7 +540,12 @@ fn vykonaj(u: Uloha, rezerva: &mut Option<StavObrazu>, spolocne: &Spolocne) {
     };
     u.ciel.dopln();
     // odtlačok obrazu (D.3.19): MD5, CRC alebo kontrolný súčet každej zložky
-    let zhoda = if u.overovat { u.odtlacky.first().map(|o| over_odtlacok(o, &u.ciel.obraz)) } else { None };
+    let zhoda = if u.overovat {
+        let _m = etapy::meraj(Etapa::Odtlacok);
+        u.odtlacky.first().map(|o| over_odtlacok(o, &u.ciel.obraz))
+    } else {
+        None
+    };
     let mut s = zamkni(&spolocne.statistika);
     s.chyby.extend(chyby);
     match zhoda {
@@ -540,6 +559,9 @@ fn vykonaj(u: Uloha, rezerva: &mut Option<StavObrazu>, spolocne: &Spolocne) {
         None => s.bez_odtlacku += 1,
     }
     drop(s);
+    drop(meranie);
+    // súčty etáp tohto vlákna do spoločných (pred započítaním úlohy, aby ich koniec() videl)
+    etapy::vyprazdni();
     drop(strazca);
 }
 

@@ -11,7 +11,7 @@
 set -u
 cd "$(dirname "$0")"
 vysledok=hevc_vysledky.txt
-chmod +x ./hevc_dekoduj 2>/dev/null
+chmod +x ./hevc_dekoduj ./hevc_meranie 2>/dev/null
 
 teplota() {
   t=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo 0)
@@ -59,6 +59,13 @@ s_teplotou() {
     ochlad
     echo "## Rýchlosť – vlákien: $n (štart pri $(teplota) °C)"
     s_teplotou env ORCHIDEA_HEVC_RYCHLOST=1 ORCHIDEA_HEVC_VLAKNA="$n" ./hevc_dekoduj toky
+    echo
+  done
+  # rozpis času po etapách (riadky CAS, rozhranie R4)
+  for n in 1 4; do
+    ochlad
+    echo "## Etapy – film1080, vlákien: $n (štart pri $(teplota) °C)"
+    s_teplotou ./hevc_meranie --rychlost --etapy --vlakna "$n" toky/film1080.hevc | grep -v '^OBRAZ'
     echo
   done
 } 2>&1 | tee "$vysledok"

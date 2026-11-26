@@ -158,6 +158,14 @@ jobs:
           chmod +x "$b/hevc_dekoduj" "$b/hevc_meranie" "$b/meraj_hevc.sh"
           # rovnaký výsledok ako všeobecná zostava (bitová zhoda na skúšobných tokoch balíka)
           for f in "$b"/toky/*.hevc; do "$b/hevc_meranie" "$f" | tail -n 1; done
+          # rozpis času po etapách (riadky CAS rozhrania R4) – na ARM64 behúne, nie na doske
+          echo "### HEVC – rozpis času po etapách, film1080 (ARM64 behúň, jadier: $(nproc))" >> "$GITHUB_STEP_SUMMARY"
+          for n in 1 4; do
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            "$b/hevc_meranie" --rychlost --etapy --vlakna $n "$b/toky/film1080.hevc" | grep -E '^(VYSLEDOK|CAS)' \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
           du -sh "$b"
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'ubuntu-24.04-arm'

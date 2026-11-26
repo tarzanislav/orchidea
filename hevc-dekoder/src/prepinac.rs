@@ -5,6 +5,7 @@
 use crate::b8;
 #[cfg(not(test))]
 use crate::b16;
+use crate::etapy::{self, Etapa};
 use crate::statistika::Statistika;
 use orchidea_hevc::bity::Citac;
 use orchidea_hevc::nal::typ;
@@ -140,6 +141,7 @@ impl Dekoder {
 
     /// Spracuje jednotku NAL (bez štartovacieho kódu) a vráti obrazy pripravené na výstup (v poradí zobrazenia).
     pub fn nal(&mut self, nal: &[u8]) -> Vec<Vystup> {
+        let _m = etapy::meraj(Etapa::Rozbor);
         let mut vystup = Vec::new();
         let Ok(h) = HlavickaNal::citaj(nal) else {
             return self.posli(nal, vystup);
@@ -187,6 +189,7 @@ impl Dekoder {
 
     /// Koniec toku: dokončí a vydá všetky obrazy.
     pub fn koniec(&mut self) -> Vec<Vystup> {
+        let _m = etapy::meraj(Etapa::Rozbor);
         let mut vystup = Vec::new();
         self.dokonci(&mut vystup);
         self.statistika = self.predosla.clone();

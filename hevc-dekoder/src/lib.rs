@@ -34,6 +34,7 @@
 #![allow(clippy::duplicate_mod)]
 
 pub mod cabac;
+pub mod etapy;
 pub mod filtre;
 pub mod geometria;
 pub mod pohyb;
