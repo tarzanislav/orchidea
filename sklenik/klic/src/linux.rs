@@ -1758,6 +1758,9 @@ pub fn spusti() {
     // R223: meranie vlastného dekodéra HEVC (spolu s prvým pokusom na zariadení)
     let hevc_riadky: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let mut hevc_spustene = false;
+    // R226: skúšobný tón cez HDMI
+    let zvuk_riadky: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut zvuk_spusteny = false;
     let mut video_spustene = false;
     let mut bez_teploty_hlasene = false;
     let mut teplota = hw.teplota();
@@ -2256,6 +2259,38 @@ pub fn spusti() {
                 || (tv && !pokus_hotovy_tu && nastavenie.as_ref().is_some_and(|(_, n)| n.pokus.is_none()));
             let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
             spusti_skusku_videa(skusat, spustaci, video_riadky.clone());
+        }
+        // R226: zvuk cez HDMI – krátky tón (1,5 s, −20 dBFS) pri každom štarte, keď je obraz hore; v zázname,
+        // čo zvuková karta prijala. Vlastné vlákno – zápis čaká na zvukovú kartu.
+        if pid1 && !skuska && !zvuk_spusteny && novinka(&nastavenie, "zvuk_hdmi") && hore >= 30.0 {
+            zvuk_spusteny = true;
+            let riadky = zvuk_riadky.clone();
+            let _ = std::thread::Builder::new().name("zvuk".into()).spawn(move || {
+                let mut v = Vec::new();
+                let karty = std::fs::read_to_string("/proc/asound/cards").unwrap_or_default();
+                for r in karty.lines().filter(|r| !r.trim().is_empty()) {
+                    v.push(format!("karta: {}", r.trim()));
+                }
+                let zariadenia = crate::zvuk::zariadenia();
+                if zariadenia.is_empty() {
+                    v.push(if karty.trim().is_empty() || karty.contains("no soundcards") {
+                        "zvukové zariadenie nenájdené (jadro bez zvuku alebo karta HDMI nenabehla)".into()
+                    } else {
+                        "karta je, ale bez výstupu PCM".into()
+                    });
+                }
+                for (z, meno) in zariadenia {
+                    let t = match crate::zvuk::skuska_tonu(&z) {
+                        Ok(t) => format!("{z} ({meno}): {t}"),
+                        Err(e) => format!("{z} ({meno}): CHYBA – {e}"),
+                    };
+                    hlas(&format!("zvuk (R226): {t}"));
+                    v.push(t);
+                }
+                if let Ok(mut r) = riadky.lock() {
+                    *r = v;
+                }
+            });
         }
         // R223: meranie vlastného dekodéra HEVC – pri prvom pokuse na zariadení (alebo hevc=ano), po skúške videa
         if pid1
@@ -2954,6 +2989,14 @@ pub fn spusti() {
                         && !v.is_empty()
                     {
                         text += &nadpis("HEVC – VLASTNÝ DEKODÉR (R223)");
+                        for r in v.iter() {
+                            text += &format!("  {r}{NL}");
+                        }
+                    }
+                    if let Ok(v) = zvuk_riadky.lock()
+                        && !v.is_empty()
+                    {
+                        text += &nadpis("ZVUK – HDMI (R226)");
                         for r in v.iter() {
                             text += &format!("  {r}{NL}");
                         }

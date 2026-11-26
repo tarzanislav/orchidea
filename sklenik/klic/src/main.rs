@@ -72,6 +72,9 @@ mod uloziska;
 // R223: meranie vlastného dekodéra HEVC na zariadení (rozhranie R4)
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod hevc_meranie;
+// R226: zvuk cez HDMI – vlastný zápis do ALSA, skúšobný tón pri štarte
+#[cfg(target_os = "linux")]
+mod zvuk;
 // vlastný klient schránky firmvéru Raspberry Pi – takty, napätia, škrtenie VideoCore (R193)
 #[cfg(target_os = "linux")]
 mod vcio;

@@ -389,7 +389,10 @@ fn zarad(fd: i32, typ: u32, index: u32, buf: &Buf, pouzite: &[u32], cas_us: i64)
 }
 
 /// Vyberie hotový buffer: (index, príznaky, použité bajty rovín); `None`, keď ešte nie je.
-fn vyber(fd: i32, typ: u32, rovin: usize) -> io::Result<Option<(u32, u32, [u32; 4])>> {
+/// Vybraný buffer: (index, príznaky, použité bajty rovín, časová značka v µs).
+type Vybrany = (u32, u32, [u32; 4], i64);
+
+fn vyber(fd: i32, typ: u32, rovin: usize) -> io::Result<Option<Vybrany>> {
     let mut roviny = [Rovina::default(); 4];
     let mut b = Buffer {
         typ,
@@ -404,7 +407,7 @@ fn vyber(fd: i32, typ: u32, rovin: usize) -> io::Result<Option<(u32, u32, [u32; 
             for (i, r) in roviny.iter().enumerate().take(rovin) {
                 p[i] = r.pouzite;
             }
-            Ok(Some((b.index, b.priznaky, p)))
+            Ok(Some((b.index, b.priznaky, p, b.cas_s * 1_000_000 + b.cas_us)))
         }
         Err(e) if e.raw_os_error() == Some(11) => Ok(None),
         // EPIPE: po poslednom buffri (dekodér zastavený)
@@ -439,6 +442,9 @@ pub struct Vysledok {
     pub rozmer: (u32, u32),
     /// zmien zdroja (udalosť SOURCE_CHANGE)
     pub zmien: u32,
+    /// R225: ku každému výstupu najbližší vzor (index, počet odlišných bodov) – ukáže vynechané, zdvojené alebo
+    /// prehodené snímky a posun, nielen „0/8 presne“
+    pub poradie: Vec<(usize, usize, i64)>,
 }
 
 impl Vysledok {
@@ -452,6 +458,18 @@ impl Vysledok {
         }
         if let Some(c) = &self.prva_chyba {
             t += &format!(" – prvá chyba: {c}");
+        }
+        if self.presnych < self.snimok && !self.poradie.is_empty() {
+            let p: Vec<String> = self
+                .poradie
+                .iter()
+                .enumerate()
+                .map(|(i, &(vzor, chyb, jednotka))| {
+                    let zhoda = if chyb == 0 { "✓".to_string() } else { format!("({chyb})") };
+                    format!("{}[tok {jednotka}]→{}{zhoda}", i + 1, vzor + 1)
+                })
+                .collect();
+            t += &format!(" · výstup[časová značka = číslo jednotky toku]→najbližší vzor: {}", p.join(" "));
         }
         t
     }
@@ -604,13 +622,13 @@ pub fn skus(
             }
         }
         // vrátené buffre toku
-        while let Ok(Some((i, _, _))) = vyber(fd, VSTUP, 1) {
+        while let Ok(Some((i, _, _, _))) = vyber(fd, VSTUP, 1) {
             volne.push(i);
         }
         // hotové snímky
         if let Some(vy) = vystupy.as_mut() {
             loop {
-                let (i, priznaky, _) = match vyber(fd, VYSTUP, vy.bufy[0].mapy.len()) {
+                let (i, priznaky, _, cas) = match vyber(fd, VYSTUP, vy.bufy[0].mapy.len()) {
                     Ok(Some(x)) => x,
                     Ok(None) => break,
                     Err(e) => {
@@ -627,13 +645,41 @@ pub fn skus(
                     let (y, cb, cr) =
                         rozbal_nv12(buf, c.sirka, c.vyska, vy.riadok_y as usize, vy.riadok_uv as usize);
                     let (chyb, prva) = porovnaj(c, &y, &cb, &cr);
+                    // R225: najbližší vzor (pri zhode vlastný index)
+                    let najblizsi = if chyb == 0 {
+                        (v.snimok, 0)
+                    } else {
+                        cakane
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, o)| o.sirka == c.sirka && o.vyska == c.vyska)
+                            .map(|(k, o)| (k, porovnaj(o, &y, &cb, &cr).0))
+                            .min_by_key(|&(_, n)| n)
+                            .unwrap_or((v.snimok, chyb))
+                    };
+                    if v.poradie.len() < 16 {
+                        v.poradie.push((najblizsi.0, najblizsi.1, cas));
+                    }
                     if chyb == 0 {
                         v.presnych += 1;
                     } else if v.prva_chyba.is_none() {
+                        // R225: ako vyzerá chybná snímka – nezapísaná (samé 0/255) alebo iný obsah
+                        let n = y.len().max(1) as f64;
+                        let priemer = y.iter().map(|&b| b as f64).sum::<f64>() / n;
+                        let nuly = y.iter().filter(|&&b| b == 0).count() as f64 / n * 100.0;
+                        let plne = y.iter().filter(|&&b| b == 255).count() as f64 / n * 100.0;
+                        let riadkov_ok = (0..c.vyska)
+                            .take_while(|&r| {
+                                y[r * c.sirka..(r + 1) * c.sirka] == c.y[r * c.sirka..(r + 1) * c.sirka]
+                            })
+                            .count();
                         v.prva_chyba = prva.map(|(rov, r, s, a, b)| {
                             format!(
-                                "snímka {} {rov} riadok {r} stĺpec {s}: {a} → {b} ({chyb} bodov)",
-                                v.snimok + 1
+                                "snímka {} {rov} riadok {r} stĺpec {s}: {a} → {b} ({chyb} bodov; Y priemer {priemer:.0}, \
+                                 nuly {nuly:.0} %, 255 {plne:.0} %, presných riadkov zhora {riadkov_ok}; riadok Y {} B, UV {} B)",
+                                v.snimok + 1,
+                                vy.riadok_y,
+                                vy.riadok_uv
                             )
                         });
                     }
