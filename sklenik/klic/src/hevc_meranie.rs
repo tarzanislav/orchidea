@@ -381,7 +381,9 @@ mod testy {
     #[test]
     #[cfg_attr(target_os = "wasi", ignore)]
     fn chybajuci_program_nespadne() {
+        // pod QEMU (ARMv7, ARMv6) sa nespustí až potomok – chyba príde z jeho výstupu, nie zo spawn
         let b = spusti_beh(Path::new("/neexistuje/hevc_meranie"), &[], 200.0);
-        assert!(b.chyba.is_some_and(|e| e.contains("nespustil")));
+        assert!(b.chyba.is_some(), "{b:?}");
+        assert!(b.vysledok.is_empty());
     }
 }
