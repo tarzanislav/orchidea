@@ -39,7 +39,7 @@ jobs:
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
       - name: Rozhodcovia (FFmpeg, MKVToolNix)
-        run: sh nastroje/balicky.sh ffmpeg mkvtoolnix
+        run: sh nastroje/balicky.sh ffmpeg mkvtoolnix python3-numpy
       - name: Zostavenie
         run: cargo build --locked --release -p orchidea-media --example media_pakety --example media_hdmi --example media_opus
       - name: Porovnanie paketov s rozhodcom
@@ -52,6 +52,11 @@ jobs:
         run: |
           echo "### Médiá – dekodér Opus proti libopus" >> "$GITHUB_STEP_SUMMARY"
           python3 media/nastroje/over_opus.py target/release/examples/media_opus "$RUNNER_TEMP/opus" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Opus (L7) – skúšobné vektory RFC 8251 (konečný stav pri každom pakete)
+        shell: bash
+        run: |
+          echo "### Médiá – Opus, skúšobné vektory RFC 8251" >> "$GITHUB_STEP_SUMMARY"
+          python3 media/nastroje/over_vektory.py target/release/examples/media_opus "$RUNNER_TEMP/vektory" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Zvuk pre HDMI (R5b) – priechod IEC 61937 a PCM v poradí CTA-861
         shell: bash
         run: |

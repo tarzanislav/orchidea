@@ -527,3 +527,43 @@ fn opus_pakety() {
         }
     }
 }
+
+/// Dekodér stopy Opus s viacerými prúdmi (5.1, rodina 1): náhodné pakety zložené zo samooddeľovacích častí
+/// rôznych režimov a ich poškodenie – nikdy pád, výstup konečný, tvar bloku sedí.
+#[test]
+fn opus_viac_prudov() {
+    use orchidea_media::opus::dekoder::OpusDekoder;
+    use orchidea_media::zvuk::DekoderZvuku;
+    let mut h = b"OpusHead".to_vec();
+    h.extend_from_slice(&[1, 6, 0x38, 0x01, 0x80, 0xBB, 0, 0, 0, 0, 1, 4, 2, 0, 4, 1, 2, 3, 5]);
+    let mut d = OpusDekoder::novy(&h, None).unwrap();
+    let mut blok = BlokZvuku::f32(48_000, RozlozenieKanalov::S5_1);
+    let mut n = nahoda(13);
+    for i in 0..pocet_pokusov() / 40 {
+        // 3 samooddeľovacie prúdy (kód 0: TOC, dĺžka, rámec) + posledný bežný; rovnaká dĺžka rámca (20 ms)
+        let mut p = Vec::new();
+        for s in 0..4 {
+            let konfig = [3u8, 15, 31, 7][(i + s) % 4];
+            let stereo = (s < 2) as u8;
+            let telo = bajty(&mut n, 200);
+            p.push((konfig << 3) | (stereo << 2));
+            if s < 3 {
+                p.push(telo.len().min(251) as u8);
+                p.extend_from_slice(&telo[..telo.len().min(251)]);
+            } else {
+                p.extend_from_slice(&telo);
+            }
+        }
+        if i % 3 == 0 && !p.is_empty() {
+            let k = n.dalsie() as usize % p.len();
+            p[k] ^= 1 << (n.dalsie() % 8);
+        }
+        let paket = Paket { data: p, ..Paket::default() };
+        if d.dekoduj(&paket, &mut blok).is_ok() {
+            blok.over().unwrap();
+            if let VzorkyZvuku::F32(v) = &blok.vzorky {
+                assert!(v.iter().all(|x| x.is_finite()));
+            }
+        }
+    }
+}

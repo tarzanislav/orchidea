@@ -226,6 +226,12 @@ impl<'a> RozsahovyDekoder<'a> {
         self.nbits_total += bajtov as i32 * 8 - self.tell();
     }
 
+    /// Zmenší zásobník o `bajtov` na konci (nadbytočný rámec CELT, RFC 6716 §4.5.1.3): surové bity sa potom čítajú
+    /// od konca zmenšeného zásobníka a všetky výpočty zvyšných bitov používajú novú dĺžku.
+    pub fn skrat(&mut self, bajtov: usize) {
+        self.data = &self.data[..self.data.len().saturating_sub(bajtov)];
+    }
+
     /// Zostávajúce celé bity rámca (dĺžka · 8 − tell).
     pub fn zostava_bitov(&self) -> i32 {
         self.data.len() as i32 * 8 - self.tell()

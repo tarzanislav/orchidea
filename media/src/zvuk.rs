@@ -191,13 +191,16 @@ pub fn orez(blok: &mut BlokZvuku, zaciatok: usize, koniec: usize) {
     }
 }
 
-/// Dekodér pre zvukovú stopu: PCM a FLAC (L2); ďalšie kodeky pribudnú v etapách L7–L9.
+/// Dekodér pre zvukovú stopu: PCM a FLAC (L2), Opus (L7); ďalšie kodeky pribudnú v etapách L8–L9.
 pub fn dekoder_zvuku(stopa: &crate::stopa::Stopa) -> Vysledok<Box<dyn DekoderZvuku>> {
     use crate::stopa::Kodek;
     let parametre = stopa.zvuk.ok_or_else(|| Chyba::Chybajuce("stopa nemá parametre zvuku".into()))?;
     match &stopa.kodek {
         Kodek::Pcm(p) => Ok(Box::new(crate::pcm::PcmDekoder::novy(*p, parametre)?)),
         Kodek::Flac => Ok(Box::new(crate::flac::FlacDekoder::novy(&stopa.konfiguracia, Some(parametre))?)),
+        Kodek::Opus => {
+            Ok(Box::new(crate::opus::dekoder::OpusDekoder::novy(&stopa.konfiguracia, Some(parametre))?))
+        }
         k => Err(Chyba::MimoRozsahu(format!("dekodér zvuku {} ešte nie je", k.meno()))),
     }
 }
