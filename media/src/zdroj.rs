@@ -141,7 +141,10 @@ mod skusky {
 
     #[test]
     fn subor_na_poziciach() {
-        let cesta = std::env::temp_dir().join(format!("orchidea-media-zdroj-{}.bin", std::process::id()));
+        // vo WebAssembly (WASI) je prístupný len pracovný priečinok (`wasmtime run --dir=.`)
+        let priecinok =
+            if cfg!(target_family = "wasm") { std::path::PathBuf::from(".") } else { std::env::temp_dir() };
+        let cesta = priecinok.join(format!("orchidea-media-zdroj-{}.bin", std::process::id()));
         std::fs::write(&cesta, (0u8..=255).cycle().take(5000).collect::<Vec<_>>()).unwrap();
         let z = SuborovyZdroj::otvor(&cesta).unwrap();
         assert_eq!(z.dlzka(), 5000);
