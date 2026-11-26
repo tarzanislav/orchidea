@@ -3,10 +3,10 @@
 //! Použitie: `media_pakety <súbor>` – na stdout riadky v pevnom tvare:
 //! ```text
 //! STOPA index=<i> cislo=<n> druh=<Video|Zvuk|Titulky|Ine> kodek=<meno>
-//! PAKET stopa=<i> pts=<tiky|-> trvanie=<tiky|-> kluc=<0|1> velkost=<B> orezat=<vzoriek na konci> md5=<32 hex>
+//! PAKET stopa=<i> pts=<tiky|-> trvanie=<tiky|-> kluc=<0|1> velkost=<B> orezat=<vzoriek na konci> blok=<poloha v súbore> md5=<32 hex>
 //! VYSLEDOK paketov=<n> citani=<n> bajtov=<n>
 //! ```
-//! Časy sú v tikoch stopy (pri Matroske `TimestampScale`). Návratový kód 0 ok, 1 chyba čítania, 2 zlé argumenty.
+//! `blok` je poloha bloku v súbore – rámce jedného bloku (lacing) ju majú rovnakú. Časy sú v tikoch stopy (pri Matroske `TimestampScale`). Návratový kód 0 ok, 1 chyba čítania, 2 zlé argumenty.
 
 use orchidea_hevc::odtlacok::Md5;
 use orchidea_media::mkv::Mkv;
@@ -49,13 +49,14 @@ fn main() {
                 h.pridaj(&p.data);
                 let md5: String = h.vysledok().iter().map(|b| format!("{b:02x}")).collect();
                 println!(
-                    "PAKET stopa={} pts={} trvanie={} kluc={} velkost={} orezat={} md5={md5}",
+                    "PAKET stopa={} pts={} trvanie={} kluc={} velkost={} orezat={} blok={} md5={md5}",
                     p.stopa,
                     cas(p.pts),
                     cas(p.trvanie),
                     p.klucovy as u8,
                     p.data.len(),
-                    p.orezat_koniec
+                    p.orezat_koniec,
+                    p.pozicia
                 );
             }
             Ok(None) => break,

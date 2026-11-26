@@ -754,11 +754,17 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
             .or(self.stav[ix].trvanie_ns);
         let tiky = |ns: u128| (ns + self.ns_na_tik as u128 / 2) / self.ns_na_tik as u128;
         let frekvencia = self.stopy[ix].zvuk.map(|z| z.frekvencia).unwrap_or(0);
+        // čas k-teho rámca lacingu = čas bloku + súčet trvaní predošlých rámcov (presne v ns, potom k najbližšiemu
+        // tiku); trvanie rámca z DefaultDuration, inak z kodeku, ak ho určuje sám rámec (Opus – TOC, RFC 6716)
+        let opus = self.stopy[ix].kodek == Kodek::Opus;
+        let mut odstup_ns: Option<u128> = Some(0);
         for (k, ramec) in ramce.iter().enumerate() {
-            let posun = match (k, trvanie_ns) {
-                (0, _) => Some(0),
-                (_, Some(t)) => i64::try_from(tiky(k as u128 * t as u128)).ok(),
-                (_, None) => None,
+            let posun = odstup_ns.and_then(|o| i64::try_from(tiky(o)).ok());
+            let vlastne =
+                trvanie_ns.or_else(|| if opus { crate::opus::trvanie_paketu_ns(ramec) } else { None });
+            odstup_ns = match (odstup_ns, vlastne) {
+                (Some(o), Some(t)) => Some(o + t as u128),
+                _ => None,
             };
             let mut data = Vec::with_capacity(self.stav[ix].hlavicka.len() + ramec.len());
             data.extend_from_slice(&self.stav[ix].hlavicka);
@@ -768,7 +774,7 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
                 data,
                 pts: posun.map(|p| zaklad.saturating_add(p)),
                 dts: None,
-                trvanie: trvanie_ns.and_then(|t| i64::try_from(tiky(t as u128)).ok()),
+                trvanie: vlastne.and_then(|t| i64::try_from(tiky(t as u128)).ok()),
                 klucovy,
                 prerusenie: std::mem::take(&mut self.stav[ix].prerusenie),
                 orezat_zaciatok: 0,

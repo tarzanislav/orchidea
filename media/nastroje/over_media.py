@@ -5,7 +5,9 @@ Rozhodcami sú cudzie nástroje: FFmpeg vytvorí skúšobné súbory rôznymi ko
 MKVToolNix (mkvmerge, ak je) ich prebalí iným zapisovačom (lacing, iné rozloženie), ffprobe vypíše pakety
 (čas, trvanie, kľúčovosť, veľkosť, MD5 obsahu). Náš program `media_pakety` musí dať bit po bite tie isté pakety.
 Jediná výnimka je trvanie posledného paketu stopy: RFC 9559 ho udáva prvkom BlockDuration (skutočné trvanie
-posledného bloku), ffprobe tam hlási celú dĺžku rámca – rozdiel sa vypíše, nie je chybou.
+posledného bloku), ffprobe tam hlási celú dĺžku rámca – rozdiel sa vypíše, nie je chybou. Pri ďalších rámcoch
+lacingu (čas nie je v súbore) a pri trvaní z DefaultDuration, ktoré nie je celý násobok tiku, sa pripúšťa ±1 tik:
+počítame k najbližšiemu tiku (bližšie k presnému času), FFmpeg zaokrúhľuje nadol. Všetky rozdiely sa vypíšu.
 
 Použitie: over_media.py <cesta k media_pakety> <pracovný priečinok>
 Návratový kód 0 = všetko sedí. Výsledok je tabuľka v Markdowne (pre súhrn CI).
@@ -80,7 +82,8 @@ def nas(cesta):
         elif slova[0] == "PAKET":
             cislo = lambda k: None if pole[k] == "-" else int(pole[k])
             pakety.append({"stopa": int(pole["stopa"]), "pts": cislo("pts"), "trvanie": cislo("trvanie"),
-                           "kluc": pole["kluc"] == "1", "velkost": int(pole["velkost"]), "md5": pole["md5"]})
+                           "kluc": pole["kluc"] == "1", "velkost": int(pole["velkost"]), "md5": pole["md5"],
+                           "blok": pole.get("blok")})
         elif slova[0] == "VYSLEDOK":
             citani = pole.get("citani")
         elif slova[0] == "CHYBA":
@@ -107,18 +110,35 @@ def porovnaj(meno, cesta):
         posledny[b["stopa"]] = i
     if len(ocak) != len(moje):
         nezhody.append(f"paketov {len(moje)}, rozhodca {len(ocak)}")
+    zaokruhlenych = 0
+    trvani_zaokruhlenych = 0
+    predosly_blok = {}
     for i, (a, b) in enumerate(zip(moje, ocak)):
+        # ďalší rámec lacingu (rovnaký blok ako predošlý paket stopy): čas nie je v súbore, počíta sa z trvania
+        # rámca; my k najbližšiemu tiku, FFmpeg trvanie rámca oreže nadol – rozdiel ±1 tik je zaokrúhlenie
+        v_lacingu = a["blok"] is not None and predosly_blok.get(a["stopa"]) == a["blok"]
+        predosly_blok[a["stopa"]] = a["blok"]
+        if v_lacingu and a["pts"] is not None and b["pts"] is not None and abs(a["pts"] - b["pts"]) == 1:
+            zaokruhlenych += 1
+            b = dict(b, pts=a["pts"])
         for k in ("stopa", "pts", "kluc", "velkost", "md5"):
             if a[k] != b[k]:
                 nezhody.append(f"paket {i} {k}: náš {a[k]}, rozhodca {b[k]}")
         if a["trvanie"] is not None and b["trvanie"] is not None and a["trvanie"] != b["trvanie"]:
-            if posledny.get(b["stopa"]) == i:
+            if abs(a["trvanie"] - b["trvanie"]) == 1:
+                # DefaultDuration nie je celý násobok TimestampScale: my k najbližšiemu tiku, FFmpeg nadol
+                trvani_zaokruhlenych += 1
+            elif posledny.get(b["stopa"]) == i:
                 poznamky.append(f"posledný paket stopy {b['stopa']}: BlockDuration {a['trvanie']}, rámec {b['trvanie']}")
             else:
                 nezhody.append(f"paket {i} trvanie: náš {a['trvanie']}, rozhodca {b['trvanie']}")
         if len(nezhody) > 5:
             break
     stav = "✅ bit po bite" if not nezhody else "❌ " + "; ".join(nezhody[:5])
+    if trvani_zaokruhlenych:
+        poznamky.append(f"trvanie {trvani_zaokruhlenych} paketov ±1 tik (DefaultDuration nie je násobok tiku)")
+    if zaokruhlenych:
+        poznamky.append(f"čas {zaokruhlenych} rámcov lacingu ±1 tik (my k najbližšiemu, rozhodca nadol)")
     if poznamky:
         stav += " – " + "; ".join(poznamky)
     if nezhody:

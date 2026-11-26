@@ -28,6 +28,7 @@ pub mod cas;
 pub mod kontajner;
 pub mod limity;
 pub mod mkv;
+pub mod opus;
 pub mod paket;
 pub mod r5;
 pub mod stopa;

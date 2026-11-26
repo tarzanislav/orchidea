@@ -213,3 +213,30 @@ fn otvorenie_podla_obsahu() {
     assert_eq!(k.stopy().len(), 2);
     assert!(k.dalsi_paket().unwrap().is_some());
 }
+
+#[test]
+fn lacing_s_neceleym_tikom_a_opus_bez_default_duration() {
+    // ako mkvmerge: TimestampScale 20 832 ns, DefaultDuration 23 219 954 ns = 1 114,62 tiku
+    let ramce: [&[u8]; 3] = [&[1; 4], &[2; 4], &[3; 4]];
+    let opus: [&[u8]; 3] = [&[31 << 3, 1], &[(31 << 3) | 1, 2], &[18 << 3, 3]]; // 20, 40, 10 ms
+    let obsah = spoj(&[
+        info(20_832, 0.0),
+        stopy(&[
+            stopa(1, 2, "A_PCM/FLOAT/IEEE", &[uint(0x23E383, 23_219_954), zvuk(44100.0, 1)]),
+            stopa(2, 2, "A_OPUS", &[zvuk(48000.0, 2)]),
+        ]),
+        zhluk(
+            0,
+            &[prvok(0xA3, &telo_bloku(1, 0, 0x82, &ramce)), prvok(0xA3, &telo_bloku(2, 0, 0x82, &opus))],
+        ),
+    ]);
+    let mut m = otvor(spoj(&[ebml("matroska"), segment(&obsah)]));
+    let p = vsetky(&mut m);
+    // presné časy 0, 23 219 954 a 46 439 908 ns → k najbližšiemu tiku: 1 115 (1 114,62) a 2 229 (2 229,25)
+    assert_eq!(p[..3].iter().map(|p| p.pts.unwrap()).collect::<Vec<_>>(), [0, 1115, 2229]);
+    assert_eq!(p[0].trvanie, Some(1115));
+    // Opus bez DefaultDuration: trvanie rámcov z TOC (RFC 6716) – 20, 40 a 10 ms
+    let ms = |t: i64| (t as i128 * 20_832 + 500_000) / 1_000_000;
+    assert_eq!(p[3..].iter().map(|p| ms(p.pts.unwrap())).collect::<Vec<_>>(), [0, 20, 60]);
+    assert_eq!(p[3..].iter().map(|p| ms(p.trvanie.unwrap())).collect::<Vec<_>>(), [20, 40, 10]);
+}
