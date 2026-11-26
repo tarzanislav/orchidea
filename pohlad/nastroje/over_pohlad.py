@@ -338,6 +338,19 @@ def okno(rng):
         ref = np.minimum(np.abs(a.astype(int) - b.astype(int)) * 8, 255)
         ok = np.array_equal(obr[150:450, 200:600], ref)
         vysledok("okno: rozdiel |A - B| × 8", ok, "bit po bite" if ok else "nezhoda")
+    # prezentácia: celá plocha, čierne pozadie, bez pásu a údajov; časovač len počas prezentácie
+    obr, txt = snimka("a.png", "udaje", "pas", "prezentacia")
+    if obr is not None:
+        ok = (np.array_equal(obr[150:450, 200:600], a) and obr[:150].max() == 0 and obr[450:].max() == 0
+              and "CASOVAC 5000 ms" in txt and "POKOJ ok" in txt)
+        vysledok("prezentácia: celá plocha, čierne okolie", ok, "obraz 1:1 v strede, okolie čierne, časovač 5 s" if ok else txt[-200:])
+    obr, txt = snimka("a.png", "prezentacia", "tik")
+    vysledok("prezentácia: tik = ďalší obraz", obr is not None and "b.png" in txt and np.array_equal(obr[150:450, 200:600], b),
+             "po tiku obraz B (načítaný vopred)")
+    _, txt = snimka("a.png", "prezentacia", "pauza")
+    _, txt2 = snimka("a.png")
+    vysledok("prezentácia: bez nej žiadny časovač", "CASOVAC ziadny" in txt and "CASOVAC ziadny" in txt2,
+             "pozastavená aj bežné prezeranie bez časovača")
 
 
 

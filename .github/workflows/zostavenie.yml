@@ -511,10 +511,19 @@ jobs:
           "kód: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { exit 1 }
           python -c "from PIL import Image; import numpy as np; o=np.asarray(Image.open('snimka.png').convert('RGB')); print('snímka', o.shape, 'rôznych farieb', len(np.unique(o.reshape(-1,3), axis=0))); assert o.shape[0] > 200 and len(np.unique(o.reshape(-1,3), axis=0)) > 1000"
+      - name: Samotest prezentácie (celá obrazovka, ďalší obraz po tiku časovača)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath target\release\pohlad.exe -ArgumentList '--samotest','skusobne','prezentacia.png','prezentacia','tik' -Wait -PassThru
+          "kód: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+          python -c "from PIL import Image; import numpy as np; o=np.asarray(Image.open('prezentacia.png').convert('RGB')); print('snímka', o.shape, 'roh', o[0,0]); assert o.shape[0] >= 600 and o[0,0].max() == 0"
       - uses: actions/upload-artifact@v4
         with:
           name: pohlad-okno-snimka
-          path: snimka.png
+          path: |
+            snimka.png
+            prezentacia.png
 
   shadery:
     name: Overenie shaderov – ${{ matrix.meno }}

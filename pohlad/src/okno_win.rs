@@ -7,7 +7,8 @@
 //! Ovládanie: šípky / medzera / Page Up/Down – ďalší a predošlý, Home/End, koliesko a +/− – priblíženie okolo
 //! kurzora, ťahanie ľavým tlačidlom – posun, 0 alebo * – zmestiť, 1 – skutočná veľkosť, M – označiť A,
 //! C – režim porovnania (delený / rozdiel), pravé tlačidlo – posun deliacej čiary, T – pás náhľadov,
-//! I – riadok s údajmi, Esc – koniec. Úpravy: R / Shift+R otočiť, F zrkadliť, X orezať na zobrazený výrez,
+//! I – riadok s údajmi, F5 / F11 – prezentácia na celú obrazovku (každých 5 s ďalší obraz, P pozastaví,
+//! Esc ukončí; časovač beží len počas prezentácie), Esc – koniec. Úpravy: R / Shift+R otočiť, F zrkadliť, X orezať na zobrazený výrez,
 //! J/K/G (Shift = menej) jas, kontrast, gama, Z zmenšiť na polovicu, Ctrl+Z späť, Ctrl+Y znova, Ctrl+S uložiť
 //! vedľa pôvodného súboru (JPEG s otočením a orezaním bezstratovo). Súbor alebo priečinok sa dá do okna pretiahnuť.
 
@@ -122,6 +123,24 @@ unsafe extern "system" {
     fn ReleaseCapture() -> i32;
     fn ScreenToClient(h: Hwnd, p: *mut [i32; 2]) -> i32;
     fn SetProcessDpiAwarenessContext(k: isize) -> i32;
+    fn GetWindowLongPtrW(h: Hwnd, index: i32) -> isize;
+    fn SetWindowLongPtrW(h: Hwnd, index: i32, hodnota: isize) -> isize;
+    fn SetWindowPos(h: Hwnd, za: Hwnd, x: i32, y: i32, w: i32, v: i32, priznaky: u32) -> i32;
+    fn GetWindowRect(h: Hwnd, r: *mut Rect) -> i32;
+    fn MonitorFromWindow(h: Hwnd, priznaky: u32) -> isize;
+    fn GetMonitorInfoW(m: isize, info: *mut MonitorInfo) -> i32;
+    fn SetTimer(h: Hwnd, id: usize, ms: u32, f: *const c_void) -> usize;
+    fn KillTimer(h: Hwnd, id: usize) -> i32;
+    fn ShowCursor(ukaz: i32) -> i32;
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct MonitorInfo {
+    velkost: u32,
+    monitor: Rect,
+    praca: Rect,
+    priznaky: u32,
 }
 
 #[link(name = "gdi32")]
@@ -168,6 +187,14 @@ const WM_RBUTTONDOWN: u32 = 0x0204;
 const WM_RBUTTONUP: u32 = 0x0205;
 const WM_MOUSEWHEEL: u32 = 0x020A;
 const WM_DROPFILES: u32 = 0x0233;
+const WM_TIMER: u32 = 0x0113;
+const GWL_STYLE: i32 = -16;
+const WS_POPUP: u32 = 0x8000_0000;
+const WS_VISIBLE: u32 = 0x1000_0000;
+const SWP_FRAMECHANGED: u32 = 0x0020;
+const SWP_NOZORDER: u32 = 0x0004;
+const MONITOR_DEFAULTTONEAREST: u32 = 2;
+const CASOVAC_PREZENTACIE: usize = 1;
 const WM_HOTOVE: u32 = 0x8001;
 const WM_SAMOTEST: u32 = 0x8002;
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF_0000;
@@ -195,6 +222,10 @@ struct Stav {
     delenie: bool,
     titulok: String,
     samotest: Option<Samotest>,
+    /// Celá obrazovka: pôvodný štýl a poloha okna.
+    cela_obrazovka: Option<(isize, Rect)>,
+    /// Bežiaci časovač prezentácie (ms).
+    casovac: Option<u32>,
 }
 
 thread_local! {
@@ -209,8 +240,41 @@ fn xy(l: isize) -> (i32, i32) {
     ((l & 0xFFFF) as i16 as i32, ((l >> 16) & 0xFFFF) as i16 as i32)
 }
 
+/// Celá obrazovka a časovač podľa jadra (časovač beží len počas prezentácie).
+fn synchronizuj(s: &mut Stav) {
+    let chce = s.jadro.prezentuje();
+    unsafe {
+        if chce && s.cela_obrazovka.is_none() {
+            let styl = GetWindowLongPtrW(s.hwnd, GWL_STYLE);
+            let mut r = Rect::default();
+            GetWindowRect(s.hwnd, &mut r);
+            let mut mi =
+                MonitorInfo { velkost: std::mem::size_of::<MonitorInfo>() as u32, ..Default::default() };
+            GetMonitorInfoW(MonitorFromWindow(s.hwnd, MONITOR_DEFAULTTONEAREST), &mut mi);
+            SetWindowLongPtrW(s.hwnd, GWL_STYLE, (WS_POPUP | WS_VISIBLE) as isize);
+            let m = mi.monitor;
+            SetWindowPos(s.hwnd, 0, m.l, m.t, m.r - m.l, m.b - m.t, SWP_FRAMECHANGED | SWP_NOZORDER);
+            ShowCursor(0);
+            s.cela_obrazovka = Some((styl, r));
+        } else if !chce && let Some((styl, r)) = s.cela_obrazovka.take() {
+            SetWindowLongPtrW(s.hwnd, GWL_STYLE, styl);
+            SetWindowPos(s.hwnd, 0, r.l, r.t, r.r - r.l, r.b - r.t, SWP_FRAMECHANGED | SWP_NOZORDER);
+            ShowCursor(1);
+        }
+        let casovac = s.jadro.casovac();
+        if casovac != s.casovac {
+            KillTimer(s.hwnd, CASOVAC_PREZENTACIE);
+            if let Some(ms) = casovac {
+                SetTimer(s.hwnd, CASOVAC_PREZENTACIE, ms, std::ptr::null());
+            }
+            s.casovac = casovac;
+        }
+    }
+}
+
 /// Po zmene stavu: titulok a prípadné prekreslenie.
 fn po_zmene(s: &mut Stav, prekreslit: bool) {
+    synchronizuj(s);
     let t = s.jadro.titulok();
     if t != s.titulok {
         s.titulok = t;
@@ -259,6 +323,7 @@ fn povel_znaku(c: char) -> Option<Povel> {
         'g' => Povel::GamaViac,
         'G' => Povel::GamaMenej,
         'z' => Povel::Zmensit,
+        'p' | 'P' => Povel::Pauza,
         '\u{1A}' => Povel::Spat,
         '\u{19}' => Povel::Znova,
         '\u{13}' => Povel::Ulozit,
@@ -373,9 +438,21 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> 
             }
             0
         }
+        WM_TIMER => {
+            if wp == CASOVAC_PREZENTACIE {
+                s_stavom(|s| vstup(s, Vstup::Tik));
+            }
+            0
+        }
         WM_KEYDOWN => {
-            if wp == 0x1B {
+            let prezentuje = s_stavom(|s| s.jadro.prezentuje()).unwrap_or(false);
+            if wp == 0x1B && prezentuje {
+                s_stavom(|s| vstup(s, Vstup::Povel(Povel::Prezentacia)));
+            } else if wp == 0x1B {
                 unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+            } else if wp == 0x74 || wp == 0x7A {
+                // F5 / F11 – prezentácia na celú obrazovku
+                s_stavom(|s| vstup(s, Vstup::Povel(Povel::Prezentacia)));
             } else if let Some(p) = povel_klavesu(wp) {
                 s_stavom(|s| vstup(s, Vstup::Povel(p)));
             }
@@ -465,6 +542,8 @@ pub fn spusti(argumenty: &[String]) -> i32 {
                     "oznac" => Some(Vstup::Povel(Povel::Oznac)),
                     "rezim" => Some(Vstup::Povel(Povel::Rezim)),
                     "priblizit" => Some(Vstup::Povel(Povel::Priblizit)),
+                    "prezentacia" => Some(Vstup::Povel(Povel::Prezentacia)),
+                    "tik" => Some(Vstup::Tik),
                     _ => None,
                 })
                 .collect();
@@ -538,6 +617,8 @@ pub fn spusti(argumenty: &[String]) -> i32 {
                 delenie: false,
                 titulok: String::new(),
                 samotest,
+                cela_obrazovka: None,
+                casovac: None,
             })
         });
         s_stavom(|s| po_zmene(s, true));

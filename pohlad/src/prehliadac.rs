@@ -63,6 +63,10 @@ pub enum Povel {
     Spat,
     Znova,
     Ulozit,
+    /// Prezentácia na celú obrazovku (zapnúť / vypnúť).
+    Prezentacia,
+    /// Prezentácia: pozastaviť / pokračovať v automatickom posune.
+    Pauza,
 }
 
 /// Vstup od okna.
@@ -96,6 +100,8 @@ pub enum Vstup {
     },
     /// Otvoriť súbor alebo priečinok.
     Otvor(PathBuf),
+    /// Časovač prezentácie (okno ho pošle len počas prezentácie).
+    Tik,
 }
 
 /// Režim zobrazenia.
@@ -294,6 +300,8 @@ pub struct Prehliadac {
     posledna_uprava: HashMap<usize, u64>,
     /// Krátka správa v riadku s údajmi (uloženie, chyba úpravy).
     sprava: Option<String>,
+    /// Prezentácia: (interval v ms, pozastavená).
+    prezentacia: Option<(u32, bool)>,
 }
 
 impl std::fmt::Debug for Prehliadac {
@@ -446,6 +454,7 @@ impl Prehliadac {
             generacia: 0,
             posledna_uprava: HashMap::new(),
             sprava: None,
+            prezentacia: None,
         }
     }
 
@@ -497,7 +506,7 @@ impl Prehliadac {
         }
         chcem.push(Ziadost::Snimka((self.aktualny + 1) % n));
         chcem.push(Ziadost::Snimka((self.aktualny + n - 1) % n));
-        if self.pas {
+        if self.pas_viditelny() {
             let (od, po) = self.viditelne_nahlady();
             // od stredu pásu von
             let mut idx: Vec<usize> = (od..po).collect();
@@ -615,9 +624,28 @@ impl Prehliadac {
         self.zmena
     }
 
+    /// Interval časovača prezentácie v ms, ak beží a nie je pozastavená (okno podľa neho nastaví časovač –
+    /// mimo prezentácie žiadny časovač nebeží).
+    pub fn casovac(&self) -> Option<u32> {
+        self.prezentacia.filter(|p| !p.1 && self.polozky.len() > 1).map(|p| p.0)
+    }
+
+    /// Beží prezentácia (okno na celú obrazovku)?
+    pub fn prezentuje(&self) -> bool {
+        self.prezentacia.is_some()
+    }
+
+    fn pas_viditelny(&self) -> bool {
+        self.pas && self.polozky.len() > 1 && self.prezentacia.is_none()
+    }
+
+    fn udaje_viditelne(&self) -> bool {
+        self.udaje && self.prezentacia.is_none()
+    }
+
     fn plocha(&self) -> (usize, usize) {
-        let pas = if self.pas && self.polozky.len() > 1 { PAS } else { 0 };
-        let udaje = if self.udaje { 24 } else { 0 };
+        let pas = if self.pas_viditelny() { PAS } else { 0 };
+        let udaje = if self.udaje_viditelne() { 24 } else { 0 };
         (self.sirka, self.vyska.saturating_sub(pas + udaje).max(1))
     }
 
@@ -696,6 +724,13 @@ impl Prehliadac {
         let povodny = self.aktualny;
         match v {
             Vstup::Otvor(c) => self.otvor(&c),
+            Vstup::Tik => {
+                if self.casovac().is_none() || n == 0 {
+                    return false;
+                }
+                // ďalší obraz je už načítaný vopred – pri tiku sa len prekreslí
+                self.aktualny = (self.aktualny + 1) % n;
+            }
             Vstup::Velkost { sirka, vyska } => {
                 if (sirka, vyska) == (self.sirka, self.vyska) {
                     return false;
@@ -749,6 +784,20 @@ impl Prehliadac {
                 Povel::Udaje => {
                     self.udaje = !self.udaje;
                     self.zmena = true;
+                }
+                Povel::Prezentacia => {
+                    self.prezentacia = match self.prezentacia {
+                        Some(_) => None,
+                        None => Some((5000, false)),
+                    };
+                    self.prisposob();
+                    self.naplanuj();
+                }
+                Povel::Pauza => {
+                    if let Some(p) = self.prezentacia.as_mut() {
+                        p.1 = !p.1;
+                        self.zmena = true;
+                    }
                 }
                 Povel::Spat | Povel::Znova => {
                     let h = self.historie.entry(self.aktualny).or_default();
@@ -841,7 +890,7 @@ impl Prehliadac {
             }
             Vstup::Klik { x, y } => {
                 let (_, h) = self.plocha();
-                if self.pas && y >= (h + if self.udaje { 24 } else { 0 }) as f32 {
+                if self.pas_viditelny() && y >= (h + if self.udaje_viditelne() { 24 } else { 0 }) as f32 {
                     let (od, po) = self.viditelne_nahlady();
                     let (pod, _) = self.pozicia_pasu(od);
                     let i = od as isize + ((x - pod) / PAS as f32).floor() as isize;
@@ -891,10 +940,11 @@ impl Prehliadac {
     pub fn vykresli(&mut self, p: &mut Platno) {
         self.vykresleni += 1;
         self.zmena = false;
+        let pozadie = if self.prezentacia.is_some() { 0 } else { POZADIE };
         if p.sirka != self.sirka || p.vyska != self.vyska {
-            *p = Platno::nove(self.sirka, self.vyska, POZADIE);
+            *p = Platno::nove(self.sirka, self.vyska, pozadie);
         } else {
-            p.body.fill(POZADIE);
+            p.body.fill(pozadie);
         }
         let (w, h) = self.plocha();
         let b = self.aktualna();
@@ -948,7 +998,7 @@ impl Prehliadac {
         }
         // riadok s údajmi
         let mut y = h;
-        if self.udaje {
+        if self.udaje_viditelne() {
             p.vypln(0, y as i32, self.sirka as i32, 24, 0x26282B);
             let t = self.text_udajov(b.as_deref(), a.as_deref());
             let t = self.pismo.skrat(&t, self.sirka as f32 - 16.0, 13.0, 1.0);
@@ -956,7 +1006,7 @@ impl Prehliadac {
             y += 24;
         }
         // pás náhľadov
-        if self.pas && self.polozky.len() > 1 {
+        if self.pas_viditelny() {
             let (od, po) = self.viditelne_nahlady();
             let (x0, _) = self.pozicia_pasu(od);
             for i in od..po {

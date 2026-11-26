@@ -8,7 +8,7 @@
 //!   `NAJVIAC x PRIEMER x PSNR x SSIM x ROZDIELNYCH n`
 //! - `prikazy snimka <súbor|priečinok> <šírka> <výška> <výstup.png> [povely …]` – jadro okna bez okna: povely
 //!   `dalsi predosly prvy posledny priblizit oddialit 1:1 prisposobit oznac rezim pas udaje otoc otocvlavo zrkadlo
-//!   orezat jas kontrast gama zmensit spat znova ulozit tahaj:dx,dy
+//!   orezat jas kontrast gama zmensit spat znova ulozit prezentacia pauza tik tahaj:dx,dy
 //!   koliesko:k,x,y delic:x`; po každom sa počká na prácu na pozadí; riadky `VYKRESLENI n ZOBUDENI n POKOJ ok|…`
 //! - `prikazy zmensi <vstup> <výstup.surove> <šírka> <výška>` – zmenšenie a surové vzorky (ako `formaty prevod`)
 
@@ -171,6 +171,9 @@ fn spusti(a: &[String]) -> Result<(), String> {
                     ("spat", _) => Vstup::Povel(Povel::Spat),
                     ("znova", _) => Vstup::Povel(Povel::Znova),
                     ("ulozit", _) => Vstup::Povel(Povel::Ulozit),
+                    ("prezentacia", _) => Vstup::Povel(Povel::Prezentacia),
+                    ("pauza", _) => Vstup::Povel(Povel::Pauza),
+                    ("tik", _) => Vstup::Tik,
                     ("tahaj", t) => {
                         let c = cisla(t);
                         Vstup::Tahaj { dx: c[0], dy: c[1] }
@@ -193,6 +196,7 @@ fn spusti(a: &[String]) -> Result<(), String> {
             let pokoj = !p.spracuj_pozadie() && !p.potrebuje_prekreslit() && zobudeni.load(Ordering::Relaxed) == pred;
             println!("VYKRESLENI {} ZOBUDENI {} POKOJ {}", p.vykresleni, pred, if pokoj { "ok" } else { "nie" });
             println!("TITULOK {}", p.titulok());
+            println!("CASOVAC {}", p.casovac().map_or("ziadny".into(), |ms| format!("{ms} ms")));
             let body: Vec<u8> = platno.body.iter().flat_map(|&f| [(f >> 16) as u8, (f >> 8) as u8, f as u8]).collect();
             let o = orchidea_formaty::Obraz::novy(w, h, orchidea_formaty::obraz::Model::Rgb, false, Vzorky::U8(body))
                 .map_err(|e| e.to_string())?;
