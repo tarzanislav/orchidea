@@ -388,3 +388,66 @@ fn ts_a_m2ts() {
     }
     assert!(otvorenych > pocet_pokusov() / 40, "mutácie musia často ostať otvoriteľné ({otvorenych})");
 }
+
+#[test]
+fn prevodnik_zvuku_hdmi() {
+    use orchidea_media::hdmi::{CestaZvuku, PrevodnikZvuku, VolbyZvuku, sloty_cta};
+    use orchidea_media::r5::{FormatVzoriekHdmi, SchopnostiHdmi};
+    use orchidea_media::{Kodek, Paket, ParametreZvuku, Stopa};
+    let mut n = nahoda(10);
+    let formaty = [FormatVzoriekHdmi::S16Le, FormatVzoriekHdmi::S32Le, FormatVzoriekHdmi::Iec958PodramecLe];
+    for i in 0..pocet_pokusov() / 8 {
+        let maska = n.dalsie() as u32 & 0x3_FFFF;
+        let rozlozenie = RozlozenieKanalov(if maska == 0 { 3 } else { maska });
+        if let Some((_, s)) = sloty_cta(rozlozenie) {
+            assert!(s.len() >= 2 && s.len() <= 8 && s.len() % 2 == 0);
+            assert!(s.iter().flatten().all(|&k| k < rozlozenie.kanalov() as usize));
+        }
+        let kodek = [Kodek::Flac, Kodek::Ac3, Kodek::Eac3, Kodek::Opus][i % 4].clone();
+        let mut stopa = Stopa::nova(1, kodek, orchidea_media::cas::zakladna_90k());
+        let bitov = 1 + n.mensie_ako(32) as u8;
+        stopa.zvuk = Some(ParametreZvuku {
+            frekvencia: [44_100, 48_000, 96_000, 7][n.mensie_ako(4) as usize],
+            kanalov: rozlozenie.kanalov() as u8,
+            rozlozenie,
+            bitov: Some(bitov),
+        });
+        let schopnosti = SchopnostiHdmi {
+            formaty: formaty.iter().copied().filter(|_| n.mensie_ako(2) == 0).collect(),
+            max_kanalov: n.mensie_ako(10) as u8,
+            frekvencie: vec![],
+            max_bitov: n.mensie_ako(30) as u8,
+            priechod_ac3: n.mensie_ako(2) == 0,
+            priechod_eac3: n.mensie_ako(2) == 0,
+            oneskorenie_tv_ns: None,
+        };
+        let volby = VolbyZvuku { priechod: n.mensie_ako(4) != 0, stereo: n.mensie_ako(8) == 0 };
+        let Ok(mut p) = PrevodnikZvuku::novy(&stopa, &schopnosti, volby) else { continue };
+        let bajtov = p.bajtov_na_ramec();
+        assert!(p.nastavenie().kanalov >= 2 && p.nastavenie().kanalov <= 8);
+        if let CestaZvuku::Priechod(_) = p.cesta() {
+            for _ in 0..4 {
+                let mut data = bajty(&mut n, 3000);
+                if n.mensie_ako(2) == 0 && data.len() > 8 {
+                    data[..2].copy_from_slice(&[0x0B, 0x77]);
+                }
+                if let Ok(z) = p.priechod(&Paket { data, pts: Some(n.dalsie() as i64), ..Paket::default() }) {
+                    assert_eq!(z.data.len(), z.ramcov * bajtov);
+                }
+            }
+        } else {
+            let ramcov = n.mensie_ako(40) as usize;
+            let pocet = rozlozenie.kanalov() as usize * ramcov;
+            let vzorky = if n.mensie_ako(2) == 0 {
+                VzorkyZvuku::Cele { bitov, data: (0..pocet).map(|_| n.dalsie() as i32).collect() }
+            } else {
+                VzorkyZvuku::F32((0..pocet).map(|_| f32::from_bits(n.dalsie() as u32)).collect())
+            };
+            let f = stopa.zvuk.unwrap().frekvencia;
+            let blok = BlokZvuku { frekvencia: f, rozlozenie, ramcov, vzorky, pts_ns: None };
+            if let Ok(z) = p.pcm(&blok) {
+                assert_eq!(z.data.len(), ramcov * bajtov);
+            }
+        }
+    }
+}

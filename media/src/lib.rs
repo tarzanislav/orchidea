@@ -28,6 +28,7 @@
 pub mod cas;
 pub mod flac;
 pub mod flac_subor;
+pub mod hdmi;
 pub mod kontajner;
 pub mod limity;
 pub mod mkv;
@@ -42,6 +43,7 @@ pub mod ts;
 pub mod zdroj;
 pub mod zvuk;
 
+pub use hdmi::{CestaZvuku, PrevodnikZvuku, VolbyZvuku};
 pub use kontajner::{FormatKontajnera, Kontajner, Posun, otvor, rozpoznaj};
 pub use limity::Limity;
 pub use paket::Paket;

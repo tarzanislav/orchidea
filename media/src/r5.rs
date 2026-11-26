@@ -5,10 +5,11 @@
 //! - **R5a – video pre hardvérové dekodéry (V4L2):** [`PrevodnikVidea`] urobí z paketu kontajnera
 //!   [`PaketVidea`] – tok, ktorý dekodér prijme do buffera OUTPUT (H.264 a HEVC v Annex B so sadami parametrov
 //!   pred kľúčovými celkami, AV1 ako časová jednotka OBU s oddeľovačom). `id` je stúpajúce číslo paketu na časovú
-//!   značku buffera (ako `dpb[i].timestamp` v R1), `pts_ns` slúži synchronizácii.
+//!   značku buffera (ako `dpb[i].timestamp` v R1), `pts_ns` slúži synchronizácii. [`PrevodnikVidea::zapis`]
+//!   zapíše paket priamo do namapovaného buffera (bez kópie navyše).
 //! - **R5b – zvuk pre HDMI:** prúd A opíše, čo vie ovládač a televízor ([`SchopnostiHdmi`]); prevodník zvuku
-//!   (etapa L5) zvolí bitovo presné PCM, priechod IEC 61937 alebo PCM s prevodom a dá [`NastavenieHdmi`]
-//!   a [`ZvukHdmi`]. Základ – prekladanie a prevod hĺbky so zaokrúhlením – je [`prekladaj`]. Zápis do ALSA
+//!   ([`crate::hdmi::PrevodnikZvuku`]) zvolí priechod IEC 61937, bitovo presné PCM alebo PCM s prevodom
+//!   a dá [`NastavenieHdmi`] a [`ZvukHdmi`]. Jednoduché prekladanie bez poradia CTA-861 je [`prekladaj`]. Zápis do ALSA
 //!   a balenie do podrámcov IEC 60958 robí prúd A (R226).
 //! - **R5c – merania (A → D):** [`MeranieZvuku`] po zápise do zvukového zariadenia a [`Obnova`] pri každom
 //!   obnovení displeja – vstupy hodín prehrávania (etapa L6).
@@ -169,6 +170,14 @@ pub fn hvcc(konfiguracia: &[u8]) -> Vysledok<KonfiguraciaNal> {
 /// Prevod jednotiek NAL ohraničených dĺžkou (big-endian pole `dlzka_pola` bajtov – MP4, Matroska) na Annex B so
 /// 4-bajtovými štartovacími kódmi; pridá na koniec `ciel`. Prázdne jednotky sa vynechajú. Vráti počet jednotiek.
 pub fn annex_b_z_dlzok(data: &[u8], dlzka_pola: u8, ciel: &mut Vec<u8>) -> Vysledok<usize> {
+    annex_b_do(data, dlzka_pola, &mut |b| {
+        ciel.extend_from_slice(b);
+        Ok(())
+    })
+}
+
+/// Ako [`annex_b_z_dlzok`], ale bajty odovzdá funkcii `von` (vektor, počítadlo alebo buffer V4L2).
+fn annex_b_do(data: &[u8], dlzka_pola: u8, von: &mut dyn FnMut(&[u8]) -> Vysledok<()>) -> Vysledok<usize> {
     let k = dlzka_pola as usize;
     if !(1..=4).contains(&k) {
         return Err(Chyba::MimoRozsahu(format!("dĺžka poľa NAL {k} B")));
@@ -184,8 +193,8 @@ pub fn annex_b_z_dlzok(data: &[u8], dlzka_pola: u8, ciel: &mut Vec<u8>) -> Vysle
             .get(p..p.saturating_add(n))
             .ok_or_else(|| Chyba::PoskodeneData(format!("jednotka NAL dĺžky {n} B presahuje paket")))?;
         if !nal.is_empty() {
-            ciel.extend_from_slice(&STARTOVACI_KOD);
-            ciel.extend_from_slice(nal);
+            von(&STARTOVACI_KOD)?;
+            von(nal)?;
             pocet += 1;
         }
         p += n;
@@ -242,30 +251,35 @@ impl PrevodnikVidea {
         self.prerusenie = true;
     }
 
-    /// Prevedie paket kontajnera na paket pre dekodér.
-    pub fn prevod(&mut self, paket: &Paket) -> Vysledok<PaketVidea> {
-        let prerusenie = std::mem::take(&mut self.prerusenie) || paket.prerusenie;
-        let vloz = !self.hlavicka.is_empty() && (paket.klucovy || prerusenie);
-        let mut data = Vec::with_capacity(paket.data.len() + self.hlavicka.len() + 16);
+    /// Či sa pred paket vložia sady parametrov a či je to prvý paket po prerušení (stav sa nemení).
+    fn plan(&self, paket: &Paket) -> (bool, bool) {
+        let prerusenie = self.prerusenie || paket.prerusenie;
+        (prerusenie, !self.hlavicka.is_empty() && (paket.klucovy || prerusenie))
+    }
+
+    /// Poskladá bajty paketu pre dekodér do `von` (oddeľovač AV1, sady parametrov, údaje v Annex B).
+    fn zostav(&self, paket: &Paket, vloz: bool, von: &mut dyn FnMut(&[u8]) -> Vysledok<()>) -> Vysledok<()> {
         if self.tok == TokVidea::Av1 {
-            data.extend_from_slice(&AV1_ODDELOVAC);
+            von(&AV1_ODDELOVAC)?;
         }
         if vloz {
-            data.extend_from_slice(&self.hlavicka);
+            von(&self.hlavicka)?;
         }
         match &self.nal {
-            Some(n) if n.dlzka_pola > 0 => {
-                annex_b_z_dlzok(&paket.data, n.dlzka_pola, &mut data)?;
-            }
+            Some(n) if n.dlzka_pola > 0 => annex_b_do(&paket.data, n.dlzka_pola, von).map(|_| ()),
             _ if self.tok == TokVidea::Av1 && paket.data.starts_with(&AV1_ODDELOVAC) => {
-                data.extend_from_slice(&paket.data[AV1_ODDELOVAC.len()..]);
+                von(&paket.data[AV1_ODDELOVAC.len()..])
             }
-            _ => data.extend_from_slice(&paket.data),
+            _ => von(&paket.data),
         }
+    }
+
+    fn popis(&mut self, paket: &Paket, prerusenie: bool, vloz: bool, data: Vec<u8>) -> PaketVidea {
+        self.prerusenie = false;
         let id = self.dalsie_id;
         self.dalsie_id += 1;
         let ns = |t: Option<i64>| t.and_then(|t| na_ns(t, self.zakladna));
-        Ok(PaketVidea {
+        PaketVidea {
             tok: self.tok,
             data,
             id,
@@ -274,7 +288,47 @@ impl PrevodnikVidea {
             klucovy: paket.klucovy,
             parametre: vloz,
             prerusenie,
-        })
+        }
+    }
+
+    /// Prevedie paket kontajnera na paket pre dekodér.
+    pub fn prevod(&mut self, paket: &Paket) -> Vysledok<PaketVidea> {
+        let (prerusenie, vloz) = self.plan(paket);
+        let mut data = Vec::with_capacity(paket.data.len() + self.hlavicka.len() + 16);
+        self.zostav(paket, vloz, &mut |b| {
+            data.extend_from_slice(b);
+            Ok(())
+        })?;
+        Ok(self.popis(paket, prerusenie, vloz, data))
+    }
+
+    /// Koľko bajtov zaberie paket v buffri dekodéra (pre [`PrevodnikVidea::zapis`]); stav sa nemení.
+    pub fn velkost(&self, paket: &Paket) -> Vysledok<usize> {
+        let (_, vloz) = self.plan(paket);
+        let mut n = 0usize;
+        self.zostav(paket, vloz, &mut |b| {
+            n += b.len();
+            Ok(())
+        })?;
+        Ok(n)
+    }
+
+    /// Zapíše paket **priamo do namapovaného buffera** OUTPUT (prevod dĺžok na štartovacie kódy v tom istom
+    /// prechode – žiadna kópia navyše). Vráti počet bajtov a popis paketu (pole `data` je prázdne). Ak sa paket
+    /// do buffera nezmestí, vráti chybu a stav prevodníka sa nezmení.
+    pub fn zapis(&mut self, paket: &Paket, ciel: &mut [u8]) -> Vysledok<(usize, PaketVidea)> {
+        let potrebne = self.velkost(paket)?;
+        if potrebne > ciel.len() {
+            return Err(Chyba::MimoRozsahu(format!("buffer {} B, paket potrebuje {potrebne} B", ciel.len())));
+        }
+        let (prerusenie, vloz) = self.plan(paket);
+        let mut p = 0usize;
+        self.zostav(paket, vloz, &mut |b| {
+            ciel[p..p + b.len()].copy_from_slice(b);
+            p += b.len();
+            Ok(())
+        })?;
+        Ok((p, self.popis(paket, prerusenie, vloz, Vec::new())))
     }
 }
 
@@ -561,6 +615,33 @@ mod skusky {
         // poškodený paket je chyba, nie pád
         paket.data = vec![0, 0, 1, 0];
         assert!(pv.prevod(&paket).is_err());
+    }
+
+    #[test]
+    fn zapis_priamo_do_buffra() {
+        let mut s = Stopa::nova(1, Kodek::H264, zakladna_z_ns(1_000_000).unwrap());
+        s.konfiguracia = avcc_zaznam(4);
+        let mut a = PrevodnikVidea::novy(&s).unwrap();
+        let mut b = PrevodnikVidea::novy(&s).unwrap();
+        let pakety = [
+            Paket {
+                data: vec![0, 0, 0, 3, 0x65, 0xAA, 0xBB],
+                klucovy: true,
+                pts: Some(1),
+                ..Paket::default()
+            },
+            Paket { data: vec![0, 0, 0, 2, 0x41, 1, 0, 0, 0, 1, 0x0C], pts: Some(2), ..Paket::default() },
+        ];
+        let mut buffer = vec![0xEEu8; 256];
+        for p in &pakety {
+            let v = a.prevod(p).unwrap();
+            assert_eq!(b.velkost(p).unwrap(), v.data.len());
+            // malý buffer: chyba a stav sa nezmení (ďalší pokus dá ten istý paket)
+            assert!(b.zapis(p, &mut buffer[..v.data.len() - 1]).is_err());
+            let (n, z) = b.zapis(p, &mut buffer).unwrap();
+            assert_eq!(&buffer[..n], &v.data[..]);
+            assert_eq!(PaketVidea { data: v.data.clone(), ..z }, v);
+        }
     }
 
     #[test]

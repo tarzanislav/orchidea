@@ -41,12 +41,17 @@ jobs:
       - name: Rozhodcovia (FFmpeg, MKVToolNix)
         run: sh nastroje/balicky.sh ffmpeg mkvtoolnix
       - name: Zostavenie
-        run: cargo build --locked --release -p orchidea-media --example media_pakety
+        run: cargo build --locked --release -p orchidea-media --example media_pakety --example media_hdmi
       - name: Porovnanie paketov s rozhodcom
         shell: bash
         run: |
           echo "### Médiá – kontajnery proti rozhodcovi" >> "$GITHUB_STEP_SUMMARY"
           python3 media/nastroje/over_media.py target/release/examples/media_pakety "$RUNNER_TEMP/media" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Zvuk pre HDMI (R5b) – priechod IEC 61937 a PCM v poradí CTA-861
+        shell: bash
+        run: |
+          echo "### Médiá – zvuk pre HDMI proti rozhodcovi" >> "$GITHUB_STEP_SUMMARY"
+          python3 media/nastroje/over_hdmi.py target/release/examples/media_hdmi "$RUNNER_TEMP/hdmi" | tee -a "$GITHUB_STEP_SUMMARY"
 
   flac:
     name: Médiá – FLAC bitovo presne (sada IETF, kodéry flac a FFmpeg)
