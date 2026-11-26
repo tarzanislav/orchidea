@@ -15,6 +15,8 @@
 
 use crate::nahlady::{self, Polozka};
 use crate::porovnanie;
+use crate::upravy::{self, Historia, Uprava};
+use orchidea_formaty::jpeg::bezstratovo::Transformacia;
 use orchidea_formaty::obraz::{Limity, Obraz, Vzorky};
 use orchidea_jadro::paralel;
 use orchidea_pismo::{Farba, Pismo, Platno};
@@ -44,6 +46,23 @@ pub enum Povel {
     Pas,
     /// Ukázať / skryť riadok s údajmi.
     Udaje,
+    /// Úpravy (história späť / znova, uloženie vedľa pôvodného súboru).
+    OtocVpravo,
+    OtocVlavo,
+    Zrkadlo,
+    /// Orezať na zobrazený výrez.
+    Orezat,
+    JasViac,
+    JasMenej,
+    KontrastViac,
+    KontrastMenej,
+    GamaViac,
+    GamaMenej,
+    /// Kvalitné zmenšenie na polovicu.
+    Zmensit,
+    Spat,
+    Znova,
+    Ulozit,
 }
 
 /// Vstup od okna.
@@ -210,12 +229,18 @@ enum Ziadost {
     Snimka(usize),
     Nahlad(usize),
     Porovnanie(usize, usize),
+    /// Náhľad úprav (obraz, generácia úprav).
+    Uprav(usize, u64),
+    /// Uloženie úprav (obraz, generácia úprav).
+    Uloz(usize, u64),
 }
 
 enum Hotove {
     Snimka(usize, Result<Arc<Snimka>, String>),
     Nahlad(usize, Option<Arc<Snimka>>),
     Porovnanie(usize, usize, Result<porovnanie::Miery, String>),
+    Upravena(usize, u64, Result<Arc<Snimka>, String>),
+    Ulozene(usize, u64, Result<upravy::Ulozene, String>),
 }
 
 /// Front práce pracovného vlákna (nové žiadosti nahradia staré – bez zbytočnej práce).
@@ -259,6 +284,16 @@ pub struct Prehliadac {
     zmena: bool,
     /// Cesty zdieľané s pracovným vláknom.
     zoznam_ciest: Arc<Mutex<Vec<PathBuf>>>,
+    /// História úprav každého obrazu.
+    historie: HashMap<usize, Historia>,
+    /// Upravené zobrazenie (obraz → generácia, snímka).
+    upravene: HashMap<usize, (u64, Arc<Snimka>)>,
+    /// Kroky úprav podľa generácie (zdieľané s pracovným vláknom).
+    ulohy: Arc<Mutex<HashMap<u64, Vec<Uprava>>>>,
+    generacia: u64,
+    posledna_uprava: HashMap<usize, u64>,
+    /// Krátka správa v riadku s údajmi (uloženie, chyba úpravy).
+    sprava: Option<String>,
 }
 
 impl std::fmt::Debug for Prehliadac {
@@ -273,6 +308,7 @@ impl std::fmt::Debug for Prehliadac {
 fn pracuj(
     front: Arc<Front>,
     polozky: Arc<Mutex<Vec<PathBuf>>>,
+    ulohy: Arc<Mutex<HashMap<u64, Vec<Uprava>>>>,
     tx: Sender<Hotove>,
     zobud: Arc<dyn Fn() + Send + Sync>,
 ) {
@@ -330,6 +366,25 @@ fn pracuj(
                 };
                 Hotove::Porovnanie(a, b, r)
             }
+            Ziadost::Uprav(i, g) => {
+                let kroky = ulohy.lock().ok().and_then(|u| u.get(&g).cloned()).unwrap_or_default();
+                let zaklad = posledne.get(&i).cloned().map(Ok).unwrap_or_else(|| snimka(i));
+                let r = zaklad.and_then(|z| {
+                    let o = upravy::aplikuj_vsetky(&z.obraz, &kroky).map_err(|e| e.to_string())?;
+                    let popis = format!("{} × {} · upravené", o.sirka, o.vyska);
+                    Snimka::z_obrazu(o, popis).map(Arc::new).map_err(|e| e.to_string())
+                });
+                Hotove::Upravena(i, g, r)
+            }
+            Ziadost::Uloz(i, g) => {
+                let kroky = ulohy.lock().ok().and_then(|u| u.get(&g).cloned()).unwrap_or_default();
+                let cesta = polozky.lock().ok().and_then(|p| p.get(i).cloned());
+                let r = match cesta {
+                    Some(c) => upravy::uloz(&c, &kroky, &limity).map_err(|e| e.to_string()),
+                    None => Err("mimo zoznamu".into()),
+                };
+                Hotove::Ulozene(i, g, r)
+            }
         };
         if tx.send(v).is_err() {
             return;
@@ -357,9 +412,11 @@ impl Prehliadac {
             Arc::new(Front { ziadosti: Mutex::new((VecDeque::new(), false)), signal: Condvar::new() });
         let (tx, rx) = channel();
         let polozky = Arc::new(Mutex::new(Vec::new()));
+        let ulohy = Arc::new(Mutex::new(HashMap::new()));
         let f = front.clone();
         let p = polozky.clone();
-        std::thread::spawn(move || pracuj(f, p, tx, zobud));
+        let u = ulohy.clone();
+        std::thread::spawn(move || pracuj(f, p, u, tx, zobud));
         Prehliadac {
             polozky: Vec::new(),
             aktualny: 0,
@@ -383,6 +440,12 @@ impl Prehliadac {
             priecinok: None,
             zmena: true,
             zoznam_ciest: polozky,
+            historie: HashMap::new(),
+            upravene: HashMap::new(),
+            ulohy,
+            generacia: 0,
+            posledna_uprava: HashMap::new(),
+            sprava: None,
         }
     }
 
@@ -404,6 +467,9 @@ impl Prehliadac {
         self.miery = None;
         self.cakajuce.clear();
         self.priecinok = Some(priecinok);
+        self.historie.clear();
+        self.upravene.clear();
+        self.sprava = None;
         self.prisposob();
         self.naplanuj();
     }
@@ -449,16 +515,18 @@ impl Prehliadac {
         .flatten()
         .collect();
         self.snimky.retain(|k, _| drz.contains(k));
+        self.upravene.retain(|k, _| drz.contains(k));
         let chcem: Vec<Ziadost> = chcem
             .into_iter()
             .filter(|z| match z {
                 Ziadost::Snimka(i) => !self.snimky.contains_key(i),
                 Ziadost::Nahlad(i) => !self.nahlady.contains_key(i),
-                Ziadost::Porovnanie(..) => true,
+                Ziadost::Porovnanie(..) | Ziadost::Uprav(..) | Ziadost::Uloz(..) => true,
             })
             .collect();
         if let Ok(mut f) = self.front.ziadosti.lock() {
-            f.0.clear();
+            // úpravy a uloženie sa nezahadzujú
+            f.0.retain(|z| matches!(z, Ziadost::Uprav(..) | Ziadost::Uloz(..)));
             let mut videne = std::collections::HashSet::new();
             for z in chcem {
                 if videne.insert(z.clone()) {
@@ -493,6 +561,38 @@ impl Prehliadac {
                         self.nahlady.remove(&k);
                     }
                     zmena |= self.pas;
+                }
+                Hotove::Upravena(i, g, r) => {
+                    self.cakajuce.remove(&Ziadost::Uprav(i, g));
+                    if let Ok(mut u) = self.ulohy.lock() {
+                        u.remove(&g);
+                    }
+                    // platí len najnovšia generácia úprav daného obrazu
+                    let aktivna = self.historie.get(&i).is_some_and(|h| !h.aktivne().is_empty());
+                    if aktivna && Some(&g) == self.posledna_uprava.get(&i) {
+                        match r {
+                            Ok(s) => {
+                                self.upravene.insert(i, (g, s));
+                            }
+                            Err(e) => self.sprava = Some(format!("úprava zlyhala: {e}")),
+                        }
+                        zmena |= i == self.aktualny;
+                    }
+                }
+                Hotove::Ulozene(i, g, r) => {
+                    self.cakajuce.remove(&Ziadost::Uloz(i, g));
+                    if let Ok(mut u) = self.ulohy.lock() {
+                        u.remove(&g);
+                    }
+                    self.sprava = Some(match r {
+                        Ok(u) => format!(
+                            "uložené{}: {}",
+                            if u.bezstratovo { " bezstratovo" } else { "" },
+                            u.cesta.file_name().map(|m| m.to_string_lossy().into_owned()).unwrap_or_default()
+                        ),
+                        Err(e) => format!("uloženie zlyhalo: {e}"),
+                    });
+                    zmena = true;
                 }
                 Hotove::Porovnanie(a, b, r) => {
                     self.cakajuce.remove(&Ziadost::Porovnanie(a, b));
@@ -535,7 +635,59 @@ impl Prehliadac {
     }
 
     fn aktualna(&self) -> Option<Arc<Snimka>> {
+        if self.historie.get(&self.aktualny).is_some_and(|h| !h.aktivne().is_empty())
+            && let Some((_, s)) = self.upravene.get(&self.aktualny)
+        {
+            return Some(s.clone());
+        }
         self.snimky.get(&self.aktualny).and_then(|r| r.as_ref().ok().cloned())
+    }
+
+    /// Po zmene histórie: naplánuje náhľad úprav na pozadí.
+    fn po_uprave(&mut self) {
+        let i = self.aktualny;
+        let kroky = self.historie.get(&i).map(|h| h.aktivne().to_vec()).unwrap_or_default();
+        self.sprava = None;
+        self.zmena = true;
+        if kroky.is_empty() {
+            self.upravene.remove(&i);
+            self.posledna_uprava.remove(&i);
+            return;
+        }
+        self.generacia += 1;
+        let g = self.generacia;
+        self.posledna_uprava.insert(i, g);
+        if let Ok(mut u) = self.ulohy.lock() {
+            u.insert(g, kroky);
+        }
+        self.posli(Ziadost::Uprav(i, g));
+    }
+
+    fn posli(&mut self, z: Ziadost) {
+        if let Ok(mut f) = self.front.ziadosti.lock() {
+            // úpravy majú prednosť (používateľ čaká na výsledok)
+            f.0.push_front(z.clone());
+            self.cakajuce.insert(z);
+        }
+        self.front.signal.notify_one();
+    }
+
+    /// Zobrazený výrez v súradniciach obrazu (ak nie je vidno celý obraz).
+    fn zobrazeny_vyrez(&self, s: &Snimka) -> Option<(usize, usize, usize, usize)> {
+        let (w, h) = self.plocha();
+        let z = self.mierka(s);
+        let ox = w as f32 / 2.0 + self.posun.0 - s.sirka as f32 * z / 2.0;
+        let oy = h as f32 / 2.0 + self.posun.1 - s.vyska as f32 * z / 2.0;
+        let x0 = ((-ox) / z).max(0.0).floor() as usize;
+        let y0 = ((-oy) / z).max(0.0).floor() as usize;
+        let x1 = (((w as f32 - ox) / z).ceil().max(0.0) as usize).min(s.sirka);
+        let y1 = (((h as f32 - oy) / z).ceil().max(0.0) as usize).min(s.vyska);
+        (x1 > x0 && y1 > y0 && (x0, y0, x1, y1) != (0, 0, s.sirka, s.vyska)).then_some((
+            x0,
+            y0,
+            x1 - x0,
+            y1 - y0,
+        ))
     }
 
     /// Spracuje vstup; vráti, či treba prekresliť.
@@ -598,6 +750,65 @@ impl Prehliadac {
                     self.udaje = !self.udaje;
                     self.zmena = true;
                 }
+                Povel::Spat | Povel::Znova => {
+                    let h = self.historie.entry(self.aktualny).or_default();
+                    let zmena = if p == Povel::Spat { h.spat() } else { h.znova() };
+                    if zmena {
+                        self.prisposob();
+                        self.po_uprave();
+                    }
+                }
+                Povel::Ulozit => {
+                    let kroky =
+                        self.historie.get(&self.aktualny).map(|h| h.aktivne().to_vec()).unwrap_or_default();
+                    self.generacia += 1;
+                    let g = self.generacia;
+                    if let Ok(mut u) = self.ulohy.lock() {
+                        u.insert(g, kroky);
+                    }
+                    self.sprava = Some("ukladám…".into());
+                    self.zmena = true;
+                    self.posli(Ziadost::Uloz(self.aktualny, g));
+                }
+                Povel::OtocVpravo
+                | Povel::OtocVlavo
+                | Povel::Zrkadlo
+                | Povel::Orezat
+                | Povel::JasViac
+                | Povel::JasMenej
+                | Povel::KontrastViac
+                | Povel::KontrastMenej
+                | Povel::GamaViac
+                | Povel::GamaMenej
+                | Povel::Zmensit => {
+                    let Some(s) = self.aktualna() else { return false };
+                    let b = |jas: f32, kontrast: f32, gama: f32| Uprava::Bodova { jas, kontrast, gama };
+                    let u = match p {
+                        Povel::OtocVpravo => Uprava::Transformacia(Transformacia::Otoc90),
+                        Povel::OtocVlavo => Uprava::Transformacia(Transformacia::Otoc270),
+                        Povel::Zrkadlo => Uprava::Transformacia(Transformacia::ZrkadloVodorovne),
+                        Povel::Orezat => match self.zobrazeny_vyrez(&s) {
+                            Some((x, y, sirka, vyska)) => Uprava::Orez { x, y, sirka, vyska },
+                            None => {
+                                self.sprava = Some("orezanie: najprv priblížte výrez, ktorý má ostať".into());
+                                self.zmena = true;
+                                return true;
+                            }
+                        },
+                        Povel::JasViac => b(0.05, 1.0, 1.0),
+                        Povel::JasMenej => b(-0.05, 1.0, 1.0),
+                        Povel::KontrastViac => b(0.0, 1.1, 1.0),
+                        Povel::KontrastMenej => b(0.0, 1.0 / 1.1, 1.0),
+                        Povel::GamaViac => b(0.0, 1.0, 1.1),
+                        Povel::GamaMenej => b(0.0, 1.0, 1.0 / 1.1),
+                        _ => Uprava::Zmensi { max: (s.sirka.max(s.vyska) / 2).max(1) },
+                    };
+                    self.historie.entry(self.aktualny).or_default().pridaj(u);
+                    if matches!(p, Povel::OtocVpravo | Povel::OtocVlavo | Povel::Orezat | Povel::Zmensit) {
+                        self.prisposob();
+                    }
+                    self.po_uprave();
+                }
                 _ => {}
             },
             Vstup::Koliesko { krokov, x, y } => {
@@ -646,7 +857,13 @@ impl Prehliadac {
             }
             self.miery = None;
             self.zmena = true;
+            self.sprava = None;
             self.naplanuj();
+            if self.historie.get(&self.aktualny).is_some_and(|h| !h.aktivne().is_empty())
+                && !self.upravene.contains_key(&self.aktualny)
+            {
+                self.po_uprave();
+            }
         }
         self.zmena
     }
@@ -801,6 +1018,12 @@ impl Prehliadac {
                 _ if self.rezim != Rezim::Jeden => t += " · počítam…",
                 _ => {}
             }
+        }
+        if let Some(h) = self.historie.get(&self.aktualny).filter(|h| !h.aktivne().is_empty()) {
+            t += &format!(" · úprav: {} (Ctrl+Z späť, Ctrl+S uložiť)", h.aktivne().len());
+        }
+        if let Some(m) = &self.sprava {
+            t += &format!(" · {m}");
         }
         if self.polozky.len() > 1 {
             t += &format!(" · {}/{}", self.aktualny + 1, self.polozky.len());

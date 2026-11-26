@@ -7,7 +7,8 @@
 //! - `prikazy porovnaj <a> <b> [--rozdiel výstup.png] [--zosilnenie K] [--deleny výstup.png]` – riadok
 //!   `NAJVIAC x PRIEMER x PSNR x SSIM x ROZDIELNYCH n`
 //! - `prikazy snimka <súbor|priečinok> <šírka> <výška> <výstup.png> [povely …]` – jadro okna bez okna: povely
-//!   `dalsi predosly prvy posledny priblizit oddialit 1:1 prisposobit oznac rezim pas udaje tahaj:dx,dy
+//!   `dalsi predosly prvy posledny priblizit oddialit 1:1 prisposobit oznac rezim pas udaje otoc otocvlavo zrkadlo
+//!   orezat jas kontrast gama zmensit spat znova ulozit tahaj:dx,dy
 //!   koliesko:k,x,y delic:x`; po každom sa počká na prácu na pozadí; riadky `VYKRESLENI n ZOBUDENI n POKOJ ok|…`
 //! - `prikazy zmensi <vstup> <výstup.surove> <šírka> <výška>` – zmenšenie a surové vzorky (ako `formaty prevod`)
 
@@ -159,6 +160,17 @@ fn spusti(a: &[String]) -> Result<(), String> {
                     ("rezim", _) => Vstup::Povel(Povel::Rezim),
                     ("pas", _) => Vstup::Povel(Povel::Pas),
                     ("udaje", _) => Vstup::Povel(Povel::Udaje),
+                    ("otoc", _) => Vstup::Povel(Povel::OtocVpravo),
+                    ("otocvlavo", _) => Vstup::Povel(Povel::OtocVlavo),
+                    ("zrkadlo", _) => Vstup::Povel(Povel::Zrkadlo),
+                    ("orezat", _) => Vstup::Povel(Povel::Orezat),
+                    ("jas", _) => Vstup::Povel(Povel::JasViac),
+                    ("kontrast", _) => Vstup::Povel(Povel::KontrastViac),
+                    ("gama", _) => Vstup::Povel(Povel::GamaViac),
+                    ("zmensit", _) => Vstup::Povel(Povel::Zmensit),
+                    ("spat", _) => Vstup::Povel(Povel::Spat),
+                    ("znova", _) => Vstup::Povel(Povel::Znova),
+                    ("ulozit", _) => Vstup::Povel(Povel::Ulozit),
                     ("tahaj", t) => {
                         let c = cisla(t);
                         Vstup::Tahaj { dx: c[0], dy: c[1] }

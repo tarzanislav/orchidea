@@ -371,11 +371,89 @@ def priestor_farby(rng):
     vysledok("náhľad v sRGB podľa gAMA 1/1,8", d.max() <= 1, f"najviac {d.max():.0f}/255 (gama 1,8 → sRGB)")
 
 
+
+def upravy(rng):
+    """Úpravy v okne (jadro bez okna): bezstratové otočenie JPEG proti jpegtran, Exif, jas/kontrast/gama,
+    orezanie na zobrazený výrez, zmenšenie, späť; uloženie vedľa pôvodného súboru."""
+    import shutil
+
+    jt = os.environ.get("ORCHIDEA_JPEGTRAN") or shutil.which("jpegtran")
+    pr = os.path.join(PRAC, "upravy")
+    if os.path.isdir(pr):
+        shutil.rmtree(pr)
+    os.makedirs(pr)
+    a = obraz(rng, 300, 401, 3, foto=True)
+
+    def snimka(subor, *povely):
+        von = os.path.join(PRAC, "upravy_snimka.png")
+        r = subprocess.run([PROGRAM, "snimka", os.path.join(pr, subor), "800", "600", von, "pas", "udaje", *povely],
+                           capture_output=True, text=True)
+        return r
+
+    def ulozene(meno):
+        c = os.path.join(pr, meno)
+        return np.asarray(Image.open(c)).astype(int) if os.path.exists(c) else None
+
+    # JPEG: otočiť, otočiť, späť, uložiť = otočenie o 90° bezstratovo
+    Image.fromarray(a).save(os.path.join(pr, "j.jpg"), quality=90)
+    snimka("j.jpg", "otoc", "otoc", "spat", "ulozit")
+    nase = ulozene("j_upravene.jpg")
+    if jt and nase is not None:
+        ich = os.path.join(PRAC, "upravy_ich.jpg")
+        subprocess.run([jt, "-rotate", "90", "-trim", "-outfile", ich, os.path.join(pr, "j.jpg")], check=True)
+        i = np.asarray(Image.open(ich)).astype(int)
+        ok = nase.shape == i.shape and np.array_equal(nase, i)
+        vysledok("úpravy: JPEG otočiť ×2, späť, uložiť", ok, "bezstratovo, bit po bite ako jpegtran -rotate 90 -trim")
+    else:
+        vysledok("úpravy: JPEG otočiť ×2, späť, uložiť", False, "chýba výsledok alebo jpegtran")
+    # JPEG s Exif 6: len uložiť = postaviť podľa Exif, natočenie 1
+    e = Image.Exif()
+    e[0x0112] = 6
+    Image.fromarray(a).save(os.path.join(pr, "e.jpg"), quality=90, exif=e)
+    snimka("e.jpg", "ulozit")
+    nase = ulozene("e_upravene.jpg")
+    if jt and nase is not None:
+        ich = os.path.join(PRAC, "upravy_ich.jpg")
+        subprocess.run([jt, "-rotate", "90", "-trim", "-outfile", ich, os.path.join(pr, "e.jpg")], check=True)
+        n1 = Image.open(os.path.join(pr, "e_upravene.jpg")).getexif().get(0x0112)
+        ok = np.array_equal(nase, np.asarray(Image.open(ich)).astype(int)) and n1 == 1
+        vysledok("úpravy: postaviť podľa Exif 6", ok, f"bezstratovo ako jpegtran, natočenie {n1}")
+    # PNG: jas, kontrast, gama (každý krok zaokrúhlený na 8 b)
+    Image.fromarray(a).save(os.path.join(pr, "p.png"))
+    snimka("p.png", "jas", "kontrast", "gama", "ulozit")
+    nase = ulozene("p_upravene.png")
+    v = a.astype(float) / 255
+    for jas, kon, gam in ((0.05, 1.0, 1.0), (0.0, 1.1, 1.0), (0.0, 1.0, 1.1)):
+        v = np.round(np.clip(((v ** (1 / gam)) - 0.5) * kon + 0.5 + jas, 0, 1) * 255) / 255
+    ref = np.round(v * 255)
+    d = np.abs(nase - ref).max() if nase is not None else 999
+    vysledok("úpravy: jas, kontrast, gama", d <= 1, f"najviac {d:.0f}/255 voči vzorcu")
+    # PNG 1600 × 1200: 1:1 a orezať na zobrazený výrez 800 × 600 v strede
+    velky = obraz(rng, 1200, 1600, 3, foto=True)
+    Image.fromarray(velky).save(os.path.join(pr, "v.png"))
+    snimka("v.png", "1:1", "orezat", "ulozit")
+    nase = ulozene("v_upravene.png")
+    ok = nase is not None and nase.shape == (600, 800, 3) and np.array_equal(nase, velky[300:900, 400:1200])
+    vysledok("úpravy: orezať na zobrazený výrez", ok, "800 × 600 zo stredu bit po bite" if ok else str(None if nase is None else nase.shape))
+    # zmenšiť na polovicu (Lanczos v lineárnom svetle)
+    snimka("p.png", "zmensit", "ulozit")
+    nase = ulozene("p_upravene (2).png")
+    if nase is not None:
+        lin = do_lin(a.astype(float))
+        ref = np.stack([np.asarray(Image.fromarray(lin[..., k].astype(np.float32), "F").resize((200, 150), Image.LANCZOS))
+                        for k in range(3)], -1)
+        d = np.abs(nase - np.round(z_lin(ref))).max()
+        vysledok("úpravy: zmenšiť na polovicu", nase.shape == (150, 200, 3) and d <= 1, f"{nase.shape[1]}×{nase.shape[0]}, najviac {d:.0f}/255 voči Pillow")
+    else:
+        vysledok("úpravy: zmenšiť na polovicu", False, "chýba výsledok")
+
+
 rng = np.random.default_rng(2026)
 zmensenie(rng)
 davka_bez_straty(rng)
 porovnanie(rng)
 okno(rng)
+upravy(rng)
 brana(rng)
 nahlady(rng)
 priestor_farby(rng)

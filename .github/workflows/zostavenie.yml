@@ -474,8 +474,10 @@ jobs:
       - uses: actions/checkout@v5
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
-      - name: Rozhodcovia (Pillow, scikit-image)
-        run: python3 -m pip install --user --break-system-packages numpy Pillow scikit-image
+      - name: Rozhodcovia (Pillow, scikit-image, jpegtran)
+        run: |
+          python3 -m pip install --user --break-system-packages numpy Pillow scikit-image
+          sh nastroje/balicky.sh libjpeg-turbo-progs
       - name: Zostavenie
         run: cargo build --locked --release -p orchidea-pohlad --example prikazy
       - name: Overenie

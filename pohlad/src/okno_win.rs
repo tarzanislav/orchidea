@@ -7,7 +7,9 @@
 //! Ovládanie: šípky / medzera / Page Up/Down – ďalší a predošlý, Home/End, koliesko a +/− – priblíženie okolo
 //! kurzora, ťahanie ľavým tlačidlom – posun, 0 alebo * – zmestiť, 1 – skutočná veľkosť, M – označiť A,
 //! C – režim porovnania (delený / rozdiel), pravé tlačidlo – posun deliacej čiary, T – pás náhľadov,
-//! I – riadok s údajmi, Esc – koniec. Súbor alebo priečinok sa dá do okna pretiahnuť.
+//! I – riadok s údajmi, Esc – koniec. Úpravy: R / Shift+R otočiť, F zrkadliť, X orezať na zobrazený výrez,
+//! J/K/G (Shift = menej) jas, kontrast, gama, Z zmenšiť na polovicu, Ctrl+Z späť, Ctrl+Y znova, Ctrl+S uložiť
+//! vedľa pôvodného súboru (JPEG s otočením a orezaním bezstratovo). Súbor alebo priečinok sa dá do okna pretiahnuť.
 
 #![allow(unsafe_code)]
 
@@ -238,13 +240,28 @@ fn povel_klavesu(vk: usize) -> Option<Povel> {
 }
 
 fn povel_znaku(c: char) -> Option<Povel> {
-    Some(match c.to_ascii_lowercase() {
+    Some(match c {
         '0' | '*' => Povel::Prisposobit,
         '1' => Povel::Skutocna,
-        'm' => Povel::Oznac,
-        'c' => Povel::Rezim,
-        't' => Povel::Pas,
-        'i' => Povel::Udaje,
+        'm' | 'M' => Povel::Oznac,
+        'c' | 'C' => Povel::Rezim,
+        't' | 'T' => Povel::Pas,
+        'i' | 'I' => Povel::Udaje,
+        // úpravy: malé písmeno = viac / vpravo, veľké = menej / vľavo
+        'r' => Povel::OtocVpravo,
+        'R' => Povel::OtocVlavo,
+        'f' | 'F' => Povel::Zrkadlo,
+        'x' | 'X' => Povel::Orezat,
+        'j' => Povel::JasViac,
+        'J' => Povel::JasMenej,
+        'k' => Povel::KontrastViac,
+        'K' => Povel::KontrastMenej,
+        'g' => Povel::GamaViac,
+        'G' => Povel::GamaMenej,
+        'z' => Povel::Zmensit,
+        '\u{1A}' => Povel::Spat,
+        '\u{19}' => Povel::Znova,
+        '\u{13}' => Povel::Ulozit,
         _ => return None,
     })
 }
