@@ -3,10 +3,16 @@
 //! prevodník videa (R5a) a prekladanie zvuku (R5b). Každá ďalšia čítačka a dekodér sa pridá sem.
 //! Semienko je pevné – chyba sa dá zopakovať; dlhý beh cez ORCHIDEA_FUZZER a ORCHIDEA_FUZZER_SEMIENKO.
 
+mod spolocne;
+
 use orchidea_jadro::nahoda::Nahoda;
 use orchidea_media::cas::zakladna_z_ns;
+use orchidea_media::mkv::Mkv;
 use orchidea_media::r5::{self, HlbkaPcm, PrevodnikVidea};
-use orchidea_media::{BlokZvuku, Kodek, Paket, RozlozenieKanalov, Stopa, VzorkyZvuku, rozpoznaj};
+use orchidea_media::{
+    BlokZvuku, Kodek, Kontajner, Limity, Paket, PametovyZdroj, Posun, RozlozenieKanalov, Stopa, VzorkyZvuku,
+    rozpoznaj,
+};
 
 fn pocet_pokusov() -> usize {
     let zaklad = if cfg!(debug_assertions) { 2_000 } else { 10_000 };
@@ -144,4 +150,66 @@ fn prekladanie_zvuku() {
             }
         }
     }
+}
+
+/// Prísne limity – fuzzer nesmie alokovať veľa pamäte ani pri „platnej“ obrovskej veľkosti v hlavičke.
+fn prisne() -> Limity {
+    Limity { prvok: 1 << 20, paket: 1 << 20, index: 1 << 20, stop: 16, hlbka: 8 }
+}
+
+fn zaklady_matrosky() -> Vec<Vec<u8>> {
+    use spolocne::*;
+    let (typ, _) = typicky(2, true);
+    let (bez_cues, _) = typicky(3, false);
+    let mut zivy = ebml("webm");
+    zivy.extend(neznamy(0x18538067));
+    zivy.extend(info(1_000_000, 0.0));
+    zivy.extend(stopy(&[stopa(1, 2, "A_OPUS", &[zvuk(48000.0, 2)]), stopa(2, 1, "V_VP9", &[video(64, 48)])]));
+    for z in 0..3u64 {
+        let ramce: [&[u8]; 3] = [&[1; 30], &[2; 7], &[3; 5]];
+        let bloky = vec![
+            prvok(0xA3, &telo_bloku(1, 0, 0x82, &ramce)),
+            prvok(0xA3, &telo_bloku(1, 10, 0x86, &ramce)),
+            prvok(0xA3, &telo_bloku(2, 5, 0x84, &[&[4; 4], &[5; 4]])),
+            prvok(
+                0xA0,
+                &spoj(&[
+                    prvok(0xA1, &telo_bloku(2, 30, 0, &[&[6, 7]])),
+                    uint(0x9B, 30),
+                    prvok(0xFB, &[0xFF]),
+                ]),
+            ),
+        ];
+        zivy.extend(zhluk_neznamy(z * 100, &bloky));
+    }
+    vec![typ, bez_cues, zivy]
+}
+
+#[test]
+fn matroska() {
+    let mut n = nahoda(5);
+    let zaklady = zaklady_matrosky();
+    let mut otvorenych = 0;
+    for i in 0..pocet_pokusov() / 4 {
+        let d = if i % 10 == 0 { bajty(&mut n, 400) } else { zmutuj(&zaklady[i % zaklady.len()], &mut n) };
+        let Ok(mut m) = Mkv::otvor(PametovyZdroj::novy(d), prisne()) else { continue };
+        otvorenych += 1;
+        let stopy = m.stopy().len();
+        for _ in 0..2_000 {
+            match m.dalsi_paket() {
+                Ok(Some(p)) => assert!(p.stopa < stopy),
+                _ => break,
+            }
+        }
+        let ciel = n.mensie_ako(5_000_000_000) as i64 - 1_000_000_000;
+        let sposob = if n.mensie_ako(2) == 0 { Posun::KlucovyPred } else { Posun::Presny };
+        if m.posun(ciel, sposob).is_ok() {
+            for _ in 0..200 {
+                if !matches!(m.dalsi_paket(), Ok(Some(_))) {
+                    break;
+                }
+            }
+        }
+    }
+    assert!(otvorenych > pocet_pokusov() / 40, "mutácie musia často ostať otvoriteľné ({otvorenych})");
 }

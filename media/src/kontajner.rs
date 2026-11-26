@@ -4,9 +4,11 @@
 //! alokácia až po kontrole limitov, pri otvorení len hlavička a indexy, pakety v poradí súboru (čítanie ide
 //! súvisle dopredu), kompaktné indexy.
 
+use crate::limity::Limity;
 use crate::paket::Paket;
 use crate::stopa::Stopa;
-use orchidea_jadro::Vysledok;
+use crate::zdroj::ZdrojBajtov;
+use orchidea_jadro::{Chyba, Vysledok};
 
 /// Formát kontajnera.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +100,22 @@ pub trait Kontajner: std::fmt::Debug {
 
     /// Posun na čas v ns (časová os média); vráti čas prvého kľúčového paketu, od ktorého čítanie pokračuje.
     fn posun(&mut self, ciel_ns: i64, sposob: Posun) -> Vysledok<i64>;
+}
+
+/// Otvorí kontajner podľa obsahu zdroja.
+pub fn otvor<Z: ZdrojBajtov + 'static>(zdroj: Z, limity: Limity) -> Vysledok<Box<dyn Kontajner>> {
+    let mut zaciatok = vec![0u8; 1024.min(zdroj.dlzka() as usize)];
+    let n = zdroj.citaj_na(0, &mut zaciatok)?;
+    zaciatok.truncate(n);
+    match rozpoznaj(&zaciatok) {
+        Some(FormatKontajnera::Matroska | FormatKontajnera::WebM) => {
+            Ok(Box::new(crate::mkv::Mkv::otvor(zdroj, limity)?))
+        }
+        Some(f) => {
+            Err(Chyba::MimoRozsahu(format!("čítačka kontajnera {} ešte nie je (etapy L3, L4)", f.meno())))
+        }
+        None => Err(Chyba::PoskodeneData("neznámy formát kontajnera".into())),
+    }
 }
 
 #[cfg(test)]

@@ -122,6 +122,103 @@ impl ZdrojBajtov for SuborovyZdroj {
     }
 }
 
+/// **Čítač s čítaním dopredu po dávkach** (chladné čítanie, R306): údaje sa z úložiska berú vo veľkých súvislých
+/// kusoch (predvolene 4 MiB) a ďalšie žiadosti sa obslúžia z pamäte – USB kľúč alebo SD karta medzi dávkami spí.
+/// Pri posune dozadu sa okno načíta znova; pri posune dopredu sa prekrytá časť okna ponechá.
+#[derive(Debug)]
+pub struct Citac<Z> {
+    zdroj: Z,
+    okno: Vec<u8>,
+    zaciatok: u64,
+    davka: usize,
+    citani: u64,
+    precitanych: u64,
+}
+
+impl<Z: ZdrojBajtov> Citac<Z> {
+    /// Predvolená dávka čítania – 4 MiB (pri 8 Mb/s filme ≈ 4 s, pri hudbe FLAC ≈ 30 s).
+    pub const PREDVOLENA_DAVKA: usize = 4 << 20;
+
+    pub fn novy(zdroj: Z, davka: usize) -> Citac<Z> {
+        Citac { zdroj, okno: Vec::new(), zaciatok: 0, davka: davka.max(4096), citani: 0, precitanych: 0 }
+    }
+
+    pub fn dlzka(&self) -> u64 {
+        self.zdroj.dlzka()
+    }
+
+    pub fn zdroj(&self) -> &Z {
+        &self.zdroj
+    }
+
+    pub fn davka(&self) -> usize {
+        self.davka
+    }
+
+    /// Zmení veľkosť dávky (napríklad malé dávky pri delení intervalu počas posunu).
+    pub fn nastav_davku(&mut self, davka: usize) {
+        self.davka = davka.max(4096);
+    }
+
+    /// Počet čítaní zo zdroja a prečítaných bajtov – meranie chladného čítania.
+    pub fn statistika(&self) -> (u64, u64) {
+        (self.citani, self.precitanych)
+    }
+
+    /// Najviac `n` bajtov od `pozicia` (menej len na konci zdroja).
+    pub fn bajty(&mut self, pozicia: u64, n: usize) -> Vysledok<&[u8]> {
+        let koniec_okna = self.zaciatok + self.okno.len() as u64;
+        let dlzka = self.zdroj.dlzka();
+        if pozicia >= dlzka {
+            return Ok(&[]);
+        }
+        let ziadane_do = pozicia.saturating_add(n as u64).min(dlzka);
+        if pozicia >= self.zaciatok && ziadane_do <= koniec_okna {
+            let a = (pozicia - self.zaciatok) as usize;
+            let b = (ziadane_do - self.zaciatok) as usize;
+            return Ok(&self.okno[a..b]);
+        }
+        let k = usize::try_from((n.max(self.davka) as u64).min(dlzka - pozicia)).unwrap_or(usize::MAX);
+        // prekrytie: začiatok žiadosti je v okne – ponechá sa koniec okna, dočíta sa zvyšok
+        let ponechat = if pozicia >= self.zaciatok && pozicia < koniec_okna {
+            let a = (pozicia - self.zaciatok) as usize;
+            self.okno.drain(..a);
+            self.okno.len()
+        } else {
+            0
+        };
+        // ponechaná časť môže byť dlhšia ako nová dávka (dávka sa zmenšila, predošlá žiadosť bola veľká)
+        let ponechat = ponechat.min(k);
+        self.okno.resize(k, 0);
+        self.zaciatok = pozicia;
+        let mut hotovo = ponechat;
+        while hotovo < k {
+            let m = self.zdroj.citaj_na(pozicia + hotovo as u64, &mut self.okno[hotovo..])?;
+            self.citani += 1;
+            if m == 0 {
+                break;
+            }
+            self.precitanych += m as u64;
+            hotovo += m;
+        }
+        self.okno.truncate(hotovo);
+        let b = hotovo.min(n);
+        Ok(&self.okno[..b])
+    }
+
+    /// Presne `n` bajtov od `pozicia`, inak chyba (súbor je skrátený).
+    pub fn presne(&mut self, pozicia: u64, n: usize) -> Vysledok<&[u8]> {
+        let d = self.bajty(pozicia, n)?;
+        if d.len() < n {
+            return Err(Chyba::PoskodeneData(format!(
+                "súbor končí: od pozície {pozicia} chýba {} B",
+                n - d.len()
+            )));
+        }
+        Ok(d)
+    }
+}
+
 #[cfg(test)]
 mod skusky {
     use super::*;
@@ -165,5 +262,39 @@ mod skusky {
         drop(z);
         let _ = std::fs::remove_file(&cesta);
         assert!(SuborovyZdroj::otvor(&cesta).is_err());
+    }
+
+    #[test]
+    fn citac_po_davkach() {
+        let z = PametovyZdroj::novy((0..100_000u32).map(|i| i as u8).collect::<Vec<_>>());
+        let mut c = Citac::novy(z, 10_000);
+        assert_eq!(c.bajty(0, 4).unwrap(), &[0, 1, 2, 3]);
+        assert_eq!(c.statistika(), (1, 10_000));
+        // ďalšie žiadosti v okne sa nečítajú zo zdroja
+        for p in (0..9_000).step_by(500) {
+            assert_eq!(c.bajty(p, 100).unwrap()[0], p as u8);
+        }
+        assert_eq!(c.statistika(), (1, 10_000));
+        // prekrytie: ponechá sa koniec okna, dočíta sa len zvyšok
+        assert_eq!(c.bajty(9_990, 20).unwrap()[19], (10_009u32 % 256) as u8);
+        assert_eq!(c.statistika(), (2, 19_990));
+        // veľká žiadosť zväčší okno, koniec zdroja vráti menej
+        assert_eq!(c.bajty(50_000, 30_000).unwrap().len(), 30_000);
+        assert_eq!(c.bajty(99_990, 100).unwrap().len(), 10);
+        assert!(c.bajty(100_000, 1).unwrap().is_empty());
+        assert!(c.presne(99_990, 11).is_err());
+        assert_eq!(c.presne(99_990, 10).unwrap()[0], (99_990u32 % 256) as u8);
+        // dozadu
+        assert_eq!(c.bajty(5, 2).unwrap(), &[5, 6]);
+        // ponechaný koniec okna dlhší ako nová (menšia) dávka – nájdené fuzzerom
+        let z = PametovyZdroj::novy((0..100_000u32).map(|i| i as u8).collect::<Vec<_>>());
+        let mut c = Citac::novy(z, 50_000);
+        c.bajty(0, 10).unwrap();
+        c.nastav_davku(4096);
+        assert_eq!(c.bajty(100, 10).unwrap()[0], 100);
+        assert_eq!(c.bajty(60_000, 10).unwrap()[0], (60_000u32 % 256) as u8);
+        assert_eq!(c.bajty(99_990, 20).unwrap().len(), 10);
+        // za koncom zdroja, keď okno siaha po koniec – nájdené fuzzerom
+        assert!(c.bajty(100_005, 3).unwrap().is_empty());
     }
 }

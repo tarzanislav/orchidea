@@ -20,22 +20,23 @@
 //! - **chladne** – čítanie súvisle dopredu po dávkach, kompaktné indexy, priechod zvuku do televízora (R303, R306).
 //!
 //! Moduly: [`zdroj`] (čítanie na pozícii), [`cas`] (časová základňa), [`limity`], [`stopa`] (stopy a kodeky),
-//! [`paket`], [`kontajner`] (rozpoznanie formátu, rozhranie čítačky), [`zvuk`] (bloky vzoriek, rozhranie
+//! [`paket`], [`kontajner`] (rozpoznanie formátu, rozhranie čítačky), [`mkv`] (Matroska a WebM), [`zvuk`] (bloky vzoriek, rozhranie
 //! dekodéra) a [`r5`] (rozhranie pre ORCHIDEA OS).
 #![forbid(unsafe_code)]
 
 pub mod cas;
 pub mod kontajner;
 pub mod limity;
+pub mod mkv;
 pub mod paket;
 pub mod r5;
 pub mod stopa;
 pub mod zdroj;
 pub mod zvuk;
 
-pub use kontajner::{FormatKontajnera, Kontajner, Posun, rozpoznaj};
+pub use kontajner::{FormatKontajnera, Kontajner, Posun, otvor, rozpoznaj};
 pub use limity::Limity;
 pub use paket::Paket;
 pub use stopa::{DruhStopy, Kodek, ParametreVidea, ParametreZvuku, Stopa};
-pub use zdroj::{PametovyZdroj, SuborovyZdroj, ZdrojBajtov};
+pub use zdroj::{Citac, PametovyZdroj, SuborovyZdroj, ZdrojBajtov};
 pub use zvuk::{BlokZvuku, DekoderZvuku, RozlozenieKanalov, VzorkyZvuku};
