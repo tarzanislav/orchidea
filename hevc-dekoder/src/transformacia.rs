@@ -17,7 +17,7 @@
 //! `max_x`/`max_y`. Pracovné polia sú na zásobníku (žiadne alokácie na blok), žiadne `unsafe`. 1D transformácie sú
 //! samostatné funkcie, aby ich krok H5 mohol nahradiť verziou NEON.
 
-use crate::obraz::Vzorka;
+use super::obraz::Vzorka;
 use orchidea_hevc::parametre::MaticeKvantovania;
 
 /// Celočíselná matica DCT 32 × 32 (8.6.4.2, trType = 0; v norme transMatrixCol0to15 a transMatrixCol16to31).

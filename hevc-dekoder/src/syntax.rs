@@ -2,16 +2,16 @@
 //! kódovania, kódovacie a predikčné jednotky, strom transformácií, rezíduá (residual_coding) a PCM.
 //! Každá jednotka sa rekonštruuje hneď po rozbore (vnútrosnímková predikcia potrebuje susedov).
 
+use super::interpolacia::{self, Vahy};
+use super::intra::{self, Susedia};
+use super::obraz::{Obraz, ObrazPasov, RovinaPasov, Vzorka};
+use super::odblokovanie;
+use super::sao::{self, CielSao, SaoCtb};
+use super::transformacia::{self, FaktorySkalovania, ParametreTb};
 use crate::cabac::{Cabac, Kontexty, k};
 use crate::filtre::{InfoObrazu, MapyFiltra, PohybBloku};
 use crate::geometria::Geometria;
-use crate::interpolacia::{self, Vahy};
-use crate::intra::{self, Susedia};
-use crate::obraz::{Obraz, ObrazPasov, RovinaPasov, Vzorka};
-use crate::odblokovanie;
 use crate::pohyb::{Blok, Okolie, PohybKol, PohybPu, PoleKol, PoleKolPasov, Rozdelenie};
-use crate::sao::{self, CielSao, SaoCtb};
-use crate::transformacia::{self, FaktorySkalovania, ParametreTb};
 use orchidea_hevc::bity::Citac;
 use orchidea_hevc::rez::TypRezu;
 use orchidea_hevc::{HlavickaRezu, Pps, Sps};
@@ -44,12 +44,15 @@ impl DekodovanyObraz {
         vyska: usize,
         log2_ctb: u32,
         okno: [usize; 4],
+        (hlbka, hlbka_farby): (u32, u32),
     ) -> DekodovanyObraz {
         let ctb = 1usize << log2_ctb;
+        let mut obraz = ObrazPasov::novy(sirka, vyska, ctb);
+        (obraz.bitova_hlbka, obraz.bitova_hlbka_farby) = (hlbka, hlbka_farby);
         DekodovanyObraz {
             id,
             poc,
-            obraz: ObrazPasov::novy(sirka, vyska, ctb),
+            obraz,
             kol: PoleKolPasov::nove(sirka.div_ceil(16), vyska.div_ceil(16), ctb / 16, poc),
             okno,
         }
@@ -553,7 +556,8 @@ impl<'a> DekoderRezu<'a> {
             if p.typ[c] == 0 {
                 continue;
             }
-            let max = (1u32 << (self.sps.bity_jasu.min(10) - 5)) - 1;
+            // cMax sao_offset_abs = (1 << (Min(bitDepth, 10) − 5)) − 1, bitDepth podľa zložky
+            let max = (1u32 << (self.hlbka(c).min(10) - 5)) - 1;
             let mut abs = [0i16; 4];
             for a in abs.iter_mut() {
                 let mut v = 0;
@@ -1087,10 +1091,17 @@ impl<'a> DekoderRezu<'a> {
         }
     }
 
+    /// Bitová hĺbka zložky `c` (BitDepthY alebo BitDepthC).
+    #[inline]
+    fn hlbka(&self, c: usize) -> u32 {
+        if c == 0 { self.sps.bity_jasu } else { self.sps.bity_farby }
+    }
+
     fn vahy(&self, p: &PohybPu, c: usize) -> Option<Vahy> {
         let t = self.h.vahy.as_ref()?;
         let mut v = Vahy { log2_denom: if c == 0 { t.log2_jas } else { t.log2_farba }, w: [0; 2], o: [0; 2] };
-        let posun = self.sps.bity_jasu - 8;
+        // o = luma_offset << (BitDepthY − 8), ChromaOffset << (BitDepthC − 8)
+        let posun = self.hlbka(c) - 8;
         for lx in 0..2 {
             if p.pred(lx) {
                 let (w, o) = if c == 0 {
@@ -1119,6 +1130,7 @@ impl<'a> DekoderRezu<'a> {
                 })
             };
             let (r0, r1) = (ref_z(0), ref_z(1));
+            let hlbka = self.hlbka(c);
             let rov = &mut self.s.obraz.roviny[c];
             let krok = rov.krok;
             let ciel = &mut rov.data[sy * krok + sx..];
@@ -1131,7 +1143,7 @@ impl<'a> DekoderRezu<'a> {
                 sw,
                 sh,
                 vahy.as_ref(),
-                8,
+                hlbka,
                 ciel,
                 krok,
             );
@@ -1403,9 +1415,10 @@ impl<'a> DekoderRezu<'a> {
             i += jednotka;
         }
         let silne = self.sps.strong_intra_smoothing;
+        let hlbka = self.hlbka(c);
         let rov = &mut self.s.obraz.roviny[c];
         let krok = rov.krok;
-        intra::predikuj(&sus, log2, rezim, c == 0, 8, silne, &mut rov.data[y * krok + x..], krok);
+        intra::predikuj(&sus, log2, rezim, c == 0, hlbka, silne, &mut rov.data[y * krok + x..], krok);
     }
 
     // -----------------------------------------------------------------------------------------------------
@@ -1441,8 +1454,10 @@ impl<'a> DekoderRezu<'a> {
             } else {
                 self.pps.cr_qp_offset + self.h.cr_qp_offset
             };
-            let qpi = (self.qp_y + posun).clamp(-self.qp_bd, 57);
-            qp_farby(qpi) + self.qp_bd
+            // QpBdOffsetC = 6 · (BitDepthC − 8) (8.6.1)
+            let bd_c = 6 * (self.sps.bity_farby as i32 - 8);
+            let qpi = (self.qp_y + posun).clamp(-bd_c, 57);
+            qp_farby(qpi) + bd_c
         };
         let matica = (c + if ju.intra { 0 } else { 3 }).min(5);
         let p = ParametreTb {
@@ -1453,7 +1468,7 @@ impl<'a> DekoderRezu<'a> {
             preskocenie,
             obchadzanie: self.obchadzanie,
             faktory: self.faktory.map(|f| f.faktor(log2, matica)),
-            bitova_hlbka: 8,
+            bitova_hlbka: self.hlbka(c),
         };
         let n = 1usize << log2;
         let rov = &mut self.s.obraz.roviny[c];

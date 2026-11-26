@@ -26,7 +26,7 @@
 //! samostatné funkcie – miesto pre neskoršiu verziu NEON (krok H5). Slučky sú písané pre automatickú
 //! vektorizáciu: pevný počet bodov filtra (`N`), dĺžky riadkov overené pred slučkou.
 
-use crate::obraz::{Vzorka, Zdroj};
+use super::obraz::{Vzorka, Zdroj};
 use std::cell::RefCell;
 
 /// Najväčší rozmer predikčného bloku (CTB 64 × 64).
@@ -433,34 +433,17 @@ pub(crate) fn zvislo_medzi_skalarne<const N: usize>(riadky: &[&[i16]; N], koef: 
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+// jadrá podľa typu vzorky a procesora: ručné NEON (8 bitov, aarch64) alebo skalárne (modul `simd` nadradeného modulu)
 fn vodorovne8<const N: usize>(zdroj: &[Vzorka], koef: &[i16; N], ciel: &mut [i16], odcitaj: i16) {
-    crate::neon::vodorovne8(zdroj, koef, ciel, odcitaj);
+    super::simd::vodorovne8(zdroj, koef, ciel, odcitaj);
 }
 
-#[cfg(not(target_arch = "aarch64"))]
-fn vodorovne8<const N: usize>(zdroj: &[Vzorka], koef: &[i16; N], ciel: &mut [i16], odcitaj: i16) {
-    vodorovne8_skalarne(zdroj, koef, ciel, odcitaj);
-}
-
-#[cfg(target_arch = "aarch64")]
 fn zvislo8<const N: usize>(riadky: &[&[Vzorka]; N], koef: &[i16; N], ciel: &mut [i16], odcitaj: i16) {
-    crate::neon::zvislo8(riadky, koef, ciel, odcitaj);
+    super::simd::zvislo8(riadky, koef, ciel, odcitaj);
 }
 
-#[cfg(not(target_arch = "aarch64"))]
-fn zvislo8<const N: usize>(riadky: &[&[Vzorka]; N], koef: &[i16; N], ciel: &mut [i16], odcitaj: i16) {
-    zvislo8_skalarne(riadky, koef, ciel, odcitaj);
-}
-
-#[cfg(target_arch = "aarch64")]
 fn zvislo_medzi<const N: usize>(riadky: &[&[i16]; N], koef: &[i16; N], ciel: &mut [i16]) {
-    crate::neon::zvislo_medzi(riadky, koef, ciel);
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-fn zvislo_medzi<const N: usize>(riadky: &[&[i16]; N], koef: &[i16; N], ciel: &mut [i16]) {
-    zvislo_medzi_skalarne(riadky, koef, ciel);
+    super::simd::zvislo_medzi(riadky, koef, ciel);
 }
 
 /// Váženie jednej referencie zo zoznamu `zoznam` (0 = L0, 1 = L1) pre celý blok šírky `w`.
@@ -536,12 +519,7 @@ fn vaz_dve(
 /// Predvolené váženie riadka jednej referencie: `Clip3(0, max, (p + pridaj) >> shift)`.
 fn riadok_predvolene_jedna(pred: &[i16], ciel: &mut [Vzorka], pridaj: i32, shift: u32, max: i32) {
     let pred = &pred[..ciel.len()];
-    #[cfg(target_arch = "aarch64")]
-    if max == 255 {
-        crate::neon::predvolene_jedna8(pred, ciel, pridaj, shift);
-        return;
-    }
-    predvolene_jedna_skalarne(pred, ciel, pridaj, shift, max);
+    super::simd::predvolene_jedna(pred, ciel, pridaj, shift, max);
 }
 
 /// `ciel[i] = Clip3(0, max, (pred[i] + pridaj) >> shift)`.
@@ -567,12 +545,7 @@ fn riadok_predvolene_dve(
     max: i32,
 ) {
     let (pred0, pred1) = (&pred0[..ciel.len()], &pred1[..ciel.len()]);
-    #[cfg(target_arch = "aarch64")]
-    if max == 255 {
-        crate::neon::predvolene_dve8(pred0, pred1, ciel, pridaj, shift);
-        return;
-    }
-    predvolene_dve_skalarne(pred0, pred1, ciel, pridaj, shift, max);
+    super::simd::predvolene_dve(pred0, pred1, ciel, pridaj, shift, max);
 }
 
 /// `ciel[i] = Clip3(0, max, (pred0[i] + pred1[i] + pridaj) >> shift)`.
@@ -623,8 +596,8 @@ fn riadok_explicitne_dve(
 
 #[cfg(test)]
 mod testy {
+    use super::super::obraz::Rovina;
     use super::*;
-    use crate::obraz::Rovina;
     use orchidea_jadro::nahoda::Nahoda;
 
     // ---------------------------------------------------------------------------------------------------------

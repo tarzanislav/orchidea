@@ -1,7 +1,8 @@
 //! Obraz dekodéra: tri roviny vzoriek (Y, Cb, Cr) vo formáte 4:2:0 bez okrajov.
 //!
-//! Vzorky majú 8 bitov (profil Main). Celý dekodér používa typ [`Vzorka`] – prechod na 10 bitov (Main 10) znamená
-//! zmeniť tento typ a bitovú hĺbku, nie prepísať moduly.
+//! Typ vzorky [`Vzorka`] určuje nadradený modul: `u8` pre 8 bitov (profil Main, [`crate::b8`]) a `u16` pre
+//! 9–10 bitov (Main 10, [`crate::b16`]) – ten istý zdrojový text sa preloží dvakrát, 8-bitová cesta tak nič
+//! nestráca (pamäť ani rýchlosť).
 //!
 //! Dekódovaný obraz ([`ObrazPasov`]) sa **zverejňuje po pásoch** (riadkoch CTB), hneď ako sú hotové aj filtre
 //! v slučke. Ďalší obraz, ktorý ho má ako referenciu, môže bežať súčasne v inom vlákne: čítanie riadka pásu,
@@ -9,8 +10,8 @@
 
 use std::sync::OnceLock;
 
-/// Jedna vzorka obrazu (profil Main: 8 bitov).
-pub type Vzorka = u8;
+/// Jedna vzorka obrazu (u8 pre 8 bitov, u16 pre Main 10) – určuje nadradený modul.
+pub use super::Vzorka;
 
 /// Zarovnanie kroku riadka v prvkoch – riadky začínajú na hranici 32 bajtov (rýchle vektorové čítanie, NEON).
 const ZAROVNANIE: usize = 32;
@@ -56,28 +57,36 @@ impl Rovina {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Obraz {
     pub roviny: [Rovina; 3],
+    /// BitDepthY a BitDepthC (Main 10 dovoľuje rôzne)
     pub bitova_hlbka: u32,
+    pub bitova_hlbka_farby: u32,
 }
 
 impl Obraz {
     /// Nový obraz s rozmermi jasu `sirka` × `vyska` vyplnený strednou hodnotou 1 << (bitova_hlbka − 1)
     /// (to je aj obsah chýbajúceho referenčného obrazu podľa 8.3.3.2).
     pub fn novy(sirka: usize, vyska: usize) -> Obraz {
-        let stred = 1 << 7;
+        Obraz::s_hlbkou(sirka, vyska, 8, 8)
+    }
+
+    /// Ako [`Obraz::novy`] s bitovou hĺbkou jasu `hlbka` a farby `hlbka_farby`.
+    pub fn s_hlbkou(sirka: usize, vyska: usize, hlbka: u32, hlbka_farby: u32) -> Obraz {
+        let (sy, sc) = ((1u32 << (hlbka - 1)) as Vzorka, (1u32 << (hlbka_farby - 1)) as Vzorka);
         Obraz {
             roviny: [
-                Rovina::nova(sirka, vyska, stred),
-                Rovina::nova(sirka / 2, vyska / 2, stred),
-                Rovina::nova(sirka / 2, vyska / 2, stred),
+                Rovina::nova(sirka, vyska, sy),
+                Rovina::nova(sirka / 2, vyska / 2, sc),
+                Rovina::nova(sirka / 2, vyska / 2, sc),
             ],
-            bitova_hlbka: 8,
+            bitova_hlbka: hlbka,
+            bitova_hlbka_farby: hlbka_farby,
         }
     }
 
     /// Prázdny obraz bez pamäte (zástupca pri presune rovín).
     pub fn prazdny() -> Obraz {
         let r = || Rovina { data: Vec::new(), sirka: 0, vyska: 0, krok: 0 };
-        Obraz { roviny: [r(), r(), r()], bitova_hlbka: 8 }
+        Obraz { roviny: [r(), r(), r()], bitova_hlbka: 8, bitova_hlbka_farby: 8 }
     }
 
     pub fn sirka(&self) -> usize {
@@ -213,19 +222,25 @@ impl Zdroj for RovinaPasov {
 pub struct ObrazPasov {
     pub roviny: [RovinaPasov; 3],
     pub bitova_hlbka: u32,
+    pub bitova_hlbka_farby: u32,
 }
 
 impl ObrazPasov {
     /// Prázdny obraz `sirka` × `vyska` s pásmi výšky `vyska_pasu` (jas; farba polovičná).
     pub fn novy(sirka: usize, vyska: usize, vyska_pasu: usize) -> ObrazPasov {
         let f = || RovinaPasov::nova(sirka / 2, vyska / 2, vyska_pasu / 2);
-        ObrazPasov { roviny: [RovinaPasov::nova(sirka, vyska, vyska_pasu), f(), f()], bitova_hlbka: 8 }
+        ObrazPasov {
+            roviny: [RovinaPasov::nova(sirka, vyska, vyska_pasu), f(), f()],
+            bitova_hlbka: 8,
+            bitova_hlbka_farby: 8,
+        }
     }
 
     /// Celý hotový obraz zo súvislého obrazu (napr. chýbajúci referenčný obraz).
     pub fn z_obrazu(o: &Obraz) -> ObrazPasov {
         let v = o.vyska().max(1);
-        let p = ObrazPasov::novy(o.sirka(), o.vyska(), v);
+        let mut p = ObrazPasov::novy(o.sirka(), o.vyska(), v);
+        (p.bitova_hlbka, p.bitova_hlbka_farby) = (o.bitova_hlbka, o.bitova_hlbka_farby);
         for c in 0..3 {
             p.zverejni_z(c, 0, &o.roviny[c]);
         }
@@ -255,8 +270,9 @@ impl ObrazPasov {
 
     /// Doplní nezverejnené pásy strednou hodnotou.
     pub fn dopln(&self) {
-        for r in &self.roviny {
-            r.dopln(1 << 7);
+        for (c, r) in self.roviny.iter().enumerate() {
+            let h = if c == 0 { self.bitova_hlbka } else { self.bitova_hlbka_farby };
+            r.dopln((1u32 << (h - 1)) as Vzorka);
         }
     }
 

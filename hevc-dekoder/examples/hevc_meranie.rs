@@ -12,14 +12,14 @@
 //! VYSLEDOK obrazov=<n> cas_ms=<ms> obr_s=<x.y> sei_zhoda=<n> sei_nezhoda=<n> sei_bez=<n> chyby=<n> stav=<stav>
 //! CHYBA <text>                                                         (0 až 5 riadkov)
 //! ```
-//! `md5` je MD5 orezaného obrazu YUV 4:2:0 (rovina Y, U, V za sebou). `stav`: `ok` (bez chyby a bez nezhody so
+//! `md5` je MD5 orezaného obrazu YUV 4:2:0 (rovina Y, U, V za sebou; Main 10 po 2 bajtoch, malý koniec –
+//! ako `ffmpeg -pix_fmt yuv420p10le -f framemd5`). `stav`: `ok` (bez chyby a bez nezhody so
 //! SEI), `nezhoda` (odtlačok SEI nesedí), `chyba` (chyba dekódovania alebo mimo profilu). Návratový kód: 0 = ok,
 //! 1 = nezhoda alebo chyba, 2 = zlé argumenty alebo súbor sa nedá prečítať.
 
 use orchidea_hevc::jednotky_annex_b;
 use orchidea_hevc::odtlacok::{Md5, hex};
-use orchidea_hevc_dekoder::{Dekoder, DekodovanyObraz};
-use std::sync::Arc;
+use orchidea_hevc_dekoder::{Dekoder, Vystup};
 use std::time::Instant;
 
 fn pouzitie() -> ! {
@@ -66,19 +66,19 @@ fn main() {
 
     let start = Instant::now();
     let (mut poradie, mut yuv) = (0usize, Vec::new());
-    let mut vypis = |obrazy: Vec<Arc<DekodovanyObraz>>| {
+    let mut vypis = |obrazy: Vec<Vystup>| {
         for o in obrazy {
             if !rychlost {
                 yuv.clear();
                 o.zapis_yuv(&mut yuv);
                 let mut m = Md5::novy();
                 m.pridaj(&yuv);
-                let [l, p, h, dl] = o.okno;
+                let [l, p, h, dl] = o.okno();
                 println!(
                     "OBRAZ poradie={poradie} poc={} sirka={} vyska={} md5={}",
-                    o.poc,
-                    o.obraz.sirka() - l - p,
-                    o.obraz.vyska() - h - dl,
+                    o.poc(),
+                    o.sirka() - l - p,
+                    o.vyska() - h - dl,
                     hex(&m.vysledok())
                 );
             }

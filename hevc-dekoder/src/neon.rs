@@ -14,11 +14,11 @@
 
 #![allow(unsafe_code, unused_unsafe, clippy::needless_range_loop)]
 
-use crate::interpolacia::{
+use super::interpolacia::{
     predvolene_dve_skalarne, predvolene_jedna_skalarne, vodorovne8_skalarne, zvislo_medzi_skalarne,
     zvislo8_skalarne,
 };
-use crate::obraz::Vzorka;
+use super::obraz::Vzorka;
 use core::arch::aarch64::*;
 
 /// 8 vzoriek `zdroj[i … i + 15]` rozšírených na i16: (dolných 8, horných 8). Ak za koncom nie je 16 bajtov,
@@ -137,8 +137,12 @@ fn na_vzorky(lo: int32x4_t, hi: int32x4_t) -> uint8x8_t {
     unsafe { vqmovn_u16(vcombine_u16(vqmovun_s32(lo), vqmovun_s32(hi))) }
 }
 
-/// Predvolené váženie dvoch referencií pre 8 bitov: `ciel[i] = Clip3(0, 255, (p0 + p1 + pridaj) >> shift)`.
-pub fn predvolene_dve8(pred0: &[i16], pred1: &[i16], ciel: &mut [Vzorka], pridaj: i32, shift: u32) {
+/// Predvolené váženie dvoch referencií: `ciel[i] = Clip3(0, max, (p0 + p1 + pridaj) >> shift)` (NEON pre max 255).
+pub fn predvolene_dve(pred0: &[i16], pred1: &[i16], ciel: &mut [Vzorka], pridaj: i32, shift: u32, max: i32) {
+    if max != 255 {
+        predvolene_dve_skalarne(pred0, pred1, ciel, pridaj, shift, max);
+        return;
+    }
     // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
     unsafe {
         let w = ciel.len();
@@ -160,8 +164,12 @@ pub fn predvolene_dve8(pred0: &[i16], pred1: &[i16], ciel: &mut [Vzorka], pridaj
     }
 }
 
-/// Predvolené váženie jednej referencie pre 8 bitov: `ciel[i] = Clip3(0, 255, (p + pridaj) >> shift)`.
-pub fn predvolene_jedna8(pred: &[i16], ciel: &mut [Vzorka], pridaj: i32, shift: u32) {
+/// Predvolené váženie jednej referencie: `ciel[i] = Clip3(0, max, (p + pridaj) >> shift)` (NEON pre max 255).
+pub fn predvolene_jedna(pred: &[i16], ciel: &mut [Vzorka], pridaj: i32, shift: u32, max: i32) {
+    if max != 255 {
+        predvolene_jedna_skalarne(pred, ciel, pridaj, shift, max);
+        return;
+    }
     // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
     unsafe {
         let w = ciel.len();
@@ -241,10 +249,10 @@ mod testy {
             for _ in 0..50 {
                 let (p0, p1) = (i16ky(&mut n, w), i16ky(&mut n, w));
                 let (mut a, mut b) = (vec![0u8; w], vec![0u8; w]);
-                predvolene_dve8(&p0, &p1, &mut a, 2 * 8192 + 64, 7);
+                predvolene_dve(&p0, &p1, &mut a, 2 * 8192 + 64, 7, 255);
                 predvolene_dve_skalarne(&p0, &p1, &mut b, 2 * 8192 + 64, 7, 255);
                 assert_eq!(a, b, "dve w={w}");
-                predvolene_jedna8(&p0, &mut a, 8192 + 32, 6);
+                predvolene_jedna(&p0, &mut a, 8192 + 32, 6, 255);
                 predvolene_jedna_skalarne(&p0, &mut b, 8192 + 32, 6, 255);
                 assert_eq!(a, b, "jedna w={w}");
             }

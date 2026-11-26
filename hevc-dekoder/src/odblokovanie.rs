@@ -17,8 +17,8 @@
 
 use std::ops::Range;
 
+use super::obraz::{Obraz, Rovina, Vzorka};
 use crate::filtre::{InfoObrazu, MapyFiltra, PohybBloku, RezFiltra};
-use crate::obraz::{Obraz, Rovina, Vzorka};
 
 /// β′ pre Q = 0 … 51 (tabuľka prahov β′ a tC′, 8.7.2.5.3).
 const BETA: [u8; 52] = [
@@ -47,8 +47,11 @@ type UsekFarby = [[i32; 2]; 4];
 struct Spolocne {
     /// BitDepth − 8: β = β′ · (1 << posun), tC = tC′ · (1 << posun)
     posun: u32,
-    /// najväčšia hodnota vzorky – horná hranica Clip1Y a Clip1C
+    /// najväčšia hodnota vzorky jasu – horná hranica Clip1Y
     max: i32,
+    /// to isté pre farbu (BitDepthC môže byť iná ako BitDepthY): posun tC a Clip1C
+    posun_c: u32,
+    max_c: i32,
     /// cQpPicOffset pre Cb a Cr (pps_cb_qp_offset, pps_cr_qp_offset)
     c_qp: [i32; 2],
 }
@@ -79,9 +82,12 @@ pub fn odblokuj(obraz: &mut Obraz, mapy: &MapyFiltra, info: &InfoObrazu) {
         (8..=16).contains(&hlbka) && (1u32 << hlbka) - 1 <= u32::from(Vzorka::MAX),
         "nepodporovaná bitová hĺbka {hlbka}"
     );
+    let hlbka_c = obraz.bitova_hlbka_farby;
     let s = Spolocne {
         posun: hlbka.saturating_sub(8),
         max: (1 << hlbka) - 1,
+        posun_c: hlbka_c.saturating_sub(8),
+        max_c: (1 << hlbka_c) - 1,
         c_qp: [info.cb_qp_offset, info.cr_qp_offset],
     };
     zvisle_hrany(&mut obraz.roviny, mapy, info, &s, 0..mapy.vyska4);
@@ -96,9 +102,12 @@ pub fn odblokuj(obraz: &mut Obraz, mapy: &MapyFiltra, info: &InfoObrazu) {
 /// Pás nesmie zasiahnuť riadky, ktoré ešte číta vnútrosnímková predikcia (spodný riadok rekonštruovanej časti).
 pub fn odblokuj_pas(obraz: &mut Obraz, mapy: &MapyFiltra, info: &InfoObrazu, y0: usize, y1: usize) {
     let hlbka = obraz.bitova_hlbka;
+    let hlbka_c = obraz.bitova_hlbka_farby;
     let s = Spolocne {
         posun: hlbka.saturating_sub(8),
         max: (1 << hlbka) - 1,
+        posun_c: hlbka_c.saturating_sub(8),
+        max_c: (1 << hlbka_c) - 1,
         c_qp: [info.cb_qp_offset, info.cr_qp_offset],
     };
     debug_assert!(y0.is_multiple_of(8), "HEVC: pás odblokovania nezačína na mriežke 8");
@@ -150,7 +159,7 @@ fn zvisle_hrany(
                 for (rovina, &c_qp) in [&mut *cb, &mut *cr].into_iter().zip(&s.c_qp) {
                     let tc = prah_farby(qp_p, qp_q, c_qp, rez, s);
                     if tc > 0 && cx + 2 <= rovina.sirka && cy + 2 <= rovina.vyska {
-                        filtruj_zvislu_farby(rovina, cx, cy, &Prahy { tc, ..pr });
+                        filtruj_zvislu_farby(rovina, cx, cy, &Prahy { tc, max: s.max_c, ..pr });
                     }
                 }
             }
@@ -200,7 +209,7 @@ fn vodorovne_hrany(
                 for (rovina, &c_qp) in [&mut *cb, &mut *cr].into_iter().zip(&s.c_qp) {
                     let tc = prah_farby(qp_p, qp_q, c_qp, rez, s);
                     if tc > 0 && cx + 2 <= rovina.sirka && cy + 2 <= rovina.vyska {
-                        filtruj_vodorovnu_farby(rovina, cx, cy, &Prahy { tc, ..pr });
+                        filtruj_vodorovnu_farby(rovina, cx, cy, &Prahy { tc, max: s.max_c, ..pr });
                     }
                 }
             }
@@ -287,7 +296,7 @@ fn prah_farby(qp_p: i32, qp_q: i32, c_qp: i32, rez: &RezFiltra, s: &Spolocne) ->
     let qpc = qpc_z_qpi(((qp_q + qp_p + 1) >> 1) + c_qp);
     // 2 · (bS − 1) = 2
     let q_tc = (qpc + 2 + (i32::from(rez.tc_div2) << 1)).clamp(0, 53);
-    i32::from(TC[q_tc as usize]) << s.posun
+    i32::from(TC[q_tc as usize]) << s.posun_c
 }
 
 /// QpC ako funkcia qPi pre ChromaArrayType = 1 (tabuľka QpC v 8.6.1).
@@ -880,7 +889,7 @@ mod testy {
 
     /// Rozhodca celého obrazu: všetky zvislé hrany zľava doprava, potom všetky vodorovné zhora nadol.
     fn rozhodca(obraz: &Obraz, mapy: &MapyFiltra, info: &InfoObrazu, pok: &mut Pokrytie) -> [RovinaR; 3] {
-        let hlbka = obraz.bitova_hlbka;
+        let (hlbka, hlbka_c) = (obraz.bitova_hlbka, obraz.bitova_hlbka_farby);
         let mut r = obraz.roviny.each_ref().map(RovinaR::z_roviny);
         let [jas, cb, cr] = &mut r;
         let (w, h) = (jas.sirka, jas.vyska);
@@ -892,7 +901,7 @@ mod testy {
         for (c_idx, rov) in [(1, &mut *cb), (2, &mut *cr)] {
             for x in (0..rov.sirka).step_by(8) {
                 for y in (0..rov.vyska).step_by(2) {
-                    hrana_farby_r(rov, c_idx, mapy, info, true, (x, y), hlbka, pok);
+                    hrana_farby_r(rov, c_idx, mapy, info, true, (x, y), hlbka_c, pok);
                 }
             }
         }
@@ -904,7 +913,7 @@ mod testy {
         for (c_idx, rov) in [(1, &mut *cb), (2, &mut *cr)] {
             for y in (0..rov.vyska).step_by(8) {
                 for x in (0..rov.sirka).step_by(2) {
-                    hrana_farby_r(rov, c_idx, mapy, info, false, (x, y), hlbka, pok);
+                    hrana_farby_r(rov, c_idx, mapy, info, false, (x, y), hlbka_c, pok);
                 }
             }
         }

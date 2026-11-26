@@ -9,7 +9,7 @@
 
 use orchidea_hevc::jednotky_annex_b;
 use orchidea_hevc::odtlacok::{Md5, hex};
-use orchidea_hevc_dekoder::{Dekoder, Zdroj};
+use orchidea_hevc_dekoder::Dekoder;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -115,7 +115,7 @@ fn main() {
         let mut yuv = Vec::new();
         let mut vydanych = 0usize;
         let start = Instant::now();
-        let mut spracuj = |obrazy: Vec<std::sync::Arc<orchidea_hevc_dekoder::DekodovanyObraz>>| {
+        let mut spracuj = |obrazy: Vec<orchidea_hevc_dekoder::Vystup>| {
             for o in obrazy {
                 if !rychlost {
                     yuv.clear();
@@ -126,11 +126,13 @@ fn main() {
                     let mut m = Md5::novy();
                     m.pridaj(&yuv);
                     po_obrazoch.push(hex(&m.vysledok()));
-                    let [l, p, h, d] = o.okno;
+                    let [l, p, h, d] = o.okno();
                     let mut od = 0;
-                    for (c, r) in o.obraz.roviny.iter().enumerate() {
+                    for c in 0..3 {
                         let s = usize::from(c > 0);
-                        let n = (r.sirka - (p >> s) - (l >> s)) * (r.vyska - (d >> s) - (h >> s));
+                        let (rs, rv) = (o.sirka() >> s, o.vyska() >> s);
+                        let n =
+                            (rs - (p >> s) - (l >> s)) * (rv - (d >> s) - (h >> s)) * o.bajtov_na_vzorku();
                         let mut m = Md5::novy();
                         m.pridaj(&yuv[od..(od + n).min(yuv.len())]);
                         po_rovinach.push(hex(&m.vysledok()));
@@ -138,11 +140,9 @@ fn main() {
                     }
                     let v16: Vec<u8> = yuv.iter().flat_map(|&b| [b, 0]).collect();
                     md5_16.pridaj(&v16);
-                    for r in &o.obraz.roviny {
-                        for y in 0..r.vyska {
-                            md5_cely.pridaj(r.riadok(y));
-                        }
-                    }
+                    let mut cely = Vec::new();
+                    o.zapis_yuv_cely(&mut cely);
+                    md5_cely.pridaj(&cely);
                 }
                 vydanych += 1;
             }
@@ -248,7 +248,7 @@ fn main() {
     println!();
     if rychlost {
         println!(
-            "**Tokov: {}, obrazov: {obrazov_spolu}, spolu {:.1} obr./s, s chybou: {zlych}, mimo profilu Main 8-bit: {mimo}** \
+            "**Tokov: {}, obrazov: {obrazov_spolu}, spolu {:.1} obr./s, s chybou: {zlych}, mimo profilu Main / Main 10: {mimo}** \
              (meranie rýchlosti bez overovania)",
             zoznam.len(),
             obrazov_spolu as f64 / cas_spolu.max(1e-9)
@@ -256,7 +256,7 @@ fn main() {
     } else {
         println!(
             "**Tokov: {}, bitovo presných: {presnych}, s chybou: {zlych}, bez odtlačku na overenie: {neoverenych}, \
-             mimo profilu Main 8-bit: {mimo}**",
+             mimo profilu Main / Main 10: {mimo}**",
             zoznam.len()
         );
     }

@@ -16,7 +16,7 @@
 //! predModeIntra < 18 sú vzorce pre ≥ 18 so zámenou x ↔ y). Vnútorné jadrá (`riadok_interpolacie`,
 //! `riadok_planarny`, `filtruj_121`, `transponuj`) sú samostatné funkcie – krok H5 ich nahradí NEON.
 
-use crate::obraz::Vzorka;
+use super::obraz::Vzorka;
 
 /// Najväčší transformačný blok 32×32 → 4 · 32 + 1 = 129 susedných vzoriek.
 pub const MAX_SUSEDOV: usize = 129;

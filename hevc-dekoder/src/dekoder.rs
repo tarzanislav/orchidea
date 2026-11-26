@@ -1,14 +1,14 @@
 //! Dekodér toku HEVC Main 8-bit: jednotky NAL → obrazy v poradí zobrazenia. Správa obrazov je spoločná
 //! s hardvérovou cestou (`orchidea_hevc::SpravaObrazov`); každý obraz sa overí odtlačkom MD5 zo SEI, ak ho tok má.
 
+use super::obraz::{ObrazPasov, Vzorka, Zdroj};
+use super::syntax::{DekoderRezu, DekodovanyObraz, ReferencieRezu, StavObrazu};
+use super::transformacia::FaktorySkalovania;
 use crate::filtre::RezFiltra;
 use crate::geometria::Geometria;
-use crate::obraz::{ObrazPasov, Zdroj};
-use crate::syntax::{DekoderRezu, DekodovanyObraz, ReferencieRezu, StavObrazu};
-use crate::transformacia::FaktorySkalovania;
+use crate::vzorka::TypVzorky;
 use orchidea_hevc::nal::typ;
 use orchidea_hevc::obrazy::Udalost;
-use orchidea_hevc::odtlacok::{crc_roviny, kontrolny_sucet_roviny, md5_roviny};
 use orchidea_hevc::sei::{self, OdtlacokObrazu};
 use orchidea_hevc::{HlavickaNal, HlavickaRezu, Pps, Sady, SpravaObrazov, Sps, rbsp};
 use orchidea_jadro::{Chyba, Vysledok};
@@ -18,24 +18,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
-/// Výsledky overenia bitovej zhody.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Statistika {
-    /// dekódované obrazy
-    pub obrazov: usize,
-    /// obrazy s odtlačkom MD5 v SEI, ktorý sa zhoduje
-    pub zhoda: usize,
-    /// obrazy, ktorých odtlačok sa nezhoduje (poradie v dekódovaní, POC)
-    pub nezhoda: Vec<(usize, i32)>,
-    /// obrazy bez odtlačku MD5
-    pub bez_odtlacku: usize,
-    /// chyby dekódovania (poškodený tok, nepodporovaná vlastnosť)
-    pub chyby: Vec<String>,
-    /// preskočené obrazy RASL po náhodnom prístupe
-    pub preskocene: usize,
-    /// opis rezov prvých obrazov s nezhodou (ladenie na diaľku – záznam CI)
-    pub opis_nezhody: Vec<String>,
-}
+pub use crate::statistika::Statistika;
 
 /// Segment rezu pripravený na dekódovanie: hlavička, dáta (RBSP) a referencie.
 struct SegmentUlohy {
@@ -125,6 +108,8 @@ pub struct Dekoder {
     vlakien: usize,
     vlakna: Option<Vlakna>,
     odoslane: usize,
+    /// bitová hĺbka jasu a farby aktuálnej sekvencie (aj pre chýbajúce referenčné obrazy)
+    hlbky: (u32, u32),
     /// overovať odtlačky MD5 zo SEI (skúšky); pri prehrávaní sa vypne a ušetrí sa práca
     pub overovat_odtlacky: bool,
     /// výsledky overenia – úplné po [`Dekoder::koniec`]
@@ -138,7 +123,7 @@ impl Default for Dekoder {
 }
 
 fn nepodporovane(t: impl Into<String>) -> Chyba {
-    Chyba::MimoRozsahu(format!("HEVC dekodér: mimo profilu Main 8-bit: {}", t.into()))
+    Chyba::MimoRozsahu(format!("HEVC dekodér: mimo profilu Main / Main 10: {}", t.into()))
 }
 
 /// Overí, že tok používa len nástroje profilu Main 8-bit 4:2:0.
@@ -146,7 +131,9 @@ fn over_profil(sps: &Sps, pps: &Pps) -> Vysledok<()> {
     if sps.chroma_format_idc != 1 {
         return Err(nepodporovane(format!("chroma_format_idc = {}", sps.chroma_format_idc)));
     }
-    if sps.bity_jasu != 8 || sps.bity_farby != 8 {
+    // u8: len 8 bitov (Main); u16: 8–10 bitov jasu aj farby, aj rôzne (Main 10)
+    let max = if size_of::<Vzorka>() == 1 { 8 } else { 10 };
+    if !(8..=max).contains(&sps.bity_jasu) || !(8..=max).contains(&sps.bity_farby) {
         return Err(nepodporovane(format!("bitová hĺbka {}/{}", sps.bity_jasu, sps.bity_farby)));
     }
     let r = &sps.rozsirenie;
@@ -197,6 +184,7 @@ impl Dekoder {
             },
             vlakna: None,
             odoslane: 0,
+            hlbky: (8, 8),
             overovat_odtlacky: true,
             statistika: Statistika::default(),
         }
@@ -308,6 +296,7 @@ impl Dekoder {
             let (sps, pps) = self.sady.pre_rez(rez.pps_id)?;
             let (sps, pps) = (sps.clone(), pps.clone());
             let z = self.sprava.zacni_obraz(&rez, &sps)?;
+            self.hlbky = (sps.bity_jasu, sps.bity_farby);
             let rozmery = (sps.sirka as usize, sps.vyska as usize);
             self.udalosti(&z.udalosti, rozmery);
             self.preskakuje = z.preskocit;
@@ -324,7 +313,15 @@ impl Dekoder {
                 (sps.okno[3] * sy) as usize,
             ];
             // obraz je v pamäti dekodéra hneď – ďalšie obrazy ho môžu mať ako referenciu už počas dekódovania
-            let ciel = Arc::new(DekodovanyObraz::novy(z.id, z.poc, rozmery.0, rozmery.1, sps.log2_ctb, okno));
+            let ciel = Arc::new(DekodovanyObraz::novy(
+                z.id,
+                z.poc,
+                rozmery.0,
+                rozmery.1,
+                sps.log2_ctb,
+                okno,
+                self.hlbky,
+            ));
             self.dpb.insert(z.id, ciel.clone());
             if let Err(e) = over_profil(&sps, &pps) {
                 // obraz sa nedekóduje – v pamäti ostane sivý, aby referencie ostali konzistentné
@@ -435,7 +432,7 @@ impl Dekoder {
             match *u {
                 Udalost::Vytvor { id, poc } => {
                     // chýbajúci referenčný obraz (8.3.3.2): stredná hodnota vzoriek, bez pohybu
-                    let o = DekodovanyObraz::novy(id, poc, rozmery.0, rozmery.1, 6, [0; 4]);
+                    let o = DekodovanyObraz::novy(id, poc, rozmery.0, rozmery.1, 6, [0; 4], self.hlbky);
                     o.dopln();
                     self.dpb.insert(id, Arc::new(o));
                 }
@@ -558,6 +555,8 @@ fn dekoduj_obraz(u: &Uloha, rezerva: &mut Option<StavObrazu>) -> Vec<String> {
         }
         None => StavObrazu::novy(g, u.ciel.poc),
     };
+    (stav.obraz.bitova_hlbka, stav.obraz.bitova_hlbka_farby) = (u.sps.bity_jasu, u.sps.bity_farby);
+    stav.info.bitova_hlbka = u.sps.bity_jasu;
     stav.info.cb_qp_offset = u.pps.cb_qp_offset;
     stav.info.cr_qp_offset = u.pps.cr_qp_offset;
     stav.info.cez_dlazdice = u.pps.dlazdice.as_ref().is_none_or(|d| d.filter_cez_dlazdice);
@@ -601,12 +600,11 @@ fn over_odtlacok(o: &OdtlacokObrazu, obraz: &ObrazPasov) -> bool {
             d.extend_from_slice(r.pas(i));
         }
         let (w, h) = (r.sirka, r.vyska);
+        let hlbka = if c == 0 { obraz.bitova_hlbka } else { obraz.bitova_hlbka_farby };
         match o {
-            OdtlacokObrazu::Md5(m) => m.get(c).is_some_and(|x| md5_roviny(&d, w, h, w) == *x),
-            OdtlacokObrazu::Crc(m) => m.get(c).is_some_and(|x| crc_roviny(&d, w, h, w) == *x),
-            OdtlacokObrazu::Kontrolny(m) => {
-                m.get(c).is_some_and(|x| kontrolny_sucet_roviny(&d, w, h, w) == *x)
-            }
+            OdtlacokObrazu::Md5(m) => m.get(c).is_some_and(|x| Vzorka::md5(&d, w, h, w, hlbka) == *x),
+            OdtlacokObrazu::Crc(m) => m.get(c).is_some_and(|x| Vzorka::crc(&d, w, h, w, hlbka) == *x),
+            OdtlacokObrazu::Kontrolny(m) => m.get(c).is_some_and(|x| Vzorka::sucet(&d, w, h, w, hlbka) == *x),
         }
     })
 }
@@ -636,16 +634,25 @@ fn opis_obrazu(u: &Uloha) -> String {
 }
 
 impl DekodovanyObraz {
-    /// Zapíše orezaný obraz (okno SPS) ako surové YUV 4:2:0 (8 bitov); počká na nehotové riadky.
+    /// Zapíše orezaný obraz (okno SPS) ako surové YUV 4:2:0 – 8 bitov po bajte, viac bitov po 2 bajtoch (malý
+    /// koniec, ako yuv420p10le); počká na nehotové riadky.
     pub fn zapis_yuv(&self, ciel: &mut Vec<u8>) {
-        let [l, p, h, d] = self.okno;
+        self.zapis(ciel, self.okno);
+    }
+
+    /// Celý obraz bez orezania v tom istom tvare ako [`DekodovanyObraz::zapis_yuv`].
+    pub fn zapis_yuv_cely(&self, ciel: &mut Vec<u8>) {
+        self.zapis(ciel, [0; 4]);
+    }
+
+    fn zapis(&self, ciel: &mut Vec<u8>, [l, p, h, d]: [usize; 4]) {
         for c in 0..3 {
             let r = &self.obraz.roviny[c];
             let s = usize::from(c > 0);
             let (x0, x1) = (l >> s, r.sirka - (p >> s));
             let (y0, y1) = (h >> s, r.vyska - (d >> s));
             for y in y0..y1 {
-                ciel.extend_from_slice(&r.riadok(y)[x0..x1]);
+                Vzorka::pridaj_bajty(ciel, &r.riadok(y)[x0..x1]);
             }
         }
     }

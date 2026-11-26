@@ -24,24 +24,27 @@
 //! - [`interpolacia`] – interpolácia vzoriek a vážená predikcia (8.5.3.3),
 //! - [`filtre`], [`odblokovanie`], [`sao`] – filtre v slučke (8.7),
 //! - `neon` (len aarch64) – ručné NEON jadier interpolácie; jediné miesto s `unsafe`.
+//!
+//! **8 a 10 bitov:** moduly so vzorkami (obraz, predikcia, transformácie, filtre, syntax, dekóder obrazu) sa
+//! prekladajú dvakrát – [`b8`] so vzorkou `u8` (profil Main) a [`b16`] so vzorkou `u16` (Main 10, aj rôzna hĺbka
+//! jasu a farby). [`Dekoder`] podľa SPS použije ten, ktorý tok potrebuje; 8-bitová cesta nič nestráca.
 
 #![deny(unsafe_code)]
+// zámerne: moduly so vzorkami sa prekladajú dvakrát (b8 so vzorkou u8, b16 so vzorkou u16)
+#![allow(clippy::duplicate_mod)]
 
 pub mod cabac;
-pub mod dekoder;
 pub mod filtre;
 pub mod geometria;
-pub mod interpolacia;
-pub mod intra;
-#[cfg(target_arch = "aarch64")]
-mod neon;
-pub mod obraz;
-pub mod odblokovanie;
 pub mod pohyb;
-pub mod sao;
-pub mod syntax;
-pub mod transformacia;
+mod prepinac;
+pub mod statistika;
+pub mod vzorka;
 
-pub use dekoder::{Dekoder, Statistika};
-pub use obraz::{Obraz, ObrazPasov, Rovina, RovinaPasov, Vzorka, Zdroj};
-pub use syntax::DekodovanyObraz;
+#[cfg(not(test))]
+pub mod b16;
+pub mod b8;
+
+pub use b8::obraz::{Obraz, ObrazPasov, Rovina, RovinaPasov, Vzorka, Zdroj};
+pub use prepinac::{Dekoder, Vystup};
+pub use statistika::Statistika;

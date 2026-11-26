@@ -10,8 +10,8 @@
 //! s SaoTypeIdx = 0 sa len skopíruje po riadkoch. Vzorky blokov `bez_filtra` sa na konci vrátia na vstupnú
 //! hodnotu (len ak ich CTB nejaké má).
 
+use super::obraz::{Obraz, Rovina, Vzorka};
 use crate::filtre::{InfoObrazu, MapyFiltra};
-use crate::obraz::{Obraz, Rovina, Vzorka};
 
 /// Parametre SAO jedného CTB pre zložky Y, Cb, Cr (už po zlúčení s ľavým či horným CTB).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -43,6 +43,7 @@ pub fn sao(vstup: &Obraz, vystup: &mut Obraz, ctb: &[SaoCtb], mapy: &MapyFiltra,
         vystup.clone_from(vstup);
     }
     vystup.bitova_hlbka = vstup.bitova_hlbka;
+    vystup.bitova_hlbka_farby = vstup.bitova_hlbka_farby;
 
     let [a, b, c] = &mut vystup.roviny;
     let mut ciele = [
@@ -115,7 +116,7 @@ pub fn sao_riadok(
                     pasmo: p.pasmo[c],
                     trieda: p.trieda[c],
                     dost,
-                    bitova_hlbka: vstup.bitova_hlbka,
+                    bitova_hlbka: if c == 0 { vstup.bitova_hlbka } else { vstup.bitova_hlbka_farby },
                     bez_filtra: if bez { Some((mapy, 2 - podvz)) } else { None },
                 };
                 let krok = ciel.krok;
