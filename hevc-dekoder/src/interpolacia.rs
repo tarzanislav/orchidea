@@ -36,7 +36,6 @@ const MAX_OKRAJ: usize = 7;
 /// Posun uložených medzivýsledkov: v i16 sa ukladá predSample − 8192 (pozri dokumentáciu modulu).
 const POSUN_MEDZI: i32 = 1 << 13;
 /// shift2 druhého stupňa 2D interpolácie (8.5.3.3.3.2).
-#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // na aarch64 (8 bitov) len rozhodca v skúškach NEON
 const SHIFT2: u32 = 6;
 
 /// Koeficienty filtra jasu fL[xFracL][i], i = 0 … 7 pre vzorky xInt − 3 … xInt + 4 (8.5.3.3.3.2). Riadok 0
@@ -389,7 +388,6 @@ fn riadok_zvislo_medzi<const N: usize>(medzi: &[i16], koef: &[i16; N], ciel: &mu
 // ---------------------------------------------------------------------------------------------------------------
 
 /// `ciel[i] = Σ_k koef[k] · zdroj[i + k] − odcitaj` v i16 modulo 2^16 (8 bitov, pozri riadok_vodorovne).
-#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // na aarch64 (8 bitov) len rozhodca v skúškach NEON
 #[allow(clippy::needless_range_loop)]
 pub(crate) fn vodorovne8_skalarne<const N: usize>(
     zdroj: &[Vzorka],
@@ -410,7 +408,6 @@ pub(crate) fn vodorovne8_skalarne<const N: usize>(
 
 /// `ciel[i] = Σ_k koef[k] · riadky[k][i] − odcitaj` v i16 modulo 2^16 (8 bitov).
 #[allow(clippy::needless_range_loop)]
-#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // na aarch64 (8 bitov) len rozhodca v skúškach NEON
 pub(crate) fn zvislo8_skalarne<const N: usize>(
     riadky: &[&[Vzorka]; N],
     koef: &[i16; N],
@@ -428,7 +425,6 @@ pub(crate) fn zvislo8_skalarne<const N: usize>(
 
 /// `ciel[i] = ((Σ_k koef[k] · riadky[k][i]) >> 6) − 8192` (súčet v i32, výsledok skrátený na i16).
 #[allow(clippy::needless_range_loop)]
-#[cfg_attr(target_arch = "aarch64", allow(dead_code))] // na aarch64 (8 bitov) len rozhodca v skúškach NEON
 pub(crate) fn zvislo_medzi_skalarne<const N: usize>(riadky: &[&[i16]; N], koef: &[i16; N], ciel: &mut [i16]) {
     for i in 0..ciel.len() {
         let mut s = 0;
