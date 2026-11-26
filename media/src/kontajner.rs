@@ -128,9 +128,10 @@ pub fn otvor<Z: ZdrojBajtov + 'static>(zdroj: Z, limity: Limity) -> Vysledok<Box
         Some(FormatKontajnera::Matroska | FormatKontajnera::WebM) => {
             Ok(Box::new(crate::mkv::Mkv::otvor(zdroj, limity)?))
         }
-        Some(f) => {
-            Err(Chyba::MimoRozsahu(format!("čítačka kontajnera {} ešte nie je (etapy L3, L4)", f.meno())))
+        Some(FormatKontajnera::Mp4 | FormatKontajnera::QuickTime) => {
+            Ok(Box::new(crate::mp4::Mp4::otvor(zdroj, limity)?))
         }
+        Some(f) => Err(Chyba::MimoRozsahu(format!("čítačka kontajnera {} ešte nie je (etapa L4)", f.meno()))),
         // posledný pokus: tok FLAC s neparsovateľnými údajmi na začiatku (rámec overí CRC-8 aj CRC-16)
         None => match crate::flac_subor::FlacSubor::otvor(zdroj, limity) {
             Ok(f) => Ok(Box::new(f)),

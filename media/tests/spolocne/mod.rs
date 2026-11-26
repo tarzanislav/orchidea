@@ -2,6 +2,8 @@
 //! (neznáma veľkosť, lacing, odstránená hlavička, Cues na konci cez SeekHead). Podľa RFC 8794 a RFC 9559.
 #![allow(dead_code)]
 
+pub mod mp4;
+
 /// Bajty ID (ID v Matroske už obsahujú bity dĺžky).
 fn id_bajty(id: u32) -> Vec<u8> {
     let b = id.to_be_bytes();

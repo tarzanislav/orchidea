@@ -10,6 +10,7 @@ use orchidea_media::cas::zakladna_z_ns;
 use orchidea_media::flac::FlacDekoder;
 use orchidea_media::flac_subor::FlacSubor;
 use orchidea_media::mkv::Mkv;
+use orchidea_media::mp4::Mp4;
 use orchidea_media::r5::{self, HlbkaPcm, PrevodnikVidea};
 use orchidea_media::{
     BlokZvuku, Kodek, Kontajner, Limity, Paket, PametovyZdroj, Posun, RozlozenieKanalov, Stopa, VzorkyZvuku,
@@ -273,4 +274,52 @@ fn flac_ramce_s_platnym_crc() {
         let mut d = FlacDekoder::novy(&konfiguracie[*k], None).unwrap();
         let _ = d.dekoduj_ramec(&m, &mut blok);
     }
+}
+
+#[test]
+fn mp4_a_mov() {
+    use spolocne::mp4::*;
+    let mut n = nahoda(8);
+    let pcm = (0..2_000u32).map(|i| ((i as u16).to_be_bytes().to_vec(), 1, 0, true)).collect();
+    let zaklady = [
+        typicky(1, false, false),
+        typicky(1, true, true),
+        fragmentovany(3),
+        subor(
+            &[StopaMp4 {
+                id: 1,
+                video: false,
+                mierka: 8_000,
+                vzorky: pcm,
+                vzoriek_v_kusku: 500,
+                uprava: None,
+                zaznam: zvuk(b"twos", 1, 16, 8_000, &[]),
+            }],
+            false,
+            false,
+            true,
+        ),
+    ];
+    let mut otvorenych = 0;
+    for i in 0..pocet_pokusov() / 4 {
+        let d = if i % 10 == 0 { bajty(&mut n, 400) } else { zmutuj(&zaklady[i % zaklady.len()], &mut n) };
+        let Ok(mut m) = Mp4::otvor(PametovyZdroj::novy(d), prisne()) else { continue };
+        otvorenych += 1;
+        let stopy = m.stopy().len();
+        for _ in 0..2_000 {
+            match m.dalsi_paket() {
+                Ok(Some(p)) => assert!(p.stopa < stopy),
+                _ => break,
+            }
+        }
+        let sposob = if n.mensie_ako(2) == 0 { Posun::KlucovyPred } else { Posun::Presny };
+        if m.posun(n.mensie_ako(4_000_000_000) as i64, sposob).is_ok() {
+            for _ in 0..100 {
+                if !matches!(m.dalsi_paket(), Ok(Some(_))) {
+                    break;
+                }
+            }
+        }
+    }
+    assert!(otvorenych > pocet_pokusov() / 40, "mutácie musia často ostať otvoriteľné ({otvorenych})");
 }

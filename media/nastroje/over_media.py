@@ -4,15 +4,20 @@
 Rozhodcami sú cudzie nástroje: FFmpeg vytvorí skúšobné súbory rôznymi kodekmi a nastaveniami zapisovača,
 MKVToolNix (mkvmerge, ak je) ich prebalí iným zapisovačom (lacing, iné rozloženie), ffprobe vypíše pakety
 (čas, trvanie, kľúčovosť, veľkosť, MD5 obsahu). Náš program `media_pakety` musí dať bit po bite tie isté pakety.
-Jediná výnimka je trvanie posledného paketu stopy: RFC 9559 ho udáva prvkom BlockDuration (skutočné trvanie
-posledného bloku), ffprobe tam hlási celú dĺžku rámca – rozdiel sa vypíše, nie je chybou. Pri ďalších rámcoch
-lacingu (čas nie je v súbore) a pri trvaní z DefaultDuration, ktoré nie je celý násobok tiku, sa pripúšťa ±1 tik:
-počítame k najbližšiemu tiku (bližšie k presnému času), FFmpeg zaokrúhľuje nadol. Všetky rozdiely sa vypíšu.
+Porovnáva sa poradie paketov v rámci každej stopy (poradie medzi stopami norma neurčuje; my čítame súvisle
+v poradí súboru). PCM sa porovná ako celý tok bajtov stopy (rozdelenie PCM na pakety norma neurčuje).
+Pripustené a vypísané rozdiely – každý je overiteľný z ostatných údajov:
+- čas ďalších rámcov lacingu a trvanie z DefaultDuration ±1 tik (my k najbližšiemu tiku, FFmpeg nadol),
+- trvanie zo súboru, ktoré presne sedí s časom ďalšieho paketu (FFmpeg hlási dĺžku rámca), a trvanie
+  posledného paketu stopy (BlockDuration, posledná vzorka),
+- stály posun PTS celej stopy pri zhodných DTS: FFmpeg pri záporných posunoch zobrazenia posunie PTS, aby
+  PTS ≥ DTS; podľa ISO/IEC 14496-12 platí PTS = DTS + posun.
 
 Použitie: over_media.py <cesta k media_pakety> <pracovný priečinok>
 Návratový kód 0 = všetko sedí. Výsledok je tabuľka v Markdowne (pre súhrn CI).
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -44,6 +49,22 @@ VARIANTY = [
     ("dlhy_h264_opus", "mkv", ["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=40"] + ZVUK[:3]
      + ["sine=frequency=440:sample_rate=48000:duration=40", "-ac", "2", "-c:v", "libx264", "-preset", "ultrafast",
         "-b:v", "4M", "-c:a", "libopus"]),
+    # MP4 a MOV (L3): zoznamy úprav (snímky B, posun AAC), moov na konci aj na začiatku, fragmenty, QuickTime PCM
+    ("mp4_h264_aac", "mp4", OBRAZ + ZVUK + ["-c:v", "libx264", "-bf", "2", "-g", "12", "-c:a", "aac"]),
+    ("mp4_rychly_start", "mp4", OBRAZ + ZVUK + ["-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart"]),
+    ("mp4_hevc_ac3", "mp4", OBRAZ + ZVUK + ["-c:v", "libx265", "-tag:v", "hvc1", "-x265-params", "log-level=none", "-c:a", "ac3"]),
+    ("mp4_vp9_opus", "mp4", OBRAZ + ZVUK + ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus"]),
+    ("mp4_av1_flac", "mp4", OBRAZ + ZVUK + ["-c:v", "libaom-av1", "-cpu-used", "8", "-g", "10", "-c:a", "flac", "-strict", "-2"]),
+    ("mp4_mp3", "mp4", OBRAZ + ZVUK + ["-c:v", "mpeg4", "-c:a", "libmp3lame"]),
+    ("mp4_fragmenty", "mp4", OBRAZ + ZVUK + ["-c:v", "libx264", "-g", "12", "-c:a", "aac", "-movflags", "frag_keyframe+empty_moov"]),
+    ("mp4_fragmenty_moof", "mp4", OBRAZ + ZVUK + ["-c:v", "libx264", "-g", "12", "-c:a", "aac", "-movflags", "frag_keyframe+empty_moov+default_base_moof"]),
+    ("mp4_cmaf", "mp4", OBRAZ + ZVUK + ["-c:v", "libx264", "-g", "25", "-c:a", "aac", "-movflags", "cmaf+frag_keyframe+empty_moov+separate_moof"]),
+    ("m4a_aac", "m4a", ZVUK + ["-c:a", "aac"]),
+    ("mov_h264_sowt", "mov", OBRAZ + ZVUK + ["-c:v", "libx264", "-c:a", "pcm_s16le"]),
+    ("mov_twos", "mov", ZVUK + ["-c:a", "pcm_s16be"]),
+    ("mov_in24", "mov", ZVUK + ["-c:a", "pcm_s24be"]),
+    ("mov_fl32", "mov", ZVUK + ["-c:a", "pcm_f32be"]),
+    ("mov_prores_s24le", "mov", OBRAZ + ZVUK + ["-c:v", "prores_ks", "-c:a", "pcm_s24le"]),
     ("av1_opus", "mkv", OBRAZ + ZVUK + ["-c:v", "libaom-av1", "-cpu-used", "8", "-g", "10", "-c:a", "libopus"]),
 ]
 
@@ -53,25 +74,36 @@ def ffmpeg(vystup, argumenty):
     return r.returncode == 0, r.stderr.strip()[-300:]
 
 
+def tok_rozhodcu(cesta, index):
+    """MD5 všetkých údajov stopy za sebou (FFmpeg kopíruje pakety bez zmeny do surového výstupu)."""
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", cesta, "-map", f"0:{index}", "-c", "copy", "-f", "data", "-"],
+                       capture_output=True, check=True)
+    return hashlib.md5(r.stdout).hexdigest(), len(r.stdout)
+
+
 def rozhodca(cesta):
-    r = subprocess.run(["ffprobe", "-v", "error", "-show_packets", "-show_data_hash", "MD5", "-of", "json", cesta],
-                       capture_output=True, text=True, check=True)
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_packets", "-show_streams", "-show_data_hash", "MD5",
+                        "-of", "json", cesta], capture_output=True, text=True, check=True)
+    j = json.loads(r.stdout)
+    # PCM: rozdelenie na pakety norma neurčuje (každé je správne) – porovná sa celý tok stopy
+    pcm = {s["index"] for s in j.get("streams", []) if s.get("codec_name", "").startswith("pcm_")}
     pakety = []
-    for p in json.loads(r.stdout).get("packets", []):
+    for p in j.get("packets", []):
         pakety.append({
             "stopa": p["stream_index"],
             "pts": p.get("pts"),
+            "dts": p.get("dts"),
             "trvanie": p.get("duration"),
             "kluc": "K" in p.get("flags", ""),
             "velkost": int(p["size"]),
             "md5": p.get("data_hash", "").split(":")[-1],
         })
-    return pakety
+    return pakety, pcm
 
 
 def nas(cesta):
     r = subprocess.run([PROGRAM, cesta], capture_output=True, text=True)
-    pakety, stopy, citani = [], 0, None
+    pakety, stopy, citani, toky = [], 0, None, {}
     for riadok in r.stdout.splitlines():
         slova = riadok.split()
         if not slova:
@@ -81,69 +113,95 @@ def nas(cesta):
             stopy += 1
         elif slova[0] == "PAKET":
             cislo = lambda k: None if pole[k] == "-" else int(pole[k])
-            pakety.append({"stopa": int(pole["stopa"]), "pts": cislo("pts"), "trvanie": cislo("trvanie"),
+            pakety.append({"stopa": int(pole["stopa"]), "pts": cislo("pts"), "dts": cislo("dts"),
+                           "trvanie": cislo("trvanie"),
                            "kluc": pole["kluc"] == "1", "velkost": int(pole["velkost"]), "md5": pole["md5"],
                            "blok": pole.get("blok")})
+        elif slova[0] == "TOK":
+            toky[int(pole["index"])] = (pole["md5"], int(pole["bajtov"]))
         elif slova[0] == "VYSLEDOK":
             citani = pole.get("citani")
         elif slova[0] == "CHYBA":
             raise RuntimeError(riadok)
     if r.returncode != 0:
         raise RuntimeError(f"návratový kód {r.returncode}: {r.stderr.strip()}")
-    return pakety, stopy, citani
+    return pakety, stopy, citani, toky
 
 
 def porovnaj(meno, cesta):
     try:
-        ocak = rozhodca(cesta)
-        moje, stopy, citani = nas(cesta)
+        ocak, pcm = rozhodca(cesta)
+        moje, stopy, citani, toky = nas(cesta)
+        pcm_zhoda = []
+        for i in sorted(pcm):
+            md5, n = tok_rozhodcu(cesta, i)
+            if toky.get(i) != (md5, n):
+                raise RuntimeError(f"tok PCM stopy {i}: náš {toky.get(i)}, rozhodca {(md5, n)}")
+            pcm_zhoda.append(f"tok PCM stopy {i} ({n} B) bit po bite")
+        ocak = [p for p in ocak if p["stopa"] not in pcm]
+        moje = [p for p in moje if p["stopa"] not in pcm]
     except Exception as e:  # noqa: BLE001 – každá chyba je výsledok skúšky
         CHYBY.append(f"{meno}: {e}")
         RIADKY.append(f"| {meno} | – | – | ❌ {e} |")
         return
-    nezhody = []
-    poznamky = []
-    # posledný paket každej stopy: zapisovač dá poslednému bloku BlockDuration (skutočné trvanie, RFC 9559),
-    # ffprobe udáva celú dĺžku rámca – pri ňom sa trvanie neporovná, len sa zapíše
-    posledny = {}
-    for i, b in enumerate(ocak):
-        posledny[b["stopa"]] = i
+    nezhody, poznamky = [], []
     if len(ocak) != len(moje):
         nezhody.append(f"paketov {len(moje)}, rozhodca {len(ocak)}")
-    zaokruhlenych = 0
-    trvani_zaokruhlenych = 0
-    predosly_blok = {}
-    for i, (a, b) in enumerate(zip(moje, ocak)):
-        # ďalší rámec lacingu (rovnaký blok ako predošlý paket stopy): čas nie je v súbore, počíta sa z trvania
-        # rámca; my k najbližšiemu tiku, FFmpeg trvanie rámca oreže nadol – rozdiel ±1 tik je zaokrúhlenie
-        v_lacingu = a["blok"] is not None and predosly_blok.get(a["stopa"]) == a["blok"]
-        predosly_blok[a["stopa"]] = a["blok"]
-        if v_lacingu and a["pts"] is not None and b["pts"] is not None and abs(a["pts"] - b["pts"]) == 1:
-            zaokruhlenych += 1
-            b = dict(b, pts=a["pts"])
-        for k in ("stopa", "pts", "kluc", "velkost", "md5"):
-            if a[k] != b[k]:
-                nezhody.append(f"paket {i} {k}: náš {a[k]}, rozhodca {b[k]}")
-        if a["trvanie"] is not None and b["trvanie"] is not None and a["trvanie"] != b["trvanie"]:
-            if abs(a["trvanie"] - b["trvanie"]) == 1:
-                # DefaultDuration nie je celý násobok TimestampScale: my k najbližšiemu tiku, FFmpeg nadol
-                trvani_zaokruhlenych += 1
-            elif posledny.get(b["stopa"]) == i:
-                poznamky.append(f"posledný paket stopy {b['stopa']}: BlockDuration {a['trvanie']}, rámec {b['trvanie']}")
-            else:
-                nezhody.append(f"paket {i} trvanie: náš {a['trvanie']}, rozhodca {b['trvanie']}")
-        if len(nezhody) > 5:
-            break
+    # poradie medzi stopami norma neurčuje (my čítame súvisle v poradí súboru, FFmpeg niekedy podľa DTS) –
+    # porovnáva sa poradie paketov v rámci každej stopy
+    for stopa in sorted({p["stopa"] for p in ocak} | {p["stopa"] for p in moje}):
+        a_s = [p for p in moje if p["stopa"] == stopa]
+        b_s = [p for p in ocak if p["stopa"] == stopa]
+        if len(a_s) != len(b_s):
+            nezhody.append(f"stopa {stopa}: paketov {len(a_s)}, rozhodca {len(b_s)}")
+            continue
+        # stály posun PTS pri rovnakých DTS: FFmpeg pri záporných posunoch zobrazenia (trun v1, ctts v1) posunie
+        # všetky PTS, aby PTS ≥ DTS; podľa ISO/IEC 14496-12 je PTS = DTS + posun bez ďalšieho posunu
+        rozdiely = {b["pts"] - a["pts"] for a, b in zip(a_s, b_s) if a["pts"] is not None and b["pts"] is not None}
+        dts_rovnake = all(a["dts"] is not None and a["dts"] == b["dts"] for a, b in zip(a_s, b_s))
+        posun_pts = 0
+        if len(rozdiely) == 1 and dts_rovnake and 0 not in rozdiely:
+            posun_pts = rozdiely.pop()
+            poznamky.append(f"stopa {stopa}: FFmpeg posúva PTS o {posun_pts} (PTS ≥ DTS), my PTS = DTS + posun (ISO/IEC 14496-12)")
+        zaokruhlenych = trvani_zaokruhlenych = trvani_zo_suboru = 0
+        predosly_blok = None
+        for i, (a, b) in enumerate(zip(a_s, b_s)):
+            v_lacingu = a["blok"] is not None and predosly_blok == a["blok"]
+            predosly_blok = a["blok"]
+            b = dict(b, pts=None if b["pts"] is None else b["pts"] - posun_pts)
+            if v_lacingu and a["pts"] is not None and b["pts"] is not None and abs(a["pts"] - b["pts"]) == 1:
+                zaokruhlenych += 1
+                b["pts"] = a["pts"]
+            for k in ("pts", "kluc", "velkost", "md5"):
+                if a[k] != b[k]:
+                    nezhody.append(f"stopa {stopa} paket {i} {k}: náš {a[k]}, rozhodca {b[k]}")
+            if a["dts"] is not None and b["dts"] is not None and a["dts"] != b["dts"]:
+                nezhody.append(f"stopa {stopa} paket {i} dts: náš {a['dts']}, rozhodca {b['dts']}")
+            if a["trvanie"] is not None and b["trvanie"] is not None and a["trvanie"] != b["trvanie"]:
+                dalsi = a_s[i + 1]["pts"] if i + 1 < len(a_s) else None
+                if abs(a["trvanie"] - b["trvanie"]) == 1:
+                    trvani_zaokruhlenych += 1  # DefaultDuration nie je násobok tiku: my k najbližšiemu, FFmpeg nadol
+                elif dalsi is not None and a["pts"] is not None and a["trvanie"] == dalsi - a["pts"]:
+                    trvani_zo_suboru += 1  # trvanie zo súboru presne sedí s časom ďalšieho paketu
+                elif i + 1 == len(a_s):
+                    poznamky.append(f"posledný paket stopy {stopa}: trvanie zo súboru {a['trvanie']}, rámec {b['trvanie']}")
+                else:
+                    nezhody.append(f"stopa {stopa} paket {i} trvanie: náš {a['trvanie']}, rozhodca {b['trvanie']}")
+            if len(nezhody) > 5:
+                break
+        if zaokruhlenych:
+            poznamky.append(f"stopa {stopa}: čas {zaokruhlenych} rámcov lacingu ±1 tik (my k najbližšiemu, rozhodca nadol)")
+        if trvani_zaokruhlenych:
+            poznamky.append(f"stopa {stopa}: trvanie {trvani_zaokruhlenych} paketov ±1 tik (DefaultDuration nie je násobok tiku)")
+        if trvani_zo_suboru:
+            poznamky.append(f"stopa {stopa}: trvanie {trvani_zo_suboru} paketov zo súboru = odstup k ďalšiemu paketu (FFmpeg: dĺžka rámca)")
+    poznamky.extend(pcm_zhoda)
     stav = "✅ bit po bite" if not nezhody else "❌ " + "; ".join(nezhody[:5])
-    if trvani_zaokruhlenych:
-        poznamky.append(f"trvanie {trvani_zaokruhlenych} paketov ±1 tik (DefaultDuration nie je násobok tiku)")
-    if zaokruhlenych:
-        poznamky.append(f"čas {zaokruhlenych} rámcov lacingu ±1 tik (my k najbližšiemu, rozhodca nadol)")
     if poznamky:
         stav += " – " + "; ".join(poznamky)
     if nezhody:
         CHYBY.append(f"{meno}: " + "; ".join(nezhody[:5]))
-    RIADKY.append(f"| {meno} | {stopy} | {len(moje)} | {stav} (čítaní zo zdroja: {citani}) |")
+    RIADKY.append(f"| {meno} | {stopy} | {len(moje)} | {stav} |")
 
 
 def main():
