@@ -66,6 +66,16 @@ impl Historia {
         z
     }
 
+    /// Dá sa ísť späť?
+    pub fn moze_spat(&self) -> bool {
+        self.pozicia > 0
+    }
+
+    /// Dá sa ísť znova?
+    pub fn moze_znova(&self) -> bool {
+        self.pozicia < self.kroky.len()
+    }
+
     /// Platné úpravy (po späť / znova).
     pub fn aktivne(&self) -> &[Uprava] {
         &self.kroky[..self.pozicia]

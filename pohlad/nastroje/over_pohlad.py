@@ -312,7 +312,7 @@ def okno(rng):
 
     def snimka(subor, *povely):
         von = os.path.join(PRAC, "okno_snimka.png")
-        r = subprocess.run([PROGRAM, "snimka", os.path.join(pr, subor), "800", "600", von, "pas", "udaje", *povely],
+        r = subprocess.run([PROGRAM, "snimka", os.path.join(pr, subor), "800", "600", von, "pas", "udaje", "panel", *povely],
                            capture_output=True, text=True)
         if r.returncode != 0:
             return None, r.stdout + r.stderr
@@ -352,6 +352,52 @@ def okno(rng):
     vysledok("prezentácia: bez nej žiadny časovač", "CASOVAC ziadny" in txt and "CASOVAC ziadny" in txt2,
              "pozastavená aj bežné prezeranie bez časovača")
 
+
+
+
+def panel_nastrojov(rng):
+    """Panel nástrojov a nápoveda: viditeľný panel, kliknutie na tlačidlo = povel, sivé tlačidlá, bublina, nápoveda."""
+    pr = os.path.join(PRAC, "panel")
+    os.makedirs(pr, exist_ok=True)
+    a = obraz(rng, 300, 400, 3, foto=True)
+    Image.fromarray(a).save(os.path.join(pr, "a.png"))
+
+    def snimka(*povely):
+        von = os.path.join(PRAC, "panel_snimka.png")
+        r = subprocess.run([PROGRAM, "snimka", os.path.join(pr, "a.png"), "800", "600", von, "pas", "udaje", *povely],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return None, r.stdout + r.stderr
+        return np.asarray(Image.open(von).convert("RGB")).astype(int), r.stdout
+
+    def farba(obr, rgb, oblast):
+        return bool(np.any(np.all(obr[oblast] == rgb, axis=-1)))
+
+    TLACIDLO, TIP, RAM = (0x34, 0x37, 0x3B), (0x3B, 0x3F, 0x45), (0x5A, 0x8D, 0xEE)
+    obr, txt = snimka()
+    # plocha pod panelom: 800 × 566, obraz 400 × 300 v strede
+    ok = (obr is not None and np.array_equal(obr[167:467, 200:600], a) and farba(obr, TLACIDLO, np.s_[:34])
+          and len(np.unique(obr[:34].reshape(-1, 3), axis=0)) > 8 and "POKOJ ok" in txt)
+    vysledok("panel: viditeľný nad obrazom", ok, "tlačidlá s textom, obraz 1:1 pod panelom, v pokoji nič" if ok else txt[-200:])
+    obr, txt = snimka("stlac:otoc_vpravo", "panel")
+    ok = obr is not None and np.array_equal(obr[100:500, 250:550], np.rot90(a, -1))
+    vysledok("panel: tlačidlo Otočiť vpravo", ok, "rovnaký výsledok ako kláves R (bit po bite)" if ok else txt[-200:])
+    obr, txt = snimka("stlac:jas_viac", "stlac:spat", "panel")
+    ok = obr is not None and np.array_equal(obr[150:450, 200:600], a)
+    vysledok("panel: Jas + a Späť", ok, "po Späť pôvodný obraz" if ok else txt[-200:])
+    obr, txt = snimka("stlac:znova", "stlac:otoc_vpravo", "stlac:spat", "stlac:spat", "panel")
+    ok = obr is not None and np.array_equal(obr[150:450, 200:600], a)
+    vysledok("panel: sivé Znova a Späť bez úprav nič nerobia", ok, "obraz nezmenený" if ok else txt[-200:])
+    obr, txt = snimka("mysnad:orezat")
+    obr2, _ = snimka()
+    ok = obr is not None and farba(obr, TIP, np.s_[34:70]) and not farba(obr2, TIP, np.s_[34:70])
+    vysledok("panel: bublina s klávesom pod kurzorom", ok, "bublina len pri myši nad tlačidlom" if ok else txt[-200:])
+    obr, txt = snimka("napoveda")
+    obr2, txt2 = snimka("napoveda", "esc")
+    obr3, _ = snimka("stlac:napoveda", "klik:10,300")
+    ok = (obr is not None and farba(obr, RAM, np.s_[:]) and not farba(obr2, RAM, np.s_[:]) and not farba(obr3, RAM, np.s_[:])
+          and np.array_equal(obr2[167:467, 200:600], a))
+    vysledok("nápoveda klávesov (F1, ?, tlačidlo)", ok, "otvorí sa, zavrie Esc aj kliknutím" if ok else (txt + txt2)[-200:])
 
 
 def png_s_gamou(cesta, pole, gama):
@@ -399,7 +445,7 @@ def upravy(rng):
 
     def snimka(subor, *povely):
         von = os.path.join(PRAC, "upravy_snimka.png")
-        r = subprocess.run([PROGRAM, "snimka", os.path.join(pr, subor), "800", "600", von, "pas", "udaje", *povely],
+        r = subprocess.run([PROGRAM, "snimka", os.path.join(pr, subor), "800", "600", von, "pas", "udaje", "panel", *povely],
                            capture_output=True, text=True)
         return r
 
@@ -572,6 +618,7 @@ zmensenie(rng)
 davka_bez_straty(rng)
 porovnanie(rng)
 okno(rng)
+panel_nastrojov(rng)
 upravy(rng)
 brana(rng)
 nahlady(rng)

@@ -20,6 +20,7 @@ pub mod herbar;
 pub mod nahlady;
 #[cfg(windows)]
 pub mod okno_win;
+pub mod panel;
 pub mod porovnanie;
 pub mod prehliadac;
 pub mod upravy;

@@ -185,6 +185,29 @@ fn spusti(a: &[String]) -> Result<(), String> {
                         Vstup::Koliesko { krokov: c[0], x: c[1], y: c[2] }
                     }
                     ("delic", t) => Vstup::Delic { x: cisla(t)[0] },
+                    ("napoveda", _) => Vstup::Povel(Povel::Napoveda),
+                    ("panel", _) => Vstup::Povel(Povel::Panel),
+                    ("esc", _) => {
+                        p.esc();
+                        cakaj(&mut p);
+                        continue;
+                    }
+                    ("mys", t) => {
+                        let c = cisla(t);
+                        Vstup::Mys { x: c[0], y: c[1] }
+                    }
+                    ("klik", t) => {
+                        let c = cisla(t);
+                        Vstup::Klik { x: c[0], y: c[1] }
+                    }
+                    ("mysnad", id) => {
+                        let (x, y) = p.tlacidlo(id).ok_or(format!("tlačidlo {id} nie je na paneli"))?;
+                        Vstup::Mys { x, y }
+                    }
+                    ("stlac", id) => {
+                        let (x, y) = p.tlacidlo(id).ok_or(format!("tlačidlo {id} nie je na paneli"))?;
+                        Vstup::Klik { x, y }
+                    }
                     _ => return Err(format!("neznámy povel {povel}")),
                 };
                 p.vstup(v);

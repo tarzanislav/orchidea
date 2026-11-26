@@ -518,12 +518,20 @@ jobs:
           "kód: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { exit 1 }
           python -c "from PIL import Image; import numpy as np; o=np.asarray(Image.open('prezentacia.png').convert('RGB')); print('snímka', o.shape, 'roh', o[0,0]); assert o.shape[0] >= 600 and o[0,0].max() == 0"
+      - name: Samotest panela nástrojov a nápovedy (kliknutie na tlačidlo Otočiť vpravo, F1)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath target\release\pohlad.exe -ArgumentList '--samotest','skusobne','panel.png','stlac:otoc_vpravo','napoveda' -Wait -PassThru
+          "kód: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+          python -c "from PIL import Image; import numpy as np; o=np.asarray(Image.open('panel.png').convert('RGB')).astype(int); ram=np.all(o==[0x5A,0x8D,0xEE],axis=-1).sum(); tl=np.all(o[:34]==[0x34,0x37,0x3B],axis=-1).sum(); print('rám nápovedy', ram, 'tlačidlá', tl); assert ram > 500 and tl > 1000"
       - uses: actions/upload-artifact@v4
         with:
           name: pohlad-okno-snimka
           path: |
             snimka.png
             prezentacia.png
+            panel.png
       - name: Balík na vyskúšanie (pohlad.exe, prikazy.exe, návod)
         shell: pwsh
         run: |

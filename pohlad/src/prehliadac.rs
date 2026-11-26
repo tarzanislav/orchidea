@@ -14,6 +14,7 @@
 //!   (|A − B| × 8), oba s rovnakým priblížením a posunom; PSNR a SSIM sa vypočítajú na pozadí.
 
 use crate::nahlady::{self, Polozka};
+use crate::panel;
 use crate::porovnanie;
 use crate::upravy::{self, Historia, Uprava};
 use orchidea_formaty::jpeg::bezstratovo::Transformacia;
@@ -67,6 +68,10 @@ pub enum Povel {
     Prezentacia,
     /// Prezentácia: pozastaviť / pokračovať v automatickom posune.
     Pauza,
+    /// Nápoveda klávesov (zapnúť / vypnúť).
+    Napoveda,
+    /// Ukázať / skryť panel nástrojov.
+    Panel,
 }
 
 /// Vstup od okna.
@@ -102,6 +107,11 @@ pub enum Vstup {
     Otvor(PathBuf),
     /// Časovač prezentácie (okno ho pošle len počas prezentácie).
     Tik,
+    /// Pohyb myši bez stlačeného tlačidla (zvýraznenie tlačidla panela; prekreslí sa len pri zmene).
+    Mys {
+        x: f32,
+        y: f32,
+    },
 }
 
 /// Režim zobrazenia.
@@ -302,6 +312,12 @@ pub struct Prehliadac {
     sprava: Option<String>,
     /// Prezentácia: (interval v ms, pozastavená).
     prezentacia: Option<(u32, bool)>,
+    panel: bool,
+    napoveda: bool,
+    /// Tlačidlo panela pod kurzorom.
+    pod_mysou: Option<&'static str>,
+    /// Kliknutie začalo na paneli – ťahanie neposúva obraz.
+    klik_v_paneli: bool,
 }
 
 impl std::fmt::Debug for Prehliadac {
@@ -455,6 +471,10 @@ impl Prehliadac {
             posledna_uprava: HashMap::new(),
             sprava: None,
             prezentacia: None,
+            panel: true,
+            napoveda: false,
+            pod_mysou: None,
+            klik_v_paneli: false,
         }
     }
 
@@ -643,10 +663,64 @@ impl Prehliadac {
         self.udaje && self.prezentacia.is_none()
     }
 
+    fn panel_viditelny(&self) -> bool {
+        self.panel && self.prezentacia.is_none()
+    }
+
+    /// Výška panela nástrojov nad obrazom.
+    fn hore(&self) -> usize {
+        if self.panel_viditelny() { panel::VYSKA.min(self.vyska.saturating_sub(1)) } else { 0 }
+    }
+
     fn plocha(&self) -> (usize, usize) {
         let pas = if self.pas_viditelny() { PAS } else { 0 };
         let udaje = if self.udaje_viditelne() { 24 } else { 0 };
-        (self.sirka, self.vyska.saturating_sub(pas + udaje).max(1))
+        (self.sirka, self.vyska.saturating_sub(pas + udaje + self.hore()).max(1))
+    }
+
+    fn rozlozenie(&self) -> Vec<panel::Umiestnenie> {
+        if self.panel_viditelny() {
+            panel::rozloz(panel::PREHLIADAC, &self.pismo, self.sirka)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Urobí povel tlačidla panela niečo? (Neaktívne tlačidlá sú sivé.)
+    fn povel_aktivny(&self, p: Povel) -> bool {
+        let obraz = self.aktualna().is_some();
+        let h = self.historie.get(&self.aktualny);
+        match p {
+            Povel::Spat => h.is_some_and(|h| h.moze_spat()),
+            Povel::Znova => h.is_some_and(|h| h.moze_znova()),
+            Povel::Ulozit => obraz && h.is_some_and(|h| !h.aktivne().is_empty()),
+            Povel::Rezim => self.oznaceny.is_some() && self.polozky.len() > 1,
+            Povel::Prezentacia => !self.polozky.is_empty(),
+            Povel::Napoveda => true,
+            _ => obraz,
+        }
+    }
+
+    /// Stred tlačidla panela podľa mena (na skúšky a samotest okna).
+    pub fn tlacidlo(&self, id: &str) -> Option<(f32, f32)> {
+        self.rozlozenie().iter().find_map(|u| match u.prvok {
+            panel::Prvok::Tlacidlo(t) if t.id == id => Some((u.x + u.sirka / 2.0, panel::VYSKA as f32 / 2.0)),
+            _ => None,
+        })
+    }
+
+    /// Esc: zavrie nápovedu alebo prezentáciu; vráti `false`, ak nie je čo zavrieť (okno sa má zavrieť).
+    pub fn esc(&mut self) -> bool {
+        if self.napoveda {
+            self.napoveda = false;
+            self.zmena = true;
+            true
+        } else if self.prezentacia.is_some() {
+            self.vstup(Vstup::Povel(Povel::Prezentacia));
+            true
+        } else {
+            false
+        }
     }
 
     fn viditelne_nahlady(&self) -> (usize, usize) {
@@ -793,6 +867,15 @@ impl Prehliadac {
                     self.prisposob();
                     self.naplanuj();
                 }
+                Povel::Napoveda => {
+                    self.napoveda = !self.napoveda;
+                    self.zmena = true;
+                }
+                Povel::Panel => {
+                    self.panel = !self.panel;
+                    self.pod_mysou = None;
+                    self.zmena = true;
+                }
                 Povel::Pauza => {
                     if let Some(p) = self.prezentacia.as_mut() {
                         p.1 = !p.1;
@@ -861,6 +944,7 @@ impl Prehliadac {
                 _ => {}
             },
             Vstup::Koliesko { krokov, x, y } => {
+                let y = y - self.hore() as f32;
                 let Some(s) = self.aktualna() else { return false };
                 let stara = self.mierka(&s);
                 let nova = (stara * 1.25f32.powf(krokov)).clamp(1.0 / 64.0, 64.0);
@@ -873,7 +957,7 @@ impl Prehliadac {
                 self.zmena = true;
             }
             Vstup::Tahaj { dx, dy } => {
-                if dx == 0.0 && dy == 0.0 {
+                if (dx == 0.0 && dy == 0.0) || self.klik_v_paneli || self.napoveda {
                     return false;
                 }
                 self.posun.0 += dx;
@@ -888,8 +972,34 @@ impl Prehliadac {
                 self.delic = d;
                 self.zmena = true;
             }
+            Vstup::Mys { x, y } => {
+                let nove = panel::na_bode(&self.rozlozenie(), x, y)
+                    .filter(|t| self.povel_aktivny(t.povel))
+                    .map(|t| t.id);
+                if nove == self.pod_mysou {
+                    return false;
+                }
+                self.pod_mysou = nove;
+                self.zmena = true;
+            }
             Vstup::Klik { x, y } => {
+                self.klik_v_paneli = false;
+                if self.napoveda {
+                    self.napoveda = false;
+                    self.zmena = true;
+                    return true;
+                }
+                if self.panel_viditelny() && y < self.hore() as f32 {
+                    self.klik_v_paneli = true;
+                    if let Some(t) = panel::na_bode(&self.rozlozenie(), x, y)
+                        && self.povel_aktivny(t.povel)
+                    {
+                        return self.vstup(Vstup::Povel(t.povel));
+                    }
+                    return false;
+                }
                 let (_, h) = self.plocha();
+                let h = h + self.hore();
                 if self.pas_viditelny() && y >= (h + if self.udaje_viditelne() { 24 } else { 0 }) as f32 {
                     let (od, po) = self.viditelne_nahlady();
                     let (pod, _) = self.pozicia_pasu(od);
@@ -947,6 +1057,7 @@ impl Prehliadac {
             p.body.fill(pozadie);
         }
         let (w, h) = self.plocha();
+        let hore = self.hore();
         let b = self.aktualna();
         let a = self.oznaceny.and_then(|i| self.snimky.get(&i)).and_then(|r| r.as_ref().ok().cloned());
         if let Some(b) = &b {
@@ -957,7 +1068,7 @@ impl Prehliadac {
             let delic = (self.delic * w as f32) as usize;
             let rezim = if a.is_some() { self.rezim } else { Rezim::Jeden };
             let (a_ref, b_ref) = (a.as_deref(), b.as_ref());
-            paralel::pre_kusy(&mut p.body[..w * h], w, |y, riadok| {
+            paralel::pre_kusy(&mut p.body[hore * w..(hore + h) * w], w, |y, riadok| {
                 let iy = (y as f32 + 0.5 - oy) / z;
                 for (x, o) in riadok.iter_mut().enumerate() {
                     let ix = (x as f32 + 0.5 - ox) / z;
@@ -982,22 +1093,25 @@ impl Prehliadac {
                         }
                         _ => b_ref.bod(ix, iy, z),
                     };
-                    *o = na_pozadi(bod, x, y);
+                    *o = na_pozadi(bod, x, y + hore);
                 }
             });
             if rezim == Rezim::Deleny {
-                p.vypln(delic as i32, 0, 1, h as i32, ZVYRAZNENIE);
+                p.vypln(delic as i32, hore as i32, 1, h as i32, ZVYRAZNENIE);
             }
         } else if let Some(Err(e)) = self.snimky.get(&self.aktualny) {
             let t = format!("Obrázok sa nedá zobraziť: {e}");
-            p.text(&self.pismo, &t, 16.0, h as f32 / 2.0, 15.0, 1.0, TEXT);
+            p.text(&self.pismo, &t, 16.0, (hore + h / 2) as f32, 15.0, 1.0, TEXT);
         } else if self.polozky.is_empty() {
             let t = "Pretiahnite sem obrázok alebo priečinok";
             let x = (w as f32 - self.pismo.sirka(t, 18.0, 1.0)) / 2.0;
-            p.text(&self.pismo, t, x, h as f32 / 2.0, 18.0, 1.0, TEXT);
+            p.text(&self.pismo, t, x, (hore + h / 2) as f32, 18.0, 1.0, TEXT);
+            let t = "F1 alebo ? – nápoveda klávesov";
+            let x = (w as f32 - self.pismo.sirka(t, 14.0, 1.0)) / 2.0;
+            p.text(&self.pismo, t, x, (hore + h / 2) as f32 + 30.0, 14.0, 1.0, 0x9A9DA1);
         }
         // riadok s údajmi
-        let mut y = h;
+        let mut y = h + hore;
         if self.udaje_viditelne() {
             p.vypln(0, y as i32, self.sirka as i32, 24, 0x26282B);
             let t = self.text_udajov(b.as_deref(), a.as_deref());
@@ -1030,6 +1144,21 @@ impl Prehliadac {
                     }
                 }
             }
+        }
+        self.kresli_panel(p);
+        if self.napoveda {
+            panel::kresli_napovedu(p, &self.pismo, panel::NAPOVEDA);
+        }
+    }
+
+    fn kresli_panel(&self, p: &mut Platno) {
+        if !self.panel_viditelny() {
+            return;
+        }
+        let u = self.rozlozenie();
+        panel::kresli(p, &self.pismo, &u, self.pod_mysou, |pv| self.povel_aktivny(pv));
+        if let Some(id) = self.pod_mysou {
+            panel::kresli_tip(p, &self.pismo, &u, id);
         }
     }
 

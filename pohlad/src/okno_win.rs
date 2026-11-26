@@ -11,6 +11,8 @@
 //! Esc ukončí; časovač beží len počas prezentácie), Esc – koniec. Úpravy: R / Shift+R otočiť, F zrkadliť, X orezať na zobrazený výrez,
 //! J/K/G (Shift = menej) jas, kontrast, gama, Z zmenšiť na polovicu, Ctrl+Z späť, Ctrl+Y znova, Ctrl+S uložiť
 //! vedľa pôvodného súboru (JPEG s otočením a orezaním bezstratovo). Súbor alebo priečinok sa dá do okna pretiahnuť.
+//! Všetky úpravy sú aj na paneli nástrojov nad obrazom (kreslí ho jadro); F1 alebo ? – nápoveda klávesov,
+//! Tab – skryť / ukázať panel. Esc najprv zavrie nápovedu alebo prezentáciu, až potom okno.
 
 #![allow(unsafe_code)]
 
@@ -207,9 +209,17 @@ fn w(s: &str) -> Vec<u16> {
 
 /// Samotest v CI: povely, po ktorých sa uloží snímka okna.
 struct Samotest {
-    povely: Vec<Vstup>,
+    povely: Vec<Krok>,
     vystup: PathBuf,
     kod: i32,
+    /// Tlačidlo zo samotestu nie je na paneli.
+    chyba: bool,
+}
+
+/// Krok samotestu: vstup alebo kliknutie na tlačidlo panela podľa mena.
+enum Krok {
+    Vstup(Vstup),
+    Stlac(String),
 }
 
 struct Stav {
@@ -324,6 +334,8 @@ fn povel_znaku(c: char) -> Option<Povel> {
         'G' => Povel::GamaMenej,
         'z' => Povel::Zmensit,
         'p' | 'P' => Povel::Pauza,
+        '?' => Povel::Napoveda,
+        '\t' => Povel::Panel,
         '\u{1A}' => Povel::Spat,
         '\u{19}' => Povel::Znova,
         '\u{13}' => Povel::Ulozit,
@@ -336,13 +348,28 @@ fn samotest_krok(s: &mut Stav) {
     if s.jadro.pracuje() {
         return;
     }
-    let Some(t) = s.samotest.as_mut() else { return };
-    if !t.povely.is_empty() {
-        let v = t.povely.remove(0);
-        vstup(s, v);
+    let krok = match s.samotest.as_mut() {
+        None => return,
+        Some(t) if t.povely.is_empty() => None,
+        Some(t) => Some(t.povely.remove(0)),
+    };
+    if let Some(k) = krok {
+        let v = match k {
+            Krok::Vstup(v) => Some(v),
+            Krok::Stlac(id) => s.jadro.tlacidlo(&id).map(|(x, y)| Vstup::Klik { x, y }),
+        };
+        match v {
+            Some(v) => vstup(s, v),
+            None => {
+                if let Some(t) = s.samotest.as_mut() {
+                    t.chyba = true;
+                }
+            }
+        }
         unsafe { PostMessageW(s.hwnd, WM_SAMOTEST, 0, 0) };
         return;
     }
+    let Some(t) = s.samotest.as_mut() else { return };
     s.jadro.vykresli(&mut s.platno);
     let body: Vec<u8> =
         s.platno.body.iter().flat_map(|&f| [(f >> 16) as u8, (f >> 8) as u8, f as u8]).collect();
@@ -356,7 +383,13 @@ fn samotest_krok(s: &mut Stav) {
     .and_then(|o| orchidea_formaty::zapis(&o, orchidea_formaty::Format::Png))
     .map(|d| std::fs::write(&t.vystup, d).is_ok())
     .unwrap_or(false);
-    t.kod = if ok && s.jadro.pocet() > 0 { 0 } else { 2 };
+    t.kod = if t.chyba {
+        3
+    } else if ok && s.jadro.pocet() > 0 {
+        0
+    } else {
+        2
+    };
     println!("SAMOTEST vykreslení {} obrázkov {} kód {}", s.jadro.vykresleni, s.jadro.pocet(), t.kod);
     unsafe { PostMessageW(s.hwnd, WM_CLOSE, 0, 0) };
 }
@@ -445,11 +478,20 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> 
             0
         }
         WM_KEYDOWN => {
-            let prezentuje = s_stavom(|s| s.jadro.prezentuje()).unwrap_or(false);
-            if wp == 0x1B && prezentuje {
-                s_stavom(|s| vstup(s, Vstup::Povel(Povel::Prezentacia)));
-            } else if wp == 0x1B {
-                unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+            if wp == 0x1B {
+                // Esc najprv zavrie nápovedu alebo prezentáciu, až potom okno
+                let zavrene = s_stavom(|s| {
+                    let z = s.jadro.esc();
+                    po_zmene(s, z);
+                    z
+                })
+                .unwrap_or(false);
+                if !zavrene {
+                    unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+                }
+            } else if wp == 0x70 {
+                // F1 – nápoveda klávesov
+                s_stavom(|s| vstup(s, Vstup::Povel(Povel::Napoveda)));
             } else if wp == 0x74 || wp == 0x7A {
                 // F5 / F11 – prezentácia na celú obrazovku
                 s_stavom(|s| vstup(s, Vstup::Povel(Povel::Prezentacia)));
@@ -505,6 +547,8 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> 
                     vstup(s, Vstup::Tahaj { dx: (x - px) as f32, dy: (y - py) as f32 });
                 } else if s.delenie {
                     vstup(s, Vstup::Delic { x: x as f32 });
+                } else {
+                    vstup(s, Vstup::Mys { x: x as f32, y: y as f32 });
                 }
             });
             0
@@ -538,18 +582,21 @@ pub fn spusti(argumenty: &[String]) -> i32 {
             let povely = argumenty[3..]
                 .iter()
                 .filter_map(|p| match p.as_str() {
-                    "dalsi" => Some(Vstup::Povel(Povel::Dalsi)),
-                    "oznac" => Some(Vstup::Povel(Povel::Oznac)),
-                    "rezim" => Some(Vstup::Povel(Povel::Rezim)),
-                    "priblizit" => Some(Vstup::Povel(Povel::Priblizit)),
-                    "prezentacia" => Some(Vstup::Povel(Povel::Prezentacia)),
-                    "tik" => Some(Vstup::Tik),
+                    "dalsi" => Some(Krok::Vstup(Vstup::Povel(Povel::Dalsi))),
+                    "oznac" => Some(Krok::Vstup(Vstup::Povel(Povel::Oznac))),
+                    "rezim" => Some(Krok::Vstup(Vstup::Povel(Povel::Rezim))),
+                    "priblizit" => Some(Krok::Vstup(Vstup::Povel(Povel::Priblizit))),
+                    "prezentacia" => Some(Krok::Vstup(Vstup::Povel(Povel::Prezentacia))),
+                    "tik" => Some(Krok::Vstup(Vstup::Tik)),
+                    "napoveda" => Some(Krok::Vstup(Vstup::Povel(Povel::Napoveda))),
+                    // stlac:<tlačidlo> – kliknutie na tlačidlo panela (poloha sa zistí až v okne)
+                    t if t.starts_with("stlac:") => Some(Krok::Stlac(t[6..].to_string())),
                     _ => None,
                 })
                 .collect();
             (
                 Some(PathBuf::from(&argumenty[1])),
-                Some(Samotest { povely, vystup: PathBuf::from(&argumenty[2]), kod: 1 }),
+                Some(Samotest { povely, vystup: PathBuf::from(&argumenty[2]), kod: 1, chyba: false }),
             )
         }
         Some(c) => (Some(PathBuf::from(c)), None),
