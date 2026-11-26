@@ -477,7 +477,7 @@ jobs:
       - name: Rozhodcovia (Pillow, scikit-image, jpegtran)
         run: |
           python3 -m pip install --user --break-system-packages numpy Pillow scikit-image
-          sh nastroje/balicky.sh libjpeg-turbo-progs
+          sh nastroje/balicky.sh libjpeg-turbo-progs libimage-exiftool-perl
       - name: Zostavenie
         run: cargo build --locked --release -p orchidea-pohlad --example prikazy
       - name: Overenie

@@ -14,7 +14,7 @@ pub mod polovicna;
 pub mod priestor;
 pub mod tiff;
 
-pub use obraz::{Cicp, Farba, Limity, Metadata, Model, Obraz, Vzorky};
+pub use obraz::{Cicp, Farba, Limity, Metadata, Model, Obraz, Popis, Vzorky};
 
 use orchidea_jadro::{Chyba, Vysledok};
 
@@ -80,6 +80,27 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
         Some(Format::Tiff) => tiff::citaj(data, limity),
         Some(Format::Exr) => exr::citaj(data, limity),
         Some(Format::Jxl) => jxl::citaj(data, limity),
+        None => Err(Chyba::NezhodaTypov { popis: "neznámy obrazový formát".into(), navrh: None }),
+    }
+}
+
+/// Popis obrázka bez dekódovania bodov (rozmery, hĺbka, farba, metadáta). JPEG, PNG a TIFF čítajú len
+/// hlavičky; OpenEXR a JPEG XL zatiaľ obrázok dekódujú celý.
+pub fn citaj_popis(data: &[u8], limity: &Limity) -> Vysledok<Popis> {
+    let z_obrazu = |o: Obraz| Popis {
+        sirka: o.sirka,
+        vyska: o.vyska,
+        bitov: o.bitov,
+        kanalov: o.kanaly(),
+        farba: o.farba,
+        metadata: o.metadata,
+    };
+    match rozpoznaj(data) {
+        Some(Format::Png) => png::citaj_popis(data, limity),
+        Some(Format::Jpeg) => jpeg::citaj_popis(data, limity),
+        Some(Format::Tiff) => tiff::citaj_popis(data, limity),
+        Some(Format::Exr) => exr::citaj(data, limity).map(z_obrazu),
+        Some(Format::Jxl) => jxl::citaj(data, limity).map(z_obrazu),
         None => Err(Chyba::NezhodaTypov { popis: "neznámy obrazový formát".into(), navrh: None }),
     }
 }

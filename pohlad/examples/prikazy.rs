@@ -10,6 +10,8 @@
 //!   `dalsi predosly prvy posledny priblizit oddialit 1:1 prisposobit oznac rezim pas udaje otoc otocvlavo zrkadlo
 //!   orezat jas kontrast gama zmensit spat znova ulozit prezentacia pauza tik tahaj:dx,dy
 //!   koliesko:k,x,y delic:x`; po každom sa počká na prácu na pozadí; riadky `VYKRESLENI n ZOBUDENI n POKOJ ok|…`
+//! - `prikazy herbar <katalóg> pridaj <priečinok> [--bez-podpriecinkov]` / `obnov` / `hladaj <dotaz>` – katalóg
+//!   fotiek; `hladaj` vypíše riadok `ZAZNAM cesta | dátum | fotoaparát | kľúče` na každý nájdený súbor
 //! - `prikazy zmensi <vstup> <výstup.surove> <šírka> <výška>` – zmenšenie a surové vzorky (ako `formaty prevod`)
 
 use orchidea_formaty::obraz::Vzorky;
@@ -201,6 +203,38 @@ fn spusti(a: &[String]) -> Result<(), String> {
             let o = orchidea_formaty::Obraz::novy(w, h, orchidea_formaty::obraz::Model::Rgb, false, Vzorky::U8(body))
                 .map_err(|e| e.to_string())?;
             std::fs::write(&a[5], orchidea_formaty::zapis(&o, Format::Png).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        }
+        Some("herbar") if a.len() >= 4 => {
+            use orchidea_pohlad::herbar::Herbar;
+            let katalog = std::path::PathBuf::from(&a[2]);
+            let mut h = Herbar::nacitaj(&katalog).map_err(|e| e.to_string())?;
+            match a[3].as_str() {
+                "pridaj" if a.len() >= 5 => {
+                    h.pridaj_priecinok(a[4].as_ref(), !a.iter().any(|x| x == "--bez-podpriecinkov"));
+                    let start = Instant::now();
+                    let (n, p, z) = h.obnov(0, &Limity::default());
+                    println!("OBNOVA precitanych={n} preskocenych={p} zmazanych={z} ms={}", start.elapsed().as_millis());
+                    h.uloz(&katalog).map_err(|e| e.to_string())
+                }
+                "obnov" => {
+                    let start = Instant::now();
+                    let (n, p, z) = h.obnov(0, &Limity::default());
+                    println!("OBNOVA precitanych={n} preskocenych={p} zmazanych={z} ms={}", start.elapsed().as_millis());
+                    h.uloz(&katalog).map_err(|e| e.to_string())
+                }
+                "hladaj" => {
+                    let dotaz = a[4..].join(" ");
+                    let start = Instant::now();
+                    let v = h.hladaj(&dotaz);
+                    let us = start.elapsed().as_micros();
+                    for z in &v {
+                        println!("ZAZNAM {} | {} | {} | {}", z.cesta.display(), z.datum, z.fotoaparat, z.kluce.join(";"));
+                    }
+                    println!("NAJDENYCH {} z {} za {us} µs", v.len(), h.zaznamy.len());
+                    Ok(())
+                }
+                x => Err(format!("neznámy príkaz Herbára {x}")),
+            }
         }
         Some("zmensi") if a.len() == 6 => {
             let d = std::fs::read(&a[2]).map_err(|e| e.to_string())?;

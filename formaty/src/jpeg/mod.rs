@@ -16,7 +16,7 @@ mod dekoder;
 mod koder;
 
 pub use dekoder::{
-    Hlavicka, Koeficienty, ZlozkaKoef, citaj, citaj_hlavicku, citaj_koeficienty, citaj_zmensene,
+    Hlavicka, Koeficienty, ZlozkaKoef, citaj, citaj_hlavicku, citaj_koeficienty, citaj_popis, citaj_zmensene,
 };
 pub use koder::{NastavenieJpeg, Podvzorkovanie, zapis};
 

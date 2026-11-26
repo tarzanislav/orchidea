@@ -326,7 +326,7 @@ pub fn citaj_zmensene(data: &[u8], limity: &Limity, mierka: usize) -> Vysledok<O
 }
 
 fn dekoduj(data: &[u8], limity: &Limity, n: usize) -> Vysledok<Obraz> {
-    let (snimka, mut s) = rozober(data, limity)?;
+    let (snimka, mut s) = rozober(data, limity, false)?;
     let mut o = zostav(&snimka, &s, n)?;
     if !s.icc.is_empty() {
         s.icc.sort_by_key(|c| c.0);
@@ -337,6 +337,27 @@ fn dekoduj(data: &[u8], limity: &Limity, n: usize) -> Vysledok<Obraz> {
     }
     o.metadata = s.meta;
     Ok(o)
+}
+
+/// Popis bez dekódovania obrazových údajov (rozmery, farba, metadáta – po prvý sken).
+pub fn citaj_popis(data: &[u8], limity: &Limity) -> Vysledok<crate::obraz::Popis> {
+    let (sn, mut s) = rozober(data, limity, true)?;
+    if let Some(e) = &s.meta.exif {
+        s.meta.natocenie = crate::exif::natocenie(e).unwrap_or(1);
+    }
+    let mut farba = crate::obraz::Farba::default();
+    if !s.icc.is_empty() {
+        s.icc.sort_by_key(|c| c.0);
+        farba.icc = Some(s.icc.iter().flat_map(|c| c.1.iter().copied()).collect());
+    }
+    Ok(crate::obraz::Popis {
+        sirka: sn.sirka,
+        vyska: sn.vyska,
+        bitov: sn.presnost,
+        kanalov: sn.zlozky.len(),
+        farba,
+        metadata: s.meta,
+    })
 }
 
 /// Kvantizované koeficienty jednej zložky (bloky po 64 v prirodzenom poradí, riadok bloku po riadku).
@@ -364,7 +385,7 @@ pub struct Koeficienty {
 
 /// Prečíta kvantizované koeficienty (bez inverznej DCT) – základ bezstratových úprav.
 pub fn citaj_koeficienty(data: &[u8], limity: &Limity) -> Vysledok<Koeficienty> {
-    let (sn, s) = rozober(data, limity)?;
+    let (sn, s) = rozober(data, limity, false)?;
     let zlozky = sn
         .zlozky
         .into_iter()
@@ -381,7 +402,7 @@ pub fn citaj_koeficienty(data: &[u8], limity: &Limity) -> Vysledok<Koeficienty> 
     Ok(Koeficienty { sirka: sn.sirka, vyska: sn.vyska, presnost: sn.presnost, zlozky, segmenty: s.segmenty })
 }
 
-fn rozober(data: &[u8], limity: &Limity) -> Vysledok<(Snimka, Stav)> {
+fn rozober(data: &[u8], limity: &Limity, len_hlavicka: bool) -> Vysledok<(Snimka, Stav)> {
     if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
         return Err(chyba("chýba značka začiatku (SOI)"));
     }
@@ -439,6 +460,10 @@ fn rozober(data: &[u8], limity: &Limity) -> Vysledok<(Snimka, Stav)> {
                 return Err(chyba("bezstratový a hierarchický režim zatiaľ nie sú podporené"));
             }
             0xC9..=0xCB | 0xCD..=0xCF => return Err(chyba("aritmetické kódovanie zatiaľ nie je podporené")),
+            0xDA if len_hlavicka => {
+                skenov += 1;
+                break;
+            }
             0xDA => {
                 poz = sken(&mut s, seg, data, poz)?;
                 skenov += 1;

@@ -115,6 +115,7 @@ fn fuzzer_png() {
         &zaklady,
         |d| {
             let _ = png::citaj(d, &l);
+            let _ = png::citaj_popis(d, &l);
             let _ = png::citaj_hlavicku(d);
         },
         12,
@@ -142,6 +143,7 @@ fn fuzzer_jpeg() {
             let _ = jpeg::citaj(d, &l);
             let _ = jpeg::citaj_zmensene(d, &l, 8);
             let _ = jpeg::citaj_hlavicku(d);
+            let _ = jpeg::citaj_popis(d, &l);
             use jpeg::bezstratovo::{Transformacia, Vyrez, uprav};
             let v = Vyrez { x: 3, y: 5, sirka: 9, vyska: 7 };
             for t in [Transformacia::Otoc90, Transformacia::Transverzia] {
@@ -179,6 +181,7 @@ fn fuzzer_tiff() {
         &zaklady,
         |d| {
             let _ = tiff::citaj(d, &l);
+            let _ = tiff::citaj_popis(d, &l);
             let _ = tiff::citaj_hlavicku(d);
             let _ = tiff::pocet_stran(d);
         },

@@ -422,10 +422,14 @@ fn strana(a: &Adresar, limity: &Limity) -> Vysledok<Obraz> {
         o.farba.icc = Some(icc.to_vec());
     }
     o.farba.linearne = format == Format::Plavajuce;
-    let mut meta = Metadata {
-        natocenie: a.cislo(274)?.filter(|n| (1..=8).contains(n)).unwrap_or(1) as u8,
-        ..o.metadata
-    };
+    o.metadata = metadata_strany(a, limity, std::mem::take(&mut o.metadata))?;
+    Ok(o)
+}
+
+/// Metadáta strany (natočenie, XMP, IPTC, DPI, texty).
+fn metadata_strany(a: &Adresar, limity: &Limity, zaklad: Metadata) -> Vysledok<Metadata> {
+    let mut meta =
+        Metadata { natocenie: a.cislo(274)?.filter(|n| (1..=8).contains(n)).unwrap_or(1) as u8, ..zaklad };
     if let Some(x) = a.bajty(700, limity.metadat)? {
         meta.xmp = Some(x.to_vec());
     }
@@ -446,8 +450,38 @@ fn strana(a: &Adresar, limity: &Limity) -> Vysledok<Obraz> {
             meta.texty.push((meno.into(), t));
         }
     }
-    o.metadata = meta;
-    Ok(o)
+    Ok(meta)
+}
+
+/// Popis prvej plnej strany bez dekódovania obrazových údajov.
+pub fn citaj_popis(data: &[u8], limity: &Limity) -> Vysledok<crate::obraz::Popis> {
+    let (s, mut p) = Subor::otvor(data)?;
+    let mut videne = Vec::new();
+    let mut prvy = None;
+    while p != 0 && videne.len() < 10_000 && !videne.contains(&p) {
+        videne.push(p);
+        let (a, dalsi) = s.adresar(p)?;
+        if a.cislo(254)?.unwrap_or(0) & 1 == 0 {
+            prvy = Some(p);
+            break;
+        }
+        prvy.get_or_insert(p);
+        p = dalsi;
+    }
+    let p = prvy.ok_or_else(|| chyba("súbor nemá žiadnu stranu"))?;
+    let a = s.adresar(p)?.0;
+    let w = a.cislo(256)?.ok_or_else(|| chyba("chýba šírka"))? as usize;
+    let h = a.cislo(257)?.ok_or_else(|| chyba("chýba výška"))? as usize;
+    let spp = a.cislo(277)?.unwrap_or(1) as usize;
+    let bitov = a.cisla(258, 64)?.and_then(|b| b.first().copied()).unwrap_or(1).min(255) as u8;
+    let mut farba = crate::obraz::Farba::default();
+    if let Some(icc) = a.bajty(34675, limity.metadat)? {
+        farba.icc = Some(icc.to_vec());
+    }
+    farba.linearne = a.cislo(339)?.unwrap_or(1) == 3;
+    let mut metadata = metadata_strany(&a, limity, Metadata::default())?;
+    metadata.exif = crate::exif::z_tiff(data, p as usize);
+    Ok(crate::obraz::Popis { sirka: w, vyska: h, bitov, kanalov: spp, farba, metadata })
 }
 
 fn jpeg_kus(udaje: &[u8], tabulky: Option<&[u8]>, rgb: bool, limity: &Limity) -> Vysledok<Obraz> {

@@ -259,6 +259,17 @@ pub fn rozdel_alfu(o: &mut Obraz) {
     }
 }
 
+/// Popis obrázka bez bodov (rozmery, hĺbka, farba, metadáta) – pre katalóg a rýchle prehľady.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Popis {
+    pub sirka: usize,
+    pub vyska: usize,
+    pub bitov: u8,
+    pub kanalov: usize,
+    pub farba: Farba,
+    pub metadata: Metadata,
+}
+
 /// Bezpečnostné limity čítačiek (R211). Súbor, ktorý by ich prekročil, skončí chybou `Limit` – nikdy nie
 /// vyčerpaním pamäte alebo pádom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

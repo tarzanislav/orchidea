@@ -95,6 +95,33 @@ fn latin1(b: &[u8]) -> String {
 
 /// Prečíta obrázok PNG.
 pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
+    match citaj_vnutorne(data, limity, false)? {
+        Ok(o) => Ok(o),
+        Err(_) => Err(chyba("vnútorná chyba")),
+    }
+}
+
+/// Popis bez rozbalenia obrazových údajov (IDAT sa preskočí).
+pub fn citaj_popis(data: &[u8], limity: &Limity) -> Vysledok<crate::obraz::Popis> {
+    match citaj_vnutorne(data, limity, true)? {
+        Err(p) => Ok(p),
+        Ok(o) => Ok(crate::obraz::Popis {
+            sirka: o.sirka,
+            vyska: o.vyska,
+            bitov: o.bitov,
+            kanalov: o.kanaly(),
+            farba: o.farba,
+            metadata: o.metadata,
+        }),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn citaj_vnutorne(
+    data: &[u8],
+    limity: &Limity,
+    len_popis: bool,
+) -> Vysledok<Result<Obraz, crate::obraz::Popis>> {
     if data.len() < 8 || data[..8] != PODPIS {
         return Err(chyba("chýba podpis"));
     }
@@ -163,7 +190,9 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
                 if idat_skoncil {
                     return Err(chyba("kúsky IDAT nie sú za sebou"));
                 }
-                idat.extend_from_slice(obsah);
+                if !len_popis {
+                    idat.extend_from_slice(obsah);
+                }
             }
             b"IEND" => koniec = true,
             b"gAMA" if dlzka == 4 => farba.gama = Some(be32(obsah) as f64 / 100_000.0),
@@ -242,14 +271,26 @@ pub fn citaj(data: &[u8], limity: &Limity) -> Vysledok<Obraz> {
     if h.typ_farby == 3 && paleta.is_empty() {
         return Err(chyba("obrázok s paletou bez kúska PLTE"));
     }
+    if let Some(exif) = &meta.exif {
+        meta.natocenie = crate::exif::natocenie(exif).unwrap_or(1);
+    }
+    if len_popis {
+        let kanalov = h.vzoriek_na_pixel() + (trns.is_some() as usize);
+        let kanalov = if h.typ_farby == 3 { 3 + trns.is_some() as usize } else { kanalov.min(4) };
+        return Ok(Err(crate::obraz::Popis {
+            sirka: h.sirka as usize,
+            vyska: h.vyska as usize,
+            bitov: h.hlbka,
+            kanalov,
+            farba,
+            metadata: meta,
+        }));
+    }
     let surove = rozbal_riadky(&h, &idat)?;
     let mut o = rozvin(&h, &surove, &paleta, trns.as_deref())?;
     o.farba = farba;
     o.metadata = meta;
-    if let Some(exif) = &o.metadata.exif {
-        o.metadata.natocenie = crate::exif::natocenie(exif).unwrap_or(1);
-    }
-    Ok(o)
+    Ok(Ok(o))
 }
 
 /// Text iTXt: kľúč, príznak kompresie, metóda, jazyk, preložený kľúč, text (UTF-8).

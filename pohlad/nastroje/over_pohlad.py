@@ -461,6 +461,112 @@ def upravy(rng):
         vysledok("úpravy: zmenšiť na polovicu", False, "chýba výsledok")
 
 
+
+def herbar(rng):
+    """Herbár: index priečinkov bez importu, metadáta proti ExifTool, dotazy, obnova len zmenených, rýchlosť."""
+    import json
+    import shutil
+
+    et = os.environ.get("ORCHIDEA_EXIFTOOL", "").split() or ([shutil.which("exiftool")] if shutil.which("exiftool") else [])
+    if not et:
+        vysledok("Herbár", False, "rozhodca ExifTool chýba")
+        return
+    koren = os.path.join(PRAC, "herbar")
+    if os.path.isdir(koren):
+        shutil.rmtree(koren)
+    os.makedirs(os.path.join(koren, "2023", "vianoce"))
+    os.makedirs(os.path.join(koren, "2024"))
+    katalog = os.path.join(PRAC, "herbar.txt")
+    if os.path.exists(katalog):
+        os.remove(katalog)
+    vzory = [
+        ("2024", ["-Make=Canon", "-Model=Canon EOS R6", "-DateTimeOriginal=2024:05:10 10:00:00", "-ISO=200",
+                  "-IPTC:Keywords=orchidea", "-IPTC:Keywords=kvet", "-XMP-dc:Subject=skleník", "-XMP-xmp:Rating=5"]),
+        ("2024", ["-Make=NIKON CORPORATION", "-Model=NIKON Z 6", "-DateTimeOriginal=2024:08:01 18:30:00", "-ISO=3200",
+                  "-XMP-dc:Subject=západ slnka", "-XMP-dc:Title=Večer pri Dunaji"]),
+        (os.path.join("2023", "vianoce"), ["-Make=Apple", "-Model=iPhone 15", "-DateTimeOriginal=2023:12:24 19:00:00",
+                  "-IPTC:Keywords=Vianoce", "-IPTC:Caption-Abstract=Štedrý večer", "-GPSLatitude=48.15",
+                  "-GPSLatitudeRef=N", "-GPSLongitude=17.11", "-GPSLongitudeRef=E", "-codedcharacterset=utf8"]),
+    ]
+    pole = obraz(rng, 120, 160, 3, foto=True)
+    subory = []
+    for i, (priecinok, tagy) in enumerate(vzory):
+        c = os.path.join(koren, priecinok, f"vzor_{i}.jpg")
+        Image.fromarray(pole).save(c, quality=80)
+        subprocess.run(et + ["-q", "-overwrite_original"] + tagy + [c], check=True)
+        subory.append(c)
+    # kópie (rovnaké metadáta) – spolu 300 fotiek, plus PNG bez metadát a súbor, ktorý nie je obrázok
+    for k in range(297):
+        zdroj = subory[k % 3]
+        shutil.copy(zdroj, os.path.join(os.path.dirname(zdroj), f"kopia_{k:03}.jpg"))
+    Image.fromarray(pole).save(os.path.join(koren, "2024", "bez_metadat.png"))
+    with open(os.path.join(koren, "poznamky.txt"), "w") as f:
+        f.write("nie je obrázok")
+    vsetky = sorted(os.path.join(d, f) for d, _, fs in os.walk(koren) for f in fs if not f.endswith(".txt"))
+
+    def herbar_cmd(*arg):
+        return subprocess.run([PROGRAM, "herbar", katalog, *arg], capture_output=True, text=True)
+
+    r = herbar_cmd("pridaj", koren)
+    vysledok("Herbár: index priečinka s podpriečinkami", "precitanych=301" in r.stdout,
+             r.stdout.strip() + (f" ({len(vsetky)} obrázkov, .txt sa nepridal)" if "precitanych=301" in r.stdout else r.stderr[-200:]))
+    # metadáta proti ExifTool
+    ich = {d["SourceFile"]: d for d in json.loads(subprocess.run(et + ["-j", "-n", "-r", koren], capture_output=True, text=True).stdout)}
+
+    def hladaj(dotaz):
+        r = herbar_cmd("hladaj", dotaz)
+        return sorted(x.split(" | ")[0][7:] for x in r.stdout.splitlines() if x.startswith("ZAZNAM ")), r.stdout
+
+    def ocakavane(f):
+        return sorted(c for c in vsetky if f(ich.get(c, {})))
+
+    def zoznam(v):
+        return v if isinstance(v, list) else ([v] if v is not None else [])
+
+    dotazy = [
+        ("kvet", lambda d: "kvet" in zoznam(d.get("Keywords"))),
+        ("fotoaparat:nikon", lambda d: "NIKON" in str(d.get("Model", ""))),
+        ("datum:2024", lambda d: str(d.get("DateTimeOriginal", "")).startswith("2024")),
+        ("datum:2023-12..2024-05", lambda d: "2023:12" <= str(d.get("DateTimeOriginal", ""))[:7] <= "2024:05"),
+        ("iso>=800", lambda d: (d.get("ISO") or 0) >= 800),
+        ("zapad", lambda d: "západ slnka" in zoznam(d.get("Subject"))),
+        ("stedry", lambda d: "Štedrý" in str(d.get("Caption-Abstract", ""))),
+        ("gps:ano", lambda d: "GPSLatitude" in d),
+        ("hodnotenie>=5", lambda d: (d.get("Rating") or 0) >= 5),
+        ("-kvet format:jpeg", lambda d: "kvet" not in zoznam(d.get("Keywords")) and d.get("FileType") == "JPEG"),
+        ("vianoce priecinok:2023", lambda d: "Vianoce" in zoznam(d.get("Keywords"))),
+    ]
+    for dotaz, f in dotazy:
+        nase, txt = hladaj(dotaz)
+        o = ocakavane(f)
+        vysledok(f"Herbár: dotaz „{dotaz}“", nase == o, f"{len(nase)} nájdených = podľa ExifTool" if nase == o else f"{len(nase)} ≠ {len(o)}")
+    # obnova: nič nové → nič sa nečíta; zmena jedného, zmazanie jedného
+    r = herbar_cmd("obnov")
+    vysledok("Herbár: obnova bez zmien", "precitanych=0 preskocenych=301 zmazanych=0" in r.stdout, r.stdout.strip())
+    zmeneny = os.path.join(koren, "2024", "kopia_000.jpg")
+    subprocess.run(et + ["-q", "-overwrite_original", "-IPTC:Keywords+=nové", zmeneny], check=True)
+    os.remove(os.path.join(koren, "2024", "kopia_003.jpg"))
+    r = herbar_cmd("obnov")
+    vysledok("Herbár: obnova len zmeneného", "precitanych=1 preskocenych=299 zmazanych=1" in r.stdout, r.stdout.strip())
+    nase, _ = hladaj("kluc:nove")
+    vysledok("Herbár: nové kľúčové slovo nájdené", nase == [zmeneny], f"{nase}")
+    # rýchlosť: katalóg so 100 000 záznamami
+    with open(katalog, encoding="utf-8") as f:
+        riadky = f.read().splitlines()
+    zaznamy = [x for x in riadky if x.startswith("Z\t")]
+    with open(os.path.join(PRAC, "herbar_velky.txt"), "w", encoding="utf-8") as f:
+        f.write(riadky[0] + "\n")
+        for i in range(100_000):
+            z = zaznamy[i % len(zaznamy)].split("\t")
+            z[1] = z[1].replace(".jpg", f"_{i}.jpg")
+            f.write("\t".join(z) + "\n")
+    r = subprocess.run([PROGRAM, "herbar", os.path.join(PRAC, "herbar_velky.txt"), "hladaj", "kvet", "iso>=100", "-vianoce"],
+                       capture_output=True, text=True)
+    riadok = [x for x in r.stdout.splitlines() if x.startswith("NAJDENYCH")]
+    us = int(riadok[0].split()[-2]) if riadok else 10**9
+    vysledok("Herbár: dotaz nad 100 000 záznamami", us < 200_000, riadok[0] if riadok else r.stderr[-200:])
+
+
 rng = np.random.default_rng(2026)
 zmensenie(rng)
 davka_bez_straty(rng)
@@ -471,5 +577,6 @@ brana(rng)
 nahlady(rng)
 priestor_farby(rng)
 nahlady_brana()
+herbar(rng)
 print(f"\n{'Všetko v poriadku' if not zlyhania else 'Zlyhania: ' + ', '.join(zlyhania)}")
 sys.exit(1 if zlyhania else 0)
