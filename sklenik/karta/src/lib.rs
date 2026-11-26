@@ -416,7 +416,7 @@ pub fn blok_prepinacov() -> String {
 
 /// R183 – novinky od karty 4edb1db (posledná overená na televízore), ktoré sa dajú vypnúť v SKLENIK.TXT:
 /// (kľúč, čo robí).
-pub const NOVINKY: [(&str, &str); 17] = [
+pub const NOVINKY: [(&str, &str); 18] = [
     ("merac_pamate", "merač toku pamäte DDR (R162, R176)"),
     ("takt_obrazu", "takt obvodu obrazu VPU (R166, R182)"),
     ("merac_taktov", "merač taktov čipu a debugfs (R166)"),
@@ -446,6 +446,10 @@ pub const NOVINKY: [(&str, &str); 17] = [
         "meranie vlastného dekodéra HEVC pri prvom pokuse na zariadení – zhoda a rýchlosť (R223)",
     ),
     ("zvuk_hdmi", "zvuk cez HDMI – krátky skúšobný tón 1 kHz pri štarte, výsledok v zázname (R226)"),
+    (
+        "hdmi_bez_dopytu",
+        "RPi: popis monitora cez I2C raz za 2 min namiesto každých 10 s – menej budení (R227)",
+    ),
 ];
 
 impl NastavenieZariadenia {

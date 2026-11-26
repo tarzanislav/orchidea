@@ -856,6 +856,79 @@ fn kms_rpi_zlyhal() -> bool {
     });
     !vc4
 }
+/// R227: RPi – vc4 nemá na vývod HPD prerušenie (rozširovač firmvéru), jadro sa preto každých 10 s pýta monitora
+/// a pri zapojenom monitore zakaždým prečíta celý popis EDID cez I2C (3f805000.i2c, ~2,5 budenia/s). KLÍČ dopyt
+/// jadra vypne a pýta sa sám raz za 2 min; keď monitor zmizne, dopyt jadra zapne späť (zapojenie sa zachytí hneď).
+const DOPYT_JADRA: &str = "/sys/module/drm_kms_helper/parameters/poll";
+const DOPYT_KLICA: Duration = Duration::from_secs(120);
+
+struct DopytMonitora {
+    vypnuty: bool,
+    posledny: Instant,
+    /// jadro voľbu nemá (iná verzia) – KLÍČ to skúsi len raz
+    nejde: bool,
+}
+
+/// Výstupy HDMI grafického ovládača (`/sys/class/drm/card*-HDMI-A-*`).
+fn vystupy_hdmi() -> Vec<std::path::PathBuf> {
+    fs::read_dir("/sys/class/drm")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|z| z.file_name().to_string_lossy().contains("-HDMI-A-"))
+        .map(|z| z.path())
+        .collect()
+}
+
+fn hdmi_zapojene() -> bool {
+    vystupy_hdmi().iter().any(|p| citaj(p.join("status")).is_some_and(|s| s == "connected"))
+}
+
+impl DopytMonitora {
+    fn novy() -> Self {
+        DopytMonitora { vypnuty: false, posledny: Instant::now(), nejde: false }
+    }
+
+    fn krok(&mut self) {
+        if self.nejde {
+            return;
+        }
+        if !self.vypnuty {
+            if !hdmi_zapojene() {
+                return;
+            }
+            match fs::write(DOPYT_JADRA, "N") {
+                Ok(()) => {
+                    self.vypnuty = true;
+                    self.posledny = Instant::now();
+                    hlas(
+                        "obraz (R227): jadro sa už nepýta monitora každých 10 s (popis EDID cez I2C) – KLÍČ sa pýta \
+                         sám raz za 2 min",
+                    );
+                }
+                Err(e) => {
+                    self.nejde = true;
+                    hlas(&format!(
+                        "obraz (R227): dopyt jadra na monitor sa nedá vypnúť ({e}) – ostáva po 10 s"
+                    ));
+                }
+            }
+            return;
+        }
+        if self.posledny.elapsed() < DOPYT_KLICA {
+            return;
+        }
+        self.posledny = Instant::now();
+        for v in vystupy_hdmi() {
+            let _ = fs::write(v.join("status"), "detect");
+        }
+        if !hdmi_zapojene() && fs::write(DOPYT_JADRA, "Y").is_ok() {
+            self.vypnuty = false;
+            hlas("obraz (R227): monitor odpojený – dopyt jadra späť zapnutý (zapojenie sa zachytí do 10 s)");
+        }
+    }
+}
+
 const OBRAZ_FIRMVER: &str = "# ORCHIDEA OS (R190) – obrazovka od firmvéru (prepínač obraz_kms=nie v SKLENIK.TXT). Súbor spravuje KLÍČ –\n# zmena platí od ďalšieho štartu. Ručne neupravovať.\n[all]\n";
 
 /// R199: zariadenia, na ktorých už táto verzia karty urobila tepelný pokus (riadok „sériové číslo verzia model“).
@@ -1445,6 +1518,8 @@ pub fn spusti() {
     // R218: vlastný ovládač obrazu na tomto zariadení s touto kartou zlyhal (obraz od firmvéru)
     let mut kms_zlyhal_tu = false;
     let mut kms_kontrola = false;
+    // R227: dopyt na monitor (RPi s vlastným ovládačom obrazu)
+    let mut dopyt_monitora: Option<DopytMonitora> = None;
     let mut pokus_bez_kms_ohlaseny = false;
     let mut pokus_hotovy_text: Option<String> = None;
     // R192: fázy tepelného pokusu podľa zariadenia (RPi: spánok siete zvlášť, bez fáz taktu VPU)
@@ -2229,6 +2304,23 @@ pub fn spusti() {
                 }
             }));
             pokoj_stav = Some((pokoj::Stav::Overene, true, n));
+        }
+        // R227: RPi s vc4 – menej čítaní popisu monitora (budenia I2C)
+        if pid1
+            && !skuska
+            && hore >= 45.0
+            && model.contains("Raspberry Pi")
+            && novinka(&nastavenie, "hdmi_bez_dopytu")
+        {
+            if dopyt_monitora.is_none()
+                && fs::read_to_string("/proc/device-tree/soc/gpu/status").is_ok_and(|s| s.starts_with("okay"))
+                && !kms_rpi_zlyhal()
+            {
+                dopyt_monitora = Some(DopytMonitora::novy());
+            }
+            if let Some(d) = dopyt_monitora.as_mut() {
+                d.krok();
+            }
         }
         // R218: vlastný ovládač obrazu sa na RPi nespustil → obraz od firmvéru a reštart (raz pre verziu karty)
         if pid1
