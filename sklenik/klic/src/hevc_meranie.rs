@@ -36,6 +36,8 @@ pub struct Beh {
     pub teplota_max: Option<f64>,
     pub takt_mhz: Option<(u32, u32)>,
     pub prerusene: Option<String>,
+    /// R232: riadky `CAS` a `CAS_SPOLU` (rozpis času po etapách, `--etapy`)
+    pub cas: Vec<String>,
 }
 
 impl Beh {
@@ -66,6 +68,7 @@ pub fn rozober(vystup: &str) -> Beh {
                 }
             }
             Some("CHYBA") => b.chyba = Some(r.trim_start_matches("CHYBA").trim().to_string()),
+            Some("CAS") | Some("CAS_SPOLU") => b.cas.push(r.trim().to_string()),
             _ => {}
         }
     }
@@ -259,7 +262,37 @@ impl Drop for PevnyTakt {
 }
 
 /// Spustí celé meranie vo vlastnom vlákne; riadky výsledku pribúdajú do `riadky`.
-pub fn spusti(strop_regulatora: f64, riadky: Arc<Mutex<Vec<String>>>, hlas: fn(&str)) {
+/// R232: krátky rozpis času z riadkov `CAS` – etapy nad 2 % od najväčšej a využitie vlákien.
+pub fn popis_etap(cas: &[String]) -> Option<String> {
+    let pole = |r: &str, k: &str| {
+        r.split_whitespace()
+            .find_map(|p| p.strip_prefix(k).and_then(|v| v.strip_prefix('=')))
+            .map(str::to_string)
+    };
+    let mut etapy: Vec<(String, f64)> = cas
+        .iter()
+        .filter(|r| r.starts_with("CAS "))
+        .filter_map(|r| Some((pole(r, "etapa")?, pole(r, "podiel")?.parse::<f64>().ok()?)))
+        .filter(|(m, p)| *p >= 2.0 && !m.starts_with("cakanie") && m != "necinnost")
+        .collect();
+    if etapy.is_empty() {
+        return None;
+    }
+    etapy.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut t: Vec<String> =
+        etapy.iter().map(|(m, p)| format!("{m} {} %", cislo(&format!("{p:.0}")))).collect();
+    if let Some(v) = cas.iter().find(|r| r.starts_with("CAS_SPOLU")).and_then(|s| pole(s, "vyuzitie")) {
+        t.push(format!("využitie vlákien {} %", cislo(&v)));
+    }
+    Some(t.join(" · "))
+}
+
+pub fn spusti(
+    strop_regulatora: f64,
+    riadky: Arc<Mutex<Vec<String>>>,
+    hlas: fn(&str),
+    citanie_obrazu: fn() -> Option<u32>,
+) {
     std::thread::spawn(move || {
         let pridaj = |r: String| {
             hlas(&format!("HEVC (R223): {r}"));
@@ -324,12 +357,44 @@ pub fn spusti(strop_regulatora: f64, riadky: Arc<Mutex<Vec<String>>>, hlas: fn(&
                 }
             }
             pridaj(format!(
-                "{meno}{rozmer}: {}{}",
+                "{meno}{rozmer}: {}{}{}",
                 casti.join(" · "),
-                start.map(|t| format!(" · štart {} °C", cislo(&format!("{t:.1}")))).unwrap_or_default()
+                start.map(|t| format!(" · štart {} °C", cislo(&format!("{t:.1}")))).unwrap_or_default(),
+                // R232: obvod obrazu číta pamäť súčasne s dekodérom – meranie je na to citlivé
+                citanie_obrazu().map(|c| format!(" · obraz číta {c} MB/s")).unwrap_or_default()
             ));
             for r in riadky_vysledku {
                 pridaj(r);
+            }
+            // R232: rozpis času po etapách (prúd B, #3) – len najväčší tok, 1 vlákno a všetky vlákna
+            if meno.contains("1080") {
+                for n in [1, *vlakna.last().unwrap_or(&1)] {
+                    ochlad();
+                    let b = spusti_beh(
+                        program,
+                        &[
+                            "--rychlost".into(),
+                            "--etapy".into(),
+                            "--vlakna".into(),
+                            n.to_string(),
+                            tok.to_string_lossy().to_string(),
+                        ],
+                        strop_behu,
+                    );
+                    match popis_etap(&b.cas) {
+                        Some(p) => pridaj(format!("{meno} rozpis času, {}: {p}", popis_rychlosti(n, &b))),
+                        None => pridaj(format!(
+                            "{meno} rozpis času, {n} vl.: bez riadkov CAS ({})",
+                            b.chyba.as_deref().or(b.prerusene.as_deref()).unwrap_or("program bez --etapy?")
+                        )),
+                    }
+                    for r in &b.cas {
+                        pridaj(format!("    {} vlakna={n}", r));
+                    }
+                    if n == 1 && vlakna.len() == 1 {
+                        break;
+                    }
+                }
             }
         }
         drop(takt);
@@ -376,6 +441,18 @@ mod testy {
         assert!(popis_zhody(&zla).starts_with("NEZHODA"));
         let ch = rozober("CHYBA tok sa nedá prečítať");
         assert_eq!(ch.chyba.as_deref(), Some("tok sa nedá prečítať"));
+    }
+
+    #[test]
+    fn rozpis_etap() {
+        let b = rozober(
+            "CAS etapa=rozbor ms=10.0 podiel=1.0\nCAS etapa=cabac ms=300.0 podiel=31.4\n\
+             CAS etapa=inter ms=250.0 podiel=26.2\nCAS etapa=cakanie_ref ms=50.0 podiel=5.2\n\
+             CAS_SPOLU stena_ms=1000 praca_ms=955 vlakna=1 vyuzitie=95.5\n",
+        );
+        assert_eq!(b.cas.len(), 5);
+        assert_eq!(popis_etap(&b.cas).as_deref(), Some("cabac 31 % · inter 26 % · využitie vlákien 95,5 %"));
+        assert_eq!(popis_etap(&[]), None);
     }
 
     #[test]

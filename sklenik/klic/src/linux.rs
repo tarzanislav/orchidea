@@ -26,7 +26,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -422,6 +422,9 @@ impl Displej {
         self.predosle = None;
         let (r, kr) = nastavenie;
         let video = if k.video.is_some() { "áno" } else { "nie" };
+        if k.stav == StavObrazu::Zapnuty {
+            CITANIE_OBRAZU.store(kr.citanie_mb_s(r.obnova).round() as u32, Ordering::Relaxed);
+        }
         hlas(&format!(
             "obraz: vlastný ovládač KMS – {}, kreslí {}×{} v {} bitoch{}, z pamäte {:.0} MB/s (pôvodne 1080p60 32 b: 498 MB/s); rovina videa NV12: {video}",
             r.popis(),
@@ -465,17 +468,29 @@ impl Displej {
     fn nastav_stav_obrazu(&mut self, stav: StavObrazu) {
         let Vystup::Kms(k) = &mut self.vystup else { return };
         let pred = k.stav;
+        let citanie = match stav {
+            StavObrazu::Zapnuty => {
+                self.kms_nastavenie.as_ref().map(|(r, kr)| kr.citanie_mb_s(r.obnova).round() as u32)
+            }
+            _ => Some(0),
+        };
+        let Vystup::Kms(k) = &mut self.vystup else { return };
         match k.stav_obrazu(stav) {
-            Ok(()) if pred != stav => hlas(&format!(
-                "obraz: {}",
-                match stav {
-                    StavObrazu::Zapnuty => "zapnutý",
-                    StavObrazu::Cierny if k.cierny_cez_buffer() =>
-                        "čierny (malý čierny obraz zväčšený 5× – ovládač nedovolil vypnúť rovinu)",
-                    StavObrazu::Cierny => "čierny – z pamäte sa nečíta nič, signál HDMI beží",
-                    StavObrazu::Vypnuty => "vypnutý – stojí kódovač obrazu aj vysielač HDMI",
+            Ok(()) if pred != stav => {
+                if let Some(c) = citanie {
+                    CITANIE_OBRAZU.store(c, Ordering::Relaxed);
                 }
-            )),
+                hlas(&format!(
+                    "obraz: {}",
+                    match stav {
+                        StavObrazu::Zapnuty => "zapnutý",
+                        StavObrazu::Cierny if k.cierny_cez_buffer() =>
+                            "čierny (malý čierny obraz zväčšený 5× – ovládač nedovolil vypnúť rovinu)",
+                        StavObrazu::Cierny => "čierny – z pamäte sa nečíta nič, signál HDMI beží",
+                        StavObrazu::Vypnuty => "vypnutý – stojí kódovač obrazu aj vysielač HDMI",
+                    }
+                ))
+            }
             Ok(()) => {}
             Err(e) => hlas(&format!("obraz: zmena stavu sa nepodarila: {e}")),
         }
@@ -883,6 +898,15 @@ fn pokojne_kontrolky() -> Vec<String> {
         ));
     }
     v
+}
+
+/// R232: koľko MB/s práve číta obvod obrazu z pamäte (u32::MAX = nevie sa) – pre meranie HEVC, ktoré je citlivé
+/// na pamäť (RPi 3 B+: 1080p60 32 b ≈ 498 MB/s spomalí dekodér o ~10 % oproti chladnému obrazu 52 MB/s).
+static CITANIE_OBRAZU: AtomicU32 = AtomicU32::new(u32::MAX);
+
+pub(crate) fn citanie_obrazu_mb_s() -> Option<u32> {
+    let v = CITANIE_OBRAZU.load(Ordering::Relaxed);
+    (v != u32::MAX).then_some(v)
 }
 
 const DOPYT_JADRA: &str = "/sys/module/drm_kms_helper/parameters/poll";
@@ -2483,7 +2507,7 @@ pub fn spusti() {
                 || (!pokus_hotovy_tu && n.is_some_and(|n| n.pokus.is_none()))
                 || n.and_then(|n| n.pokus) == Some(true);
             if merat {
-                crate::hevc_meranie::spusti(profil.strop, hevc_riadky.clone(), hlas);
+                crate::hevc_meranie::spusti(profil.strop, hevc_riadky.clone(), hlas, citanie_obrazu_mb_s);
             }
         }
 
