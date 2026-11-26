@@ -50,6 +50,23 @@ pub struct Zaznam {
     pub hodnotenie: Option<u8>,
 }
 
+impl Zaznam {
+    /// Položka zoznamu prehliadača (na náhľady a otvorenie).
+    pub fn polozka(&self) -> Option<crate::nahlady::Polozka> {
+        let format = match self.format.as_str() {
+            "png" => Format::Png,
+            "jpeg" => Format::Jpeg,
+            "tiff" => Format::Tiff,
+            "exr" => Format::Exr,
+            "jxl" => Format::Jxl,
+            _ => return None,
+        };
+        let zmenene =
+            u64::try_from(self.zmenene).ok().map(|ns| UNIX_EPOCH + std::time::Duration::from_nanos(ns));
+        Some(crate::nahlady::Polozka { cesta: self.cesta.clone(), format, bajtov: self.bajtov, zmenene })
+    }
+}
+
 /// Katalóg.
 #[derive(Debug, Clone, Default)]
 pub struct Herbar {
@@ -379,6 +396,9 @@ impl Herbar {
             s += &polia.join("\t");
             s.push('\n');
         }
+        if let Some(p) = cesta.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(p).map_err(|e| Chyba::VstupVystup(e.to_string()))?;
+        }
         let docasny = cesta.with_extension("herbar-novy");
         std::fs::write(&docasny, s).map_err(|e| Chyba::VstupVystup(e.to_string()))?;
         std::fs::rename(&docasny, cesta).map_err(|e| Chyba::VstupVystup(e.to_string()))
@@ -421,7 +441,9 @@ impl Herbar {
             }
         }
         let preskocenych = nove.iter().filter(|z| z.is_some()).count();
-        let n = if vlakna == 0 { (paralel::pocet_vlakien() / 2).max(1) } else { vlakna };
+        // obmedzenie vlákien platí pre celý proces – po obnove sa vráti predošlé
+        let predtym = paralel::pocet_vlakien();
+        let n = if vlakna == 0 { (predtym / 2).max(1) } else { vlakna };
         paralel::obmedz_vlakna(n);
         let precitane = paralel::mapuj_rozsah(citat.len(), 16, |rozsah| {
             rozsah
@@ -435,7 +457,7 @@ impl Herbar {
                 })
                 .collect::<Vec<_>>()
         });
-        paralel::obmedz_vlakna(0);
+        paralel::obmedz_vlakna(predtym);
         let mut precitanych = 0;
         for (i, z) in precitane.into_iter().flatten().flatten() {
             nove[i] = Some(z);
@@ -448,10 +470,18 @@ impl Herbar {
 
     /// Nájde záznamy podľa dotazu (poradie: dátum snímania, potom cesta).
     pub fn hladaj(&self, dotaz: &str) -> Vec<&Zaznam> {
+        self.hladaj_indexy(dotaz).into_iter().map(|i| &self.zaznamy[i]).collect()
+    }
+
+    /// Ako `hladaj`, ale vráti poradové čísla záznamov.
+    pub fn hladaj_indexy(&self, dotaz: &str) -> Vec<usize> {
         let d = Dotaz::rozober(dotaz);
-        let mut v: Vec<&Zaznam> =
-            self.zaznamy.iter().zip(&self.texty).filter(|(z, t)| d.sedi(z, t)).map(|(z, _)| z).collect();
-        v.sort_by(|a, b| a.datum.cmp(&b.datum).then_with(|| a.cesta.cmp(&b.cesta)));
+        let mut v: Vec<usize> =
+            (0..self.zaznamy.len()).filter(|&i| d.sedi(&self.zaznamy[i], &self.texty[i])).collect();
+        v.sort_by(|&a, &b| {
+            let (a, b) = (&self.zaznamy[a], &self.zaznamy[b]);
+            a.datum.cmp(&b.datum).then_with(|| a.cesta.cmp(&b.cesta))
+        });
         v
     }
 }

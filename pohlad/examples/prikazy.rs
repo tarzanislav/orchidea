@@ -186,6 +186,25 @@ fn spusti(a: &[String]) -> Result<(), String> {
                     }
                     ("delic", t) => Vstup::Delic { x: cisla(t)[0] },
                     ("napoveda", _) => Vstup::Povel(Povel::Napoveda),
+                    ("katalog-subor", c) => {
+                        p.nastav_katalog(c.into());
+                        continue;
+                    }
+                    ("katalog", _) => Vstup::Povel(Povel::Katalog),
+                    ("katalog-pridaj", _) => Vstup::Povel(Povel::KatalogPridaj),
+                    ("katalog-obnov", _) => Vstup::Povel(Povel::KatalogObnov),
+                    ("hore", _) => Vstup::Povel(Povel::Hore),
+                    ("dole", _) => Vstup::Povel(Povel::Dole),
+                    ("enter", _) => Vstup::Znak('\r'),
+                    ("zmaz", _) => Vstup::Znak('\u{8}'),
+                    ("otvor", c) => Vstup::Otvor(c.into()),
+                    ("pis", t) => {
+                        for c in t.chars() {
+                            p.vstup(Vstup::Znak(c));
+                            cakaj(&mut p);
+                        }
+                        continue;
+                    }
                     ("panel", _) => Vstup::Povel(Povel::Panel),
                     ("esc", _) => {
                         p.esc();

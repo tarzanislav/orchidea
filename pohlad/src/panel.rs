@@ -6,10 +6,10 @@ use orchidea_pismo::{Farba, Pismo, Platno};
 
 /// Výška panela v bodoch.
 pub const VYSKA: usize = 34;
-const VELKOST: f32 = 12.5;
-const OKRAJ: f32 = 7.0;
+const VELKOST: f32 = 12.0;
+const OKRAJ: f32 = 6.0;
 const MEDZI: f32 = 3.0;
-const SKUPINA: f32 = 8.0;
+const SKUPINA: f32 = 6.0;
 
 pub const POZADIE: Farba = 0x26282B;
 const TLACIDLO: Farba = 0x34373B;
@@ -96,7 +96,35 @@ pub const PREHLIADAC: &[Prvok] = &[
         "Prezentácia na celú obrazovku (F5 alebo F11, Esc koniec)",
         Povel::Prezentacia,
     ),
+    t("katalog", "Katalóg", "Kat.", "Katalóg fotografií (Herbár) – hľadanie vo fotkách (F3)", Povel::Katalog),
     t("napoveda", "?", "?", "Nápoveda klávesov (F1 alebo ?)", Povel::Napoveda),
+];
+
+/// Panel katalógu fotografií (Herbár).
+pub const KATALOG: &[Prvok] = &[
+    t(
+        "katalog_pridaj",
+        "Pridať priečinok",
+        "Pridať",
+        "Pridá otvorený priečinok aj s podpriečinkami – fotky ostanú na mieste (priečinok sa dá aj pretiahnuť sem)",
+        Povel::KatalogPridaj,
+    ),
+    t(
+        "katalog_obnov",
+        "Obnoviť",
+        "Obnoviť",
+        "Prečíta nové a zmenené súbory, zmazané vynechá",
+        Povel::KatalogObnov,
+    ),
+    Prvok::Medzera,
+    t(
+        "katalog_zavriet",
+        "Zavrieť katalóg",
+        "Zavrieť",
+        "Späť na prehliadanie priečinka (Esc alebo F3)",
+        Povel::Katalog,
+    ),
+    t("napoveda", "?", "?", "Nápoveda klávesov (F1)", Povel::Napoveda),
 ];
 
 /// Umiestnený prvok.
@@ -124,7 +152,7 @@ pub fn rozloz(prvky: &[Prvok], pismo: &Pismo, sirka: usize) -> Vec<Umiestnenie> 
                 Prvok::Popis(text) if !kratke => {
                     let w = pismo.sirka(text, VELKOST, 1.0);
                     v.push(Umiestnenie { prvok: *p, x: x + 2.0, sirka: w, text });
-                    x += w + 6.0;
+                    x += w + 5.0;
                 }
                 Prvok::Popis(_) => {}
                 Prvok::Medzera => x += SKUPINA,
@@ -172,6 +200,7 @@ const VYPADNU: &[&str] = &[
     "zmensit",
     "znova",
     "prezentacia",
+    "katalog",
 ];
 
 /// Tlačidlo na bode (x, y v súradniciach okna).
@@ -247,6 +276,10 @@ pub const NAPOVEDA: &[(&str, &str)] = &[
     ("Z", "zmenšiť na polovicu"),
     ("Ctrl+Z  /  Ctrl+Y", "späť  /  znova"),
     ("Ctrl+S", "uložiť vedľa originálu (JPEG s otočením a orezaním bezstratovo)"),
+    ("", "Katalóg fotografií (Herbár) – bez importu, fotky ostanú na mieste"),
+    ("F3 alebo Katalóg", "otvoriť a zavrieť katalóg; písanie hneď hľadá"),
+    ("šípky, Enter, kliknutie", "vybrať a otvoriť fotku; pretiahnutý priečinok sa pridá"),
+    ("dotaz", "kvet -vianoce  datum:2024-05  fotoaparat:canon  iso>=800  gps:ano"),
     ("", "Ostatné"),
     ("F1 alebo ?", "táto nápoveda (zavrie ju Esc alebo kliknutie)"),
     ("Esc", "zavrieť nápovedu, prezentáciu, inak koniec"),

@@ -220,6 +220,10 @@ struct Samotest {
 enum Krok {
     Vstup(Vstup),
     Stlac(String),
+    /// Napísať text do poľa hľadania (znak po znaku).
+    Pis(String),
+    /// Súbor katalógu fotografií.
+    Katalog(PathBuf),
 }
 
 struct Stav {
@@ -307,6 +311,9 @@ fn povel_klavesu(vk: usize) -> Option<Povel> {
         0x25 | 0x08 | 0x21 => Povel::Predosly,
         0x24 => Povel::Prvy,
         0x23 => Povel::Posledny,
+        0x26 => Povel::Hore,
+        0x28 => Povel::Dole,
+        0x72 => Povel::Katalog,
         0x6B | 0xBB => Povel::Priblizit,
         0x6D | 0xBD => Povel::Oddialit,
         _ => return None,
@@ -357,6 +364,16 @@ fn samotest_krok(s: &mut Stav) {
         let v = match k {
             Krok::Vstup(v) => Some(v),
             Krok::Stlac(id) => s.jadro.tlacidlo(&id).map(|(x, y)| Vstup::Klik { x, y }),
+            Krok::Pis(t) => {
+                for c in t.chars() {
+                    vstup(s, Vstup::Znak(c));
+                }
+                Some(Vstup::Tik)
+            }
+            Krok::Katalog(c) => {
+                s.jadro.nastav_katalog(c);
+                Some(Vstup::Tik)
+            }
         };
         match v {
             Some(v) => vstup(s, v),
@@ -496,13 +513,22 @@ unsafe extern "system" fn wnd_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> 
                 // F5 / F11 – prezentácia na celú obrazovku
                 s_stavom(|s| vstup(s, Vstup::Povel(Povel::Prezentacia)));
             } else if let Some(p) = povel_klavesu(wp) {
-                s_stavom(|s| vstup(s, Vstup::Povel(p)));
+                // pri písaní do poľa hľadania katalógu len šípky, Page Up/Down a F3
+                let pise = s_stavom(|s| s.jadro.pise()).unwrap_or(false);
+                if !pise || matches!(wp, 0x21..=0x28 | 0x72) {
+                    s_stavom(|s| vstup(s, Vstup::Povel(p)));
+                }
             }
             0
         }
         WM_CHAR => {
-            if let Some(p) = char::from_u32(wp as u32).and_then(povel_znaku) {
-                s_stavom(|s| vstup(s, Vstup::Povel(p)));
+            let pise = s_stavom(|s| s.jadro.pise()).unwrap_or(false);
+            if let Some(c) = char::from_u32(wp as u32) {
+                if pise {
+                    s_stavom(|s| vstup(s, Vstup::Znak(c)));
+                } else if let Some(p) = povel_znaku(c) {
+                    s_stavom(|s| vstup(s, Vstup::Povel(p)));
+                }
             }
             0
         }
@@ -589,6 +615,10 @@ pub fn spusti(argumenty: &[String]) -> i32 {
                     "prezentacia" => Some(Krok::Vstup(Vstup::Povel(Povel::Prezentacia))),
                     "tik" => Some(Krok::Vstup(Vstup::Tik)),
                     "napoveda" => Some(Krok::Vstup(Vstup::Povel(Povel::Napoveda))),
+                    "katalog" => Some(Krok::Vstup(Vstup::Povel(Povel::Katalog))),
+                    "enter" => Some(Krok::Vstup(Vstup::Znak('\r'))),
+                    t if t.starts_with("pis:") => Some(Krok::Pis(t[4..].to_string())),
+                    t if t.starts_with("katalog-subor:") => Some(Krok::Katalog(PathBuf::from(&t[14..]))),
                     // stlac:<tlačidlo> – kliknutie na tlačidlo panela (poloha sa zistí až v okne)
                     t if t.starts_with("stlac:") => Some(Krok::Stlac(t[6..].to_string())),
                     _ => None,
@@ -648,6 +678,14 @@ pub fn spusti(argumenty: &[String]) -> i32 {
         let mut r = Rect::default();
         GetClientRect(hwnd, &mut r);
         let mut jadro = Prehliadac::novy(zobud);
+        // katalóg fotografií (Herbár): %APPDATA%\ORCHIDEA\herbar.txt, inak vedľa programu
+        let katalog = std::env::var_os("APPDATA")
+            .map(|a| PathBuf::from(a).join("ORCHIDEA"))
+            .or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())))
+            .map(|p| p.join("herbar.txt"));
+        if let Some(k) = katalog {
+            jadro.nastav_katalog(k);
+        }
         jadro
             .vstup(Vstup::Velkost { sirka: (r.r - r.l).max(1) as usize, vyska: (r.b - r.t).max(1) as usize });
         if let Some(c) = &cesta {

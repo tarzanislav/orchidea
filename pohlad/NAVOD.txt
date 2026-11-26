@@ -17,7 +17,7 @@ Otvorenie obrázkov
 
 Panel nástrojov (hore v okne)
   Otočiť vľavo / vpravo, Zrkadliť, Orezať, Jas - / +, Kontrast - / +, Gama - / +, Zmenšiť,
-  Späť, Znova, Uložiť, Označiť, Porovnať, Prezentácia, ? (nápoveda).
+  Späť, Znova, Uložiť, Označiť, Porovnať, Prezentácia, Katalóg, ? (nápoveda).
   Sivé tlačidlo práve nič neurobí (napríklad Späť, kým nie je čo vrátiť).
   Pri myši nad tlačidlom sa ukáže bublina s klávesom. Tab panel skryje a znova ukáže.
 
@@ -41,11 +41,18 @@ Prehliadanie
   Pri JPEG bez zmeny bodov (len otočenie, zrkadlenie, orezanie) sa ukladá bezstratovo – kvalita sa nestratí.
 
 Katalóg fotografií (Herbár) – bez importu, fotky ostávajú, kde sú
-  prikazy.exe herbar C:\Fotky\herbar.txt pridaj C:\Fotky
-  prikazy.exe herbar C:\Fotky\herbar.txt obnov
-  prikazy.exe herbar C:\Fotky\herbar.txt hladaj kvet datum:2024 -vianoce
+  V okne: tlačidlo Katalóg alebo F3. Hore je pole Hľadať – stačí písať, výsledky sa ukazujú hneď ako náhľady.
+  - Pridať priečinok: pridá práve otvorený priečinok aj s podpriečinkami (alebo priečinok pretiahnite do okna).
+  - Obnoviť: prečíta nové a zmenené fotky, zmazané vynechá.
+  - Šípky vyberajú, Enter alebo kliknutie otvorí fotku; ďalej sa listuje vo výsledkoch.
+    Tlačidlom Katalóg sa vrátite k výsledkom, Esc v katalógu vráti pôvodný priečinok.
+  - Dolu je riadok s údajmi vybranej fotky (dátum, fotoaparát, rozmery, ISO, kľúčové slová, priečinok).
+  Súbor katalógu: %APPDATA%\ORCHIDEA\herbar.txt (do fotiek sa nič nezapisuje).
   Dotaz: slová (bez ohľadu na diakritiku), -slovo, fotoaparat:canon, objektiv:, kluc:, autor:, nazov:, popis:,
          format:jpeg, priecinok:, meno:, datum:2024-05, datum:2023-12..2024-05, sirka>4000, iso>=800,
          hodnotenie>=4, gps:ano
+  Z príkazového riadka (ten istý katalóg):
+    prikazy.exe herbar "%APPDATA%\ORCHIDEA\herbar.txt" pridaj C:\Fotky
+    prikazy.exe herbar "%APPDATA%\ORCHIDEA\herbar.txt" hladaj kvet datum:2024 -vianoce
 
 Chyby a postrehy zapíšte prosím do issue #5 v repozitári tarzanislav/orchidea.

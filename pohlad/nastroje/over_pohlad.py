@@ -611,6 +611,70 @@ def herbar(rng):
     riadok = [x for x in r.stdout.splitlines() if x.startswith("NAJDENYCH")]
     us = int(riadok[0].split()[-2]) if riadok else 10**9
     vysledok("katalóg fotografií: dotaz nad 100 000 záznamami", us < 200_000, riadok[0] if riadok else r.stderr[-200:])
+    katalog_v_okne(koren, katalog, hladaj)
+
+
+def katalog_v_okne(koren, katalog, hladaj):
+    """Katalóg fotografií v okne prehliadača: hľadanie písaním, výsledky v mriežke, otvorenie, Esc, pridanie priečinka."""
+    import re
+    import shutil
+
+    zaciatok = os.path.join(koren, "2023", "vianoce", "vzor_2.jpg")
+
+    def okno_katalogu(*povely, subor=katalog, otvor=zaciatok):
+        von = os.path.join(PRAC, "katalog_okno.png")
+        r = subprocess.run([PROGRAM, "snimka", otvor, "1000", "700", von, f"katalog-subor:{subor}", *povely],
+                           capture_output=True, text=True)
+        titulok = next((x[8:] for x in r.stdout.splitlines() if x.startswith("TITULOK ")), r.stdout + r.stderr)
+        obr = np.asarray(Image.open(von).convert("RGB")).astype(int) if r.returncode == 0 else None
+        return obr, titulok, r.stdout
+
+    def nasli(t):
+        m = re.search(r"nájdených (\d+) z (\d+)", t)
+        return (int(m.group(1)), int(m.group(2))) if m else None
+
+    for dotaz in ["kvet", "kvet -vianoce datum:2024", "ZÁPAD", "vianoce gps:ano"]:
+        ocak, _ = hladaj(dotaz)
+        _, t, _ = okno_katalogu("katalog", f"pis:{dotaz}")
+        vysledok(f"katalóg v okne: písanie „{dotaz}“", nasli(t) == (len(ocak), 300),
+                 f"{len(ocak)} nájdených = príkazový riadok" if nasli(t) == (len(ocak), 300) else t)
+    obr, t, txt = okno_katalogu("katalog", "pis:kvet")
+    # mriežka: 1000 bodov = 8 stĺpcov po 112, začiatok x 52, y 34 + 40
+    dlazdica = obr[74:74 + 122, 52:52 + 112] if obr is not None else np.zeros((1, 1, 3))
+    farieb = len(np.unique(dlazdica.reshape(-1, 3), axis=0))
+    vysledok("katalóg v okne: náhľady v mriežke", farieb > 200 and "POKOJ ok" in txt,
+             f"prvá dlaždica {farieb} farieb, v pokoji nič" if farieb > 200 else txt[-200:])
+    _, vypis = hladaj("kvet")
+    ocak = [x.split(" | ")[0][7:] for x in vypis.splitlines() if x.startswith("ZAZNAM ")]  # poradie katalógu
+
+    def meno(c):
+        return os.path.basename(c)
+
+    _, t, _ = okno_katalogu("katalog", "pis:kvet", "enter")
+    ok = t.startswith(f"{meno(ocak[0])} (1/{len(ocak)})")
+    vysledok("katalóg v okne: Enter otvorí prvú fotku", ok, t if not ok else f"{meno(ocak[0])}, listuje sa vo výsledkoch")
+    _, t, _ = okno_katalogu("katalog", "pis:kvet", "dalsi", "enter")
+    _, t2, _ = okno_katalogu("katalog", "pis:kvet", "klik:220,135")
+    _, t3, _ = okno_katalogu("katalog", "pis:kvet", "dole", "enter")
+    druhy, deviaty = ocak[1], ocak[8]
+    ok = t.startswith(f"{meno(druhy)} (2/") and t2.startswith(f"{meno(druhy)} (2/") and t3.startswith(f"{meno(deviaty)} (9/")
+    vysledok("katalóg v okne: šípky a kliknutie na dlaždicu", ok, "výber šípkou, riadok nižšie, kliknutie" if ok else f"{t} / {t2} / {t3}")
+    _, t, _ = okno_katalogu("katalog", "pis:kvet", "esc")
+    pocet = len([f for f in os.listdir(os.path.dirname(zaciatok)) if f.endswith(".jpg")])
+    ok = t.startswith("vzor_2.jpg (") and f"/{pocet})" in t
+    vysledok("katalóg v okne: Esc vráti priečinok", ok, t)
+    _, t, _ = okno_katalogu("katalog", "pis:r", "zmaz", "pis:kvet")
+    vysledok("katalóg v okne: písmená nie sú povely, Backspace maže", nasli(t) == (len(ocak), 300), t)
+    # pridanie priečinka tlačidlom a pretiahnutím (nový katalóg)
+    novy = os.path.join(PRAC, "katalog_novy", "herbar.txt")
+    shutil.rmtree(os.path.dirname(novy), ignore_errors=True)
+    v2024 = len([f for f in os.listdir(os.path.join(koren, "2024"))])
+    _, t, _ = okno_katalogu("katalog", "stlac:katalog_pridaj", subor=novy, otvor=os.path.join(koren, "2024", "vzor_0.jpg"))
+    ok = nasli(t) == (v2024, v2024) and os.path.exists(novy)
+    vysledok("katalóg v okne: tlačidlo Pridať priečinok", ok, f"{v2024} fotiek, katalóg uložený" if ok else t)
+    _, t, _ = okno_katalogu("katalog", f"otvor:{os.path.join(koren, '2023')}", subor=novy, otvor=os.path.join(koren, "2024", "vzor_0.jpg"))
+    ok = nasli(t) == (300, 300)
+    vysledok("katalóg v okne: pretiahnutý priečinok sa pridá", ok, "300 fotiek z dvoch priečinkov" if ok else t)
 
 
 rng = np.random.default_rng(2026)

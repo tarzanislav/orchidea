@@ -525,6 +525,15 @@ jobs:
           "kód: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { exit 1 }
           python -c "from PIL import Image; import numpy as np; o=np.asarray(Image.open('panel.png').convert('RGB')).astype(int); ram=np.all(o==[0x5A,0x8D,0xEE],axis=-1).sum(); tl=np.all(o[:34]==[0x34,0x37,0x3B],axis=-1).sum(); print('rám nápovedy', ram, 'tlačidlá', tl); assert ram > 500 and tl > 1000"
+      - name: Samotest katalógu fotografií (Herbár) v okne – hľadanie písaním, mriežka náhľadov
+        shell: pwsh
+        run: |
+          target\release\examples\prikazy.exe herbar katalog_skuska.txt pridaj skusobne
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $p = Start-Process -FilePath target\release\pohlad.exe -ArgumentList '--samotest','skusobne','katalog.png','katalog-subor:katalog_skuska.txt','katalog','pis:b' -Wait -PassThru
+          "kód: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+          python -c "from PIL import Image; import numpy as np; o=np.asarray(Image.open('katalog.png').convert('RGB')).astype(int); f=len(np.unique(o[74:196].reshape(-1,3),axis=0)); c=np.all(o[34:74]==[0x5A,0x8D,0xEE],axis=-1).sum(); print('farieb v mriežke', f, 'čiara poľa hľadania', c); assert f > 300 and c > 100"
       - uses: actions/upload-artifact@v4
         with:
           name: pohlad-okno-snimka
@@ -532,6 +541,7 @@ jobs:
             snimka.png
             prezentacia.png
             panel.png
+            katalog.png
       - name: Balík na vyskúšanie (pohlad.exe, prikazy.exe, návod)
         shell: pwsh
         run: |

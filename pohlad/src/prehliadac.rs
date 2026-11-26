@@ -13,6 +13,7 @@
 //! - **Porovnanie:** obraz A sa označí (`Oznac`), aktuálny je B; režimy delený (posuvná deliaca čiara) a rozdiel
 //!   (|A − B| × 8), oba s rovnakým priblížením a posunom; PSNR a SSIM sa vypočítajú na pozadí.
 
+use crate::herbar::Herbar;
 use crate::nahlady::{self, Polozka};
 use crate::panel;
 use crate::porovnanie;
@@ -72,6 +73,15 @@ pub enum Povel {
     Napoveda,
     /// Ukázať / skryť panel nástrojov.
     Panel,
+    /// Výber v mriežke katalógu o riadok hore / dole.
+    Hore,
+    Dole,
+    /// Katalóg fotografií (Herbár): otvoriť / zavrieť.
+    Katalog,
+    /// Pridať otvorený priečinok do katalógu.
+    KatalogPridaj,
+    /// Obnoviť katalóg (nové a zmenené súbory).
+    KatalogObnov,
 }
 
 /// Vstup od okna.
@@ -107,6 +117,8 @@ pub enum Vstup {
     Otvor(PathBuf),
     /// Časovač prezentácie (okno ho pošle len počas prezentácie).
     Tik,
+    /// Napísaný znak (len keď `pise()` – pole hľadania katalógu); `\u{8}` zmaže, `\r` otvorí vybranú fotku.
+    Znak(char),
     /// Pohyb myši bez stlačeného tlačidla (zvýraznenie tlačidla panela; prekreslí sa len pri zmene).
     Mys {
         x: f32,
@@ -249,11 +261,23 @@ enum Ziadost {
     Uprav(usize, u64),
     /// Uloženie úprav (obraz, generácia úprav).
     Uloz(usize, u64),
+    /// Práca s katalógom fotografií.
+    Katalog(UlohaKatalogu),
+}
+
+/// Práca s katalógom na pozadí (súbor katalógu, ...).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum UlohaKatalogu {
+    Nacitaj(PathBuf),
+    Pridaj(PathBuf, PathBuf),
+    Obnov(PathBuf),
 }
 
 enum Hotove {
-    Snimka(usize, Result<Arc<Snimka>, String>),
-    Nahlad(usize, Option<Arc<Snimka>>),
+    /// Výsledky nesú cestu – po zmene zoznamu sa staré výsledky zahodia.
+    Snimka(usize, PathBuf, Result<Arc<Snimka>, String>),
+    Nahlad(usize, PathBuf, Option<Arc<Snimka>>),
+    Katalog(UlohaKatalogu, Result<(Herbar, Option<String>), String>),
     Porovnanie(usize, usize, Result<porovnanie::Miery, String>),
     Upravena(usize, u64, Result<Arc<Snimka>, String>),
     Ulozene(usize, u64, Result<upravy::Ulozene, String>),
@@ -267,6 +291,10 @@ struct Front {
 
 /// Rozmery pásu náhľadov.
 const PAS: usize = 96;
+/// Riadok hľadania a dlaždice mriežky katalógu.
+const HLADANIE: usize = 40;
+const DLAZDICA_W: usize = 112;
+const DLAZDICA_H: usize = 122;
 const NAHLAD: usize = 80;
 const POZADIE: Farba = 0x1C1D1F;
 const TEXT: Farba = 0xD8D8D8;
@@ -318,6 +346,18 @@ pub struct Prehliadac {
     pod_mysou: Option<&'static str>,
     /// Kliknutie začalo na paneli – ťahanie neposúva obraz.
     klik_v_paneli: bool,
+    /// Súbor katalógu fotografií (Herbár).
+    katalog_subor: Option<PathBuf>,
+    herbar: Option<Herbar>,
+    /// Zobrazená mriežka katalógu s hľadaním.
+    katalog: bool,
+    dotaz: String,
+    /// Čísla záznamov katalógu pre položky (keď zoznam pochádza z katalógu).
+    zaznamy_vysledkov: Vec<usize>,
+    prvy_riadok: usize,
+    /// Zoznam priečinka pred otvorením katalógu (položky, aktuálny, priečinok).
+    predosle: Option<(Vec<Polozka>, usize, Option<PathBuf>)>,
+    katalog_sprava: Option<String>,
 }
 
 impl std::fmt::Debug for Prehliadac {
@@ -337,6 +377,7 @@ fn pracuj(
     zobud: Arc<dyn Fn() + Send + Sync>,
 ) {
     let limity = Limity::default();
+    let cesta_c = |i: usize| polozky.lock().ok().and_then(|p| p.get(i).cloned()).unwrap_or_default();
     let snimka = |i: usize| -> Result<Arc<Snimka>, String> {
         let cesta = polozky.lock().map_err(|_| "zámok")?.get(i).cloned().ok_or("mimo zoznamu")?;
         let d = std::fs::read(&cesta).map_err(|e| e.to_string())?;
@@ -364,6 +405,7 @@ fn pracuj(
         };
         let v = match z {
             Ziadost::Snimka(i) => {
+                let c = cesta_c(i);
                 let r = snimka(i);
                 if let Ok(s) = &r {
                     posledne.insert(i, s.clone());
@@ -372,15 +414,36 @@ fn pracuj(
                         posledne.remove(&k);
                     }
                 }
-                Hotove::Snimka(i, r)
+                Hotove::Snimka(i, c, r)
             }
             Ziadost::Nahlad(i) => {
-                let cesta = polozky.lock().ok().and_then(|p| p.get(i).cloned());
-                let n = cesta
-                    .and_then(|c| nahlady::nahlad(&c, NAHLAD, &limity).ok())
+                let c = cesta_c(i);
+                let n = nahlady::nahlad(&c, NAHLAD, &limity)
+                    .ok()
                     .and_then(|o| Snimka::z_obrazu(o, String::new()).ok())
                     .map(Arc::new);
-                Hotove::Nahlad(i, n)
+                Hotove::Nahlad(i, c, n)
+            }
+            Ziadost::Katalog(u) => {
+                let r = (|| -> orchidea_jadro::Vysledok<(Herbar, Option<String>)> {
+                    let (subor, pridaj, obnov) = match &u {
+                        UlohaKatalogu::Nacitaj(s) => (s, None, false),
+                        UlohaKatalogu::Pridaj(s, p) => (s, Some(p), true),
+                        UlohaKatalogu::Obnov(s) => (s, None, true),
+                    };
+                    let mut h = Herbar::nacitaj(subor)?;
+                    if let Some(p) = pridaj {
+                        h.pridaj_priecinok(p, true);
+                    }
+                    if !obnov {
+                        return Ok((h, None));
+                    }
+                    let (n, p, z) = h.obnov(0, &limity);
+                    h.uloz(subor)?;
+                    Ok((h, Some(format!("prečítaných {n}, bez zmeny {p}, vynechaných {z}"))))
+                })()
+                .map_err(|e| e.to_string());
+                Hotove::Katalog(u, r)
             }
             Ziadost::Porovnanie(a, b) => {
                 let ziskaj = |i: usize| posledne.get(&i).cloned().map(Ok).unwrap_or_else(|| snimka(i));
@@ -475,6 +538,14 @@ impl Prehliadac {
             napoveda: false,
             pod_mysou: None,
             klik_v_paneli: false,
+            katalog_subor: None,
+            herbar: None,
+            katalog: false,
+            dotaz: String::new(),
+            zaznamy_vysledkov: Vec::new(),
+            prvy_riadok: 0,
+            predosle: None,
+            katalog_sprava: None,
         }
     }
 
@@ -515,6 +586,24 @@ impl Prehliadac {
         if n == 0 {
             return;
         }
+        if self.katalog {
+            // mriežka katalógu: len náhľady viditeľných dlaždíc (zhora)
+            let (_, _, stlpcov, riadkov) = self.mriezka();
+            let od = self.prvy_riadok * stlpcov;
+            let po = (od + stlpcov * (riadkov + 1)).min(n);
+            let chcem: Vec<Ziadost> =
+                (od..po).filter(|i| !self.nahlady.contains_key(i)).map(Ziadost::Nahlad).collect();
+            if let Ok(mut f) = self.front.ziadosti.lock() {
+                f.0.retain(|z| matches!(z, Ziadost::Uprav(..) | Ziadost::Uloz(..) | Ziadost::Katalog(..)));
+                self.cakajuce.retain(|z| f.0.contains(z));
+                for z in chcem {
+                    f.0.push_back(z.clone());
+                    self.cakajuce.insert(z);
+                }
+            }
+            self.front.signal.notify_one();
+            return;
+        }
         let mut chcem = vec![Ziadost::Snimka(self.aktualny)];
         if let Some(a) = self.oznaceny {
             chcem.push(Ziadost::Snimka(a));
@@ -550,12 +639,15 @@ impl Prehliadac {
             .filter(|z| match z {
                 Ziadost::Snimka(i) => !self.snimky.contains_key(i),
                 Ziadost::Nahlad(i) => !self.nahlady.contains_key(i),
-                Ziadost::Porovnanie(..) | Ziadost::Uprav(..) | Ziadost::Uloz(..) => true,
+                Ziadost::Porovnanie(..) | Ziadost::Uprav(..) | Ziadost::Uloz(..) | Ziadost::Katalog(..) => {
+                    true
+                }
             })
             .collect();
         if let Ok(mut f) = self.front.ziadosti.lock() {
             // úpravy a uloženie sa nezahadzujú
-            f.0.retain(|z| matches!(z, Ziadost::Uprav(..) | Ziadost::Uloz(..)));
+            f.0.retain(|z| matches!(z, Ziadost::Uprav(..) | Ziadost::Uloz(..) | Ziadost::Katalog(..)));
+            self.cakajuce.retain(|z| f.0.contains(z));
             let mut videne = std::collections::HashSet::new();
             for z in chcem {
                 if videne.insert(z.clone()) {
@@ -572,24 +664,46 @@ impl Prehliadac {
         let mut zmena = false;
         while let Ok(v) = self.vysledky.try_recv() {
             match v {
-                Hotove::Snimka(i, r) => {
+                Hotove::Snimka(i, c, r) => {
                     self.cakajuce.remove(&Ziadost::Snimka(i));
+                    if self.polozky.get(i).map(|p| &p.cesta) != Some(&c) {
+                        continue;
+                    }
                     let viditelna = i == self.aktualny || Some(i) == self.oznaceny;
                     self.snimky.insert(i, r);
                     zmena |= viditelna;
                 }
-                Hotove::Nahlad(i, n) => {
+                Hotove::Nahlad(i, c, n) => {
                     self.cakajuce.remove(&Ziadost::Nahlad(i));
+                    if self.polozky.get(i).map(|p| &p.cesta) != Some(&c) {
+                        continue;
+                    }
                     self.nahlady.insert(i, n);
+                    let stred =
+                        if self.katalog { self.prvy_riadok * self.mriezka().2 } else { self.aktualny };
                     while self.nahlady.len() > 1024 {
                         let k = *self
                             .nahlady
                             .keys()
-                            .max_by_key(|&&k| (k as isize - self.aktualny as isize).abs())
+                            .max_by_key(|&&k| (k as isize - stred as isize).abs())
                             .unwrap();
                         self.nahlady.remove(&k);
                     }
-                    zmena |= self.pas;
+                    zmena |= self.pas || self.katalog;
+                }
+                Hotove::Katalog(u, r) => {
+                    self.cakajuce.remove(&Ziadost::Katalog(u));
+                    match r {
+                        Ok((h, sprava)) => {
+                            self.herbar = Some(h);
+                            self.katalog_sprava = sprava;
+                            if self.katalog {
+                                self.hladaj_v_katalogu();
+                            }
+                        }
+                        Err(e) => self.katalog_sprava = Some(format!("katalóg: {e}")),
+                    }
+                    zmena = true;
                 }
                 Hotove::Upravena(i, g, r) => {
                     self.cakajuce.remove(&Ziadost::Uprav(i, g));
@@ -679,11 +793,148 @@ impl Prehliadac {
     }
 
     fn rozlozenie(&self) -> Vec<panel::Umiestnenie> {
-        if self.panel_viditelny() {
-            panel::rozloz(panel::PREHLIADAC, &self.pismo, self.sirka)
-        } else {
-            Vec::new()
+        let prvky = if self.katalog { panel::KATALOG } else { panel::PREHLIADAC };
+        if self.panel_viditelny() { panel::rozloz(prvky, &self.pismo, self.sirka) } else { Vec::new() }
+    }
+
+    /// Nastaví súbor katalógu fotografií (Herbár); načíta sa, až keď sa katalóg otvorí.
+    pub fn nastav_katalog(&mut self, cesta: PathBuf) {
+        self.katalog_subor = Some(cesta);
+        self.herbar = None;
+        self.zmena = true;
+    }
+
+    /// Píše sa do poľa hľadania (okno má posielať znaky ako `Vstup::Znak`, nie ako povely)?
+    pub fn pise(&self) -> bool {
+        self.katalog
+    }
+
+    /// Mriežka katalógu: (x začiatku, y začiatku, stĺpcov, celých riadkov).
+    fn mriezka(&self) -> (usize, usize, usize, usize) {
+        let y0 = self.hore() + HLADANIE;
+        let udaje = if self.udaje_viditelne() { 24 } else { 0 };
+        let h = self.vyska.saturating_sub(y0 + udaje);
+        let stlpcov = (self.sirka / DLAZDICA_W).max(1);
+        let x0 = self.sirka.saturating_sub(stlpcov * DLAZDICA_W) / 2;
+        (x0, y0, stlpcov, (h / DLAZDICA_H).max(1))
+    }
+
+    /// Vymení zoznam položiek; úpravy ostanú pri súboroch (podľa cesty).
+    fn nastav_polozky(&mut self, nove: Vec<Polozka>, aktualny: usize) {
+        let mut podla_cesty: HashMap<PathBuf, Historia> = HashMap::new();
+        for (i, h) in self.historie.drain() {
+            if let Some(p) = self.polozky.get(i) {
+                podla_cesty.insert(p.cesta.clone(), h);
+            }
         }
+        self.polozky = nove;
+        for (i, p) in self.polozky.iter().enumerate() {
+            if let Some(h) = podla_cesty.remove(&p.cesta) {
+                self.historie.insert(i, h);
+            }
+        }
+        if let Ok(mut z) = self.zoznam_ciest.lock() {
+            *z = self.polozky.iter().map(|p| p.cesta.clone()).collect();
+        }
+        self.aktualny = aktualny.min(self.polozky.len().saturating_sub(1));
+        self.snimky.clear();
+        self.nahlady.clear();
+        self.upravene.clear();
+        self.posledna_uprava.clear();
+        self.oznaceny = None;
+        self.rezim = Rezim::Jeden;
+        self.miery = None;
+        self.zmena = true;
+    }
+
+    /// Hľadá v katalógu podľa `dotaz` a výsledky dá do zoznamu.
+    fn hladaj_v_katalogu(&mut self) {
+        let Some(h) = &self.herbar else {
+            self.nastav_polozky(Vec::new(), 0);
+            self.zaznamy_vysledkov.clear();
+            return;
+        };
+        let mut vysledky = Vec::new();
+        let mut polozky = Vec::new();
+        for i in h.hladaj_indexy(&self.dotaz) {
+            if let Some(p) = h.zaznamy[i].polozka() {
+                vysledky.push(i);
+                polozky.push(p);
+            }
+        }
+        // rovnaké výsledky (návrat z fotky) – výber ostane
+        let rovnake = vysledky == self.zaznamy_vysledkov && polozky.len() == self.polozky.len();
+        let vyber = if rovnake { self.aktualny } else { 0 };
+        if !rovnake {
+            self.nastav_polozky(polozky, 0);
+            self.prvy_riadok = 0;
+        }
+        self.zaznamy_vysledkov = vysledky;
+        self.aktualny = vyber;
+        self.ukaz_vyber();
+        self.zmena = true;
+        self.naplanuj();
+    }
+
+    /// Posunie mriežku tak, aby bol vybraný záznam vidieť.
+    fn ukaz_vyber(&mut self) {
+        let (_, _, stlpcov, riadkov) = self.mriezka();
+        let r = self.aktualny / stlpcov;
+        if r < self.prvy_riadok {
+            self.prvy_riadok = r;
+        } else if r >= self.prvy_riadok + riadkov {
+            self.prvy_riadok = r + 1 - riadkov;
+        }
+    }
+
+    fn otvor_katalog(&mut self) {
+        if self.predosle.is_none() {
+            self.predosle = Some((self.polozky.clone(), self.aktualny, self.priecinok.clone()));
+        }
+        self.katalog = true;
+        self.napoveda = false;
+        self.prezentacia = None;
+        self.pod_mysou = None;
+        if self.herbar.is_none()
+            && let Some(c) = self.katalog_subor.clone()
+        {
+            self.posli(Ziadost::Katalog(UlohaKatalogu::Nacitaj(c)));
+        }
+        self.hladaj_v_katalogu();
+    }
+
+    /// Zavrie katalóg a vráti zoznam priečinka spred otvorenia.
+    fn zavri_katalog(&mut self) {
+        self.katalog = false;
+        self.pod_mysou = None;
+        if let Some((polozky, aktualny, priecinok)) = self.predosle.take() {
+            self.nastav_polozky(polozky, aktualny);
+            self.priecinok = priecinok;
+        }
+        self.zaznamy_vysledkov.clear();
+        self.prisposob();
+        self.naplanuj();
+    }
+
+    /// Otvorí vybranú fotku z výsledkov (zoznam ostane – listuje sa vo výsledkoch).
+    fn otvor_vysledok(&mut self, i: usize) {
+        if i >= self.polozky.len() {
+            return;
+        }
+        self.katalog = false;
+        self.pod_mysou = None;
+        self.aktualny = i;
+        self.prisposob();
+        self.naplanuj();
+    }
+
+    /// Priečinok, ktorý tlačidlo „Pridať priečinok“ pridá do katalógu.
+    fn priecinok_na_pridanie(&self) -> Option<PathBuf> {
+        self.predosle.as_ref().and_then(|p| p.2.clone()).or_else(|| self.priecinok.clone())
+    }
+
+    fn katalog_pracuje(&self) -> bool {
+        self.cakajuce.iter().any(|z| matches!(z, Ziadost::Katalog(..)))
     }
 
     /// Urobí povel tlačidla panela niečo? (Neaktívne tlačidlá sú sivé.)
@@ -691,6 +942,15 @@ impl Prehliadac {
         let obraz = self.aktualna().is_some();
         let h = self.historie.get(&self.aktualny);
         match p {
+            Povel::Katalog => self.katalog_subor.is_some(),
+            Povel::KatalogPridaj => {
+                self.katalog_subor.is_some()
+                    && !self.katalog_pracuje()
+                    && self.priecinok_na_pridanie().is_some()
+            }
+            Povel::KatalogObnov => {
+                !self.katalog_pracuje() && self.herbar.as_ref().is_some_and(|h| !h.priecinky.is_empty())
+            }
             Povel::Spat => h.is_some_and(|h| h.moze_spat()),
             Povel::Znova => h.is_some_and(|h| h.moze_znova()),
             Povel::Ulozit => obraz && h.is_some_and(|h| !h.aktivne().is_empty()),
@@ -714,6 +974,9 @@ impl Prehliadac {
         if self.napoveda {
             self.napoveda = false;
             self.zmena = true;
+            true
+        } else if self.katalog {
+            self.zavri_katalog();
             true
         } else if self.prezentacia.is_some() {
             self.vstup(Vstup::Povel(Povel::Prezentacia));
@@ -794,10 +1057,18 @@ impl Prehliadac {
 
     /// Spracuje vstup; vráti, či treba prekresliť.
     pub fn vstup(&mut self, v: Vstup) -> bool {
+        if self.katalog {
+            return self.vstup_katalogu(v);
+        }
         let n = self.polozky.len();
         let povodny = self.aktualny;
         match v {
-            Vstup::Otvor(c) => self.otvor(&c),
+            Vstup::Znak(_) => return false,
+            Vstup::Otvor(c) => {
+                self.predosle = None;
+                self.zaznamy_vysledkov.clear();
+                self.otvor(&c);
+            }
             Vstup::Tik => {
                 if self.casovac().is_none() || n == 0 {
                     return false;
@@ -871,6 +1142,7 @@ impl Prehliadac {
                     self.napoveda = !self.napoveda;
                     self.zmena = true;
                 }
+                Povel::Katalog if self.katalog_subor.is_some() => self.otvor_katalog(),
                 Povel::Panel => {
                     self.panel = !self.panel;
                     self.pod_mysou = None;
@@ -1027,6 +1299,155 @@ impl Prehliadac {
         self.zmena
     }
 
+    /// Vstup v mriežke katalógu.
+    fn vstup_katalogu(&mut self, v: Vstup) -> bool {
+        let n = self.polozky.len();
+        let (x0, y0, stlpcov, riadkov) = self.mriezka();
+        let povodny = (self.aktualny, self.prvy_riadok);
+        match v {
+            Vstup::Znak(c) => {
+                match c {
+                    '\u{8}' => {
+                        if self.dotaz.pop().is_none() {
+                            return false;
+                        }
+                    }
+                    '\r' | '\n' => {
+                        self.otvor_vysledok(self.aktualny);
+                        return true;
+                    }
+                    c if c.is_control() => return false,
+                    c => {
+                        if self.dotaz.chars().count() >= 200 {
+                            return false;
+                        }
+                        self.dotaz.push(c);
+                    }
+                }
+                self.hladaj_v_katalogu();
+                return true;
+            }
+            Vstup::Otvor(c) => {
+                let priecinok = if c.is_dir() { Some(c) } else { c.parent().map(Path::to_path_buf) };
+                if let (Some(s), Some(p)) = (self.katalog_subor.clone(), priecinok) {
+                    self.posli(Ziadost::Katalog(UlohaKatalogu::Pridaj(s, p)));
+                    self.katalog_sprava = Some("pridávam priečinok…".into());
+                    self.zmena = true;
+                }
+                return true;
+            }
+            Vstup::Velkost { sirka, vyska } => {
+                if (sirka, vyska) == (self.sirka, self.vyska) {
+                    return false;
+                }
+                self.sirka = sirka.max(1);
+                self.vyska = vyska.max(1);
+                self.ukaz_vyber();
+                self.zmena = true;
+                self.naplanuj();
+                return true;
+            }
+            Vstup::Povel(p) => match p {
+                Povel::Dalsi if n > 0 => self.aktualny = (self.aktualny + 1).min(n - 1),
+                Povel::Predosly => self.aktualny = self.aktualny.saturating_sub(1),
+                Povel::Dole if n > 0 => self.aktualny = (self.aktualny + stlpcov).min(n - 1),
+                Povel::Hore => self.aktualny = self.aktualny.saturating_sub(stlpcov),
+                Povel::Prvy => self.aktualny = 0,
+                Povel::Posledny => self.aktualny = n.saturating_sub(1),
+                Povel::Katalog => {
+                    self.zavri_katalog();
+                    return true;
+                }
+                Povel::KatalogPridaj => {
+                    if let (Some(s), Some(p)) = (self.katalog_subor.clone(), self.priecinok_na_pridanie()) {
+                        self.posli(Ziadost::Katalog(UlohaKatalogu::Pridaj(s, p)));
+                        self.katalog_sprava = Some("pridávam priečinok…".into());
+                        self.zmena = true;
+                    }
+                    return true;
+                }
+                Povel::KatalogObnov => {
+                    if let Some(s) = self.katalog_subor.clone() {
+                        self.posli(Ziadost::Katalog(UlohaKatalogu::Obnov(s)));
+                        self.katalog_sprava = Some("obnovujem…".into());
+                        self.zmena = true;
+                    }
+                    return true;
+                }
+                Povel::Napoveda => {
+                    self.napoveda = !self.napoveda;
+                    self.zmena = true;
+                    return true;
+                }
+                Povel::Panel => {
+                    self.panel = !self.panel;
+                    self.zmena = true;
+                    self.naplanuj();
+                    return true;
+                }
+                Povel::Udaje => {
+                    self.udaje = !self.udaje;
+                    self.zmena = true;
+                    self.naplanuj();
+                    return true;
+                }
+                _ => return false,
+            },
+            Vstup::Koliesko { krokov, .. } => {
+                let riadkov_spolu = n.div_ceil(stlpcov);
+                let max = riadkov_spolu.saturating_sub(riadkov);
+                let k = (-krokov * 2.0).round() as isize;
+                self.prvy_riadok = (self.prvy_riadok as isize + k).clamp(0, max as isize) as usize;
+            }
+            Vstup::Mys { x, y } => {
+                let nove = panel::na_bode(&self.rozlozenie(), x, y)
+                    .filter(|t| self.povel_aktivny(t.povel))
+                    .map(|t| t.id);
+                if nove == self.pod_mysou {
+                    return false;
+                }
+                self.pod_mysou = nove;
+                self.zmena = true;
+                return true;
+            }
+            Vstup::Klik { x, y } => {
+                if self.napoveda {
+                    self.napoveda = false;
+                    self.zmena = true;
+                    return true;
+                }
+                if self.panel_viditelny() && y < self.hore() as f32 {
+                    if let Some(t) = panel::na_bode(&self.rozlozenie(), x, y)
+                        && self.povel_aktivny(t.povel)
+                    {
+                        return self.vstup_katalogu(Vstup::Povel(t.povel));
+                    }
+                    return false;
+                }
+                if y < y0 as f32 || x < x0 as f32 {
+                    return false;
+                }
+                let s = ((x as usize) - x0) / DLAZDICA_W;
+                let r = ((y as usize) - y0) / DLAZDICA_H + self.prvy_riadok;
+                if s < stlpcov && r * stlpcov + s < n {
+                    self.otvor_vysledok(r * stlpcov + s);
+                    return true;
+                }
+                return false;
+            }
+            Vstup::Tahaj { .. } | Vstup::Delic { .. } | Vstup::Tik => return false,
+        }
+        if (self.aktualny, self.prvy_riadok) == povodny {
+            return false;
+        }
+        if self.aktualny != povodny.0 {
+            self.ukaz_vyber();
+        }
+        self.zmena = true;
+        self.naplanuj();
+        true
+    }
+
     fn pozicia_pasu(&self, od: usize) -> (f32, f32) {
         // aktuálny náhľad v strede pásu
         let stred = self.sirka as f32 / 2.0 - PAS as f32 / 2.0;
@@ -1035,6 +1456,13 @@ impl Prehliadac {
 
     /// Titulok okna.
     pub fn titulok(&self) -> String {
+        if self.katalog {
+            let spolu = self.herbar.as_ref().map_or(0, |h| h.zaznamy.len());
+            return format!(
+                "katalóg fotografií (Herbár) – nájdených {} z {spolu} – prehliadač a editor fotografií (Pohľad)",
+                self.polozky.len()
+            );
+        }
         match self.polozky.get(self.aktualny) {
             Some(p) => format!(
                 "{} ({}/{}) – prehliadač a editor fotografií (Pohľad)",
@@ -1057,6 +1485,14 @@ impl Prehliadac {
             *p = Platno::nove(self.sirka, self.vyska, pozadie);
         } else {
             p.body.fill(pozadie);
+        }
+        if self.katalog {
+            self.kresli_katalog(p);
+            self.kresli_panel(p);
+            if self.napoveda {
+                panel::kresli_napovedu(p, &self.pismo, panel::NAPOVEDA);
+            }
+            return;
         }
         let (w, h) = self.plocha();
         let hore = self.hore();
@@ -1132,18 +1568,7 @@ impl Prehliadac {
                     p.vypln(x as i32 + 2, y as i32 + 2, PAS as i32 - 4, PAS as i32 - 4, f);
                 }
                 if let Some(Some(n)) = self.nahlady.get(&i) {
-                    let (nx, ny) =
-                        (x as i32 + (PAS - n.sirka) as i32 / 2, y as i32 + (PAS - n.vyska) as i32 / 2);
-                    let d = &n.urovne[0].2;
-                    for r in 0..n.vyska {
-                        for s in 0..n.sirka {
-                            let (px, py) = (nx + s as i32, ny + r as i32);
-                            if px >= 0 && (px as usize) < p.sirka && py >= 0 && (py as usize) < p.vyska {
-                                p.body[py as usize * p.sirka + px as usize] =
-                                    na_pozadi(d[r * n.sirka + s], px as usize, py as usize);
-                            }
-                        }
-                    }
+                    kresli_nahlad(p, n, x as i32 + PAS as i32 / 2, y as i32 + PAS as i32 / 2);
                 }
             }
         }
@@ -1151,6 +1576,133 @@ impl Prehliadac {
         if self.napoveda {
             panel::kresli_napovedu(p, &self.pismo, panel::NAPOVEDA);
         }
+    }
+
+    /// Katalóg: riadok hľadania, mriežka výsledkov s náhľadmi, riadok s údajmi o vybranej fotke.
+    fn kresli_katalog(&self, p: &mut Platno) {
+        let hore = self.hore() as i32;
+        let (x0, y0, stlpcov, riadkov) = self.mriezka();
+        // riadok hľadania
+        p.vypln(0, hore, self.sirka as i32, HLADANIE as i32, 0x232528);
+        let z = hore as f32 + 26.0;
+        let x = p.text(&self.pismo, "Hľadať:", 12.0, z, 14.0, 1.0, TEXT) + 10.0;
+        let spolu = self.herbar.as_ref().map_or(0, |h| h.zaznamy.len());
+        let info = if self.katalog_pracuje() {
+            "pracujem…".to_string()
+        } else if self.herbar.is_some() {
+            format!("nájdených {} z {spolu}", self.polozky.len())
+        } else {
+            String::new()
+        };
+        let iw = self.pismo.sirka(&info, 13.0, 1.0);
+        let pole = (self.sirka as f32 - x - iw - 30.0).max(80.0);
+        p.vypln(x as i32, hore + 7, pole as i32, HLADANIE as i32 - 14, 0x141517);
+        p.vypln(x as i32, hore + HLADANIE as i32 - 8, pole as i32, 1, ZVYRAZNENIE);
+        let t = self.pismo.skrat(&format!("{}_", self.dotaz), pole - 12.0, 14.0, 1.0);
+        p.text(&self.pismo, &t, x + 6.0, z, 14.0, 1.0, 0xFFFFFF);
+        p.text(&self.pismo, &info, self.sirka as f32 - iw - 12.0, z, 13.0, 1.0, 0x9A9DA1);
+        // mriežka
+        let n = self.polozky.len();
+        if n == 0 {
+            let (riadok1, riadok2) = match (&self.herbar, self.katalog_pracuje()) {
+                (_, true) => ("Pracujem na katalógu…", String::new()),
+                (None, _) => ("Katalóg sa načítava.", String::new()),
+                (Some(h), _) if h.zaznamy.is_empty() => (
+                    "Katalóg je prázdny. Pretiahnite sem priečinok s fotografiami alebo stlačte „Pridať priečinok“.",
+                    "Fotky ostanú na svojom mieste – katalóg si pamätá len ich údaje.".to_string(),
+                ),
+                _ => (
+                    "Nič sa nenašlo.",
+                    "Príklady: kvet -vianoce   datum:2024-05   fotoaparat:canon   iso>=800   gps:ano"
+                        .to_string(),
+                ),
+            };
+            for (k, (t, v)) in [(riadok1.to_string(), 16.0), (riadok2, 14.0)].into_iter().enumerate() {
+                let t = self.pismo.skrat(&t, self.sirka as f32 - 20.0, v, 1.0);
+                let tx = (self.sirka as f32 - self.pismo.sirka(&t, v, 1.0)) / 2.0;
+                p.text(&self.pismo, &t, tx.max(10.0), y0 as f32 + 60.0 + k as f32 * 28.0, v, 1.0, TEXT);
+            }
+        }
+        let od = self.prvy_riadok * stlpcov;
+        let po = (od + stlpcov * (riadkov + 1)).min(n);
+        for i in od..po {
+            let (s, r) = ((i - od) % stlpcov, (i - od) / stlpcov);
+            let (x, y) = ((x0 + s * DLAZDICA_W) as i32, (y0 + r * DLAZDICA_H) as i32);
+            if i == self.aktualny {
+                p.vypln(x + 2, y + 2, DLAZDICA_W as i32 - 4, DLAZDICA_H as i32 - 4, 0x2D3E5C);
+                p.vypln(x + 2, y + 2, DLAZDICA_W as i32 - 4, 2, ZVYRAZNENIE);
+            }
+            match self.nahlady.get(&i) {
+                Some(Some(nh)) => kresli_nahlad(p, nh, x + DLAZDICA_W as i32 / 2, y + 8 + NAHLAD as i32 / 2),
+                Some(None) => {
+                    p.text(
+                        &self.pismo,
+                        "?",
+                        (x + DLAZDICA_W as i32 / 2 - 4) as f32,
+                        (y + 52) as f32,
+                        16.0,
+                        1.0,
+                        TEXT,
+                    );
+                }
+                None => p.vypln(x + 16, y + 8, NAHLAD as i32, NAHLAD as i32, 0x26282B),
+            }
+            let meno = self.polozky[i]
+                .cesta
+                .file_name()
+                .map(|m| m.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let meno = self.pismo.skrat(&meno, DLAZDICA_W as f32 - 10.0, 11.0, 1.0);
+            let mx = x as f32 + (DLAZDICA_W as f32 - self.pismo.sirka(&meno, 11.0, 1.0)) / 2.0;
+            p.text(&self.pismo, &meno, mx, (y + 8 + NAHLAD as i32 + 20) as f32, 11.0, 1.0, TEXT);
+        }
+        // riadok s údajmi o vybranej fotke
+        if self.udaje_viditelne() {
+            let y = self.vyska as i32 - 24;
+            p.vypln(0, y, self.sirka as i32, 24, 0x26282B);
+            let t = self.text_udajov_katalogu();
+            let t = self.pismo.skrat(&t, self.sirka as f32 - 16.0, 13.0, 1.0);
+            p.text(&self.pismo, &t, 8.0, y as f32 + 17.0, 13.0, 1.0, TEXT);
+        }
+    }
+
+    fn text_udajov_katalogu(&self) -> String {
+        let mut t = Vec::new();
+        if let (Some(h), Some(&i)) = (&self.herbar, self.zaznamy_vysledkov.get(self.aktualny))
+            && let Some(z) = h.zaznamy.get(i)
+            && !self.polozky.is_empty()
+        {
+            t.push(z.cesta.file_name().map(|m| m.to_string_lossy().into_owned()).unwrap_or_default());
+            if !z.datum.is_empty() {
+                t.push(z.datum.clone());
+            }
+            if !z.fotoaparat.is_empty() {
+                t.push(z.fotoaparat.clone());
+            }
+            t.push(format!("{} × {}", z.sirka, z.vyska));
+            if let Some(iso) = z.iso {
+                t.push(format!("ISO {iso}"));
+            }
+            if !z.kluce.is_empty() {
+                t.push(format!("kľúčové slová: {}", z.kluce.join(", ")));
+            }
+            if !z.nazov.is_empty() {
+                t.push(z.nazov.clone());
+            }
+            if let Some(r) = z.hodnotenie {
+                t.push(format!("hodnotenie {r}/5"));
+            }
+            if let Some(p) = z.cesta.parent() {
+                t.push(p.display().to_string());
+            }
+        }
+        if let Some(m) = &self.katalog_sprava {
+            t.push(m.clone());
+        }
+        if t.is_empty() {
+            t.push("Enter alebo kliknutie otvorí fotku · Esc zavrie katalóg".into());
+        }
+        t.join(" · ")
     }
 
     fn kresli_panel(&self, p: &mut Platno) {
@@ -1215,6 +1767,21 @@ impl Prehliadac {
     /// Počet obrázkov v priečinku.
     pub fn pocet(&self) -> usize {
         self.polozky.len()
+    }
+}
+
+/// Nakreslí náhľad so stredom v (cx, cy).
+fn kresli_nahlad(p: &mut Platno, n: &Snimka, cx: i32, cy: i32) {
+    let (nx, ny) = (cx - n.sirka as i32 / 2, cy - n.vyska as i32 / 2);
+    let d = &n.urovne[0].2;
+    for r in 0..n.vyska {
+        for s in 0..n.sirka {
+            let (px, py) = (nx + s as i32, ny + r as i32);
+            if px >= 0 && (px as usize) < p.sirka && py >= 0 && (py as usize) < p.vyska {
+                p.body[py as usize * p.sirka + px as usize] =
+                    na_pozadi(d[r * n.sirka + s], px as usize, py as usize);
+            }
+        }
     }
 }
 
