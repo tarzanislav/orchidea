@@ -599,7 +599,8 @@ fn samotest_krok(s: &mut Stav) {
 unsafe extern "system" fn wnd_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize {
     // SAFETY: rovnaké parametre ako od systému
     let v = unsafe { spracuj_spravu(hwnd, m, wp, lp) };
-    if matches!(m, WM_KEYDOWN | WM_CHAR | WM_LBUTTONDOWN | WM_SAMOTEST) {
+    // žiadosť o dialóg môže vzniknúť po kláves, kliknutí aj po kroku samotestu (WM_HOTOVE, WM_SAMOTEST)
+    if m != WM_PAINT && m != WM_DESTROY {
         ukaz_dialog(hwnd);
     }
     v
