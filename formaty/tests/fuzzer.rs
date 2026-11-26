@@ -142,6 +142,14 @@ fn fuzzer_jpeg() {
             let _ = jpeg::citaj(d, &l);
             let _ = jpeg::citaj_zmensene(d, &l, 8);
             let _ = jpeg::citaj_hlavicku(d);
+            use jpeg::bezstratovo::{Transformacia, Vyrez, uprav};
+            let v = Vyrez { x: 3, y: 5, sirka: 9, vyska: 7 };
+            for t in [Transformacia::Otoc90, Transformacia::Transverzia] {
+                if let Ok(j) = uprav(d, t, Some(v), true, &l) {
+                    // výsledok bezstratovej úpravy musí byť platný JPEG
+                    let _ = jpeg::citaj(&j, &l);
+                }
+            }
         },
         13,
     );

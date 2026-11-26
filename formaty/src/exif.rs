@@ -46,6 +46,23 @@ pub fn natocenie(exif: &[u8]) -> Option<u8> {
     None
 }
 
+/// Nastaví natočenie v IFD0 (ak tam položka je) priamo v bloku; vráti, či sa našla.
+pub fn nastav_natocenie(exif: &mut [u8], n: u8) -> bool {
+    let posun = if exif.starts_with(b"Exif\0\0") { 6 } else { 0 };
+    let d = &mut exif[posun..];
+    let Some((le, ifd)) = hlavicka(d) else { return false };
+    let Some(pocet) = u16_v(d, ifd, le) else { return false };
+    for k in 0..(pocet as usize).min(1000) {
+        let e = ifd + 2 + 12 * k;
+        if u16_v(d, e, le) == Some(0x0112) && e + 10 <= d.len() {
+            let b = if le { (n as u16).to_le_bytes() } else { (n as u16).to_be_bytes() };
+            d[e + 8..e + 10].copy_from_slice(&b);
+            return true;
+        }
+    }
+    false
+}
+
 /// Exif s jedinou položkou natočenia (pre zápis a skúšky).
 pub fn s_natocenim(n: u8) -> Vec<u8> {
     let mut d = b"II\x2A\x00\x08\x00\x00\x00\x01\x00".to_vec();

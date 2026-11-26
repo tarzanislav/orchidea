@@ -3,6 +3,8 @@
 //! - `formaty info <súbor>…` – formát, rozmery, kanály, bity
 //! - `formaty prevod <vstup> <výstup>` – prevod podľa prípony výstupu (`.surove` = surové vzorky na porovnanie)
 //! - `formaty metadata <súbor>` – položky Exif, IPTC a veľkosť XMP (riadky oddelené tabulátorom)
+//! - `formaty bezstratovo <vstup.jpg> <výstup.jpg> <ziadna|h|v|transp|transv|90|180|270|exif> [x,y,šírka,výška]`
+//!   – bezstratové otočenie a orezanie JPEG v oblasti DCT
 //! - `formaty zlib-zbal <úroveň> <vstup> <výstup>`, `formaty zlib-rozbal <vstup> <výstup>`
 //!
 //! Formát `.surove`: riadok „šírka výška kanály typ“ (typ u8, u16 alebo f32) a vzorky little-endian.
@@ -97,6 +99,31 @@ fn spusti(a: &[String]) -> Result<(), String> {
                 println!("XMP\t{}", x.len());
             }
             Ok(())
+        }
+        Some("bezstratovo") if a.len() >= 5 => {
+            use orchidea_formaty::jpeg::bezstratovo::{Transformacia as T, Vyrez, uprav};
+            let d = std::fs::read(&a[2]).map_err(|e| e.to_string())?;
+            let (t, exif) = match a[4].as_str() {
+                "ziadna" => (T::Ziadna, false),
+                "h" => (T::ZrkadloVodorovne, false),
+                "v" => (T::ZrkadloZvisle, false),
+                "transp" => (T::Transpozicia, false),
+                "transv" => (T::Transverzia, false),
+                "90" => (T::Otoc90, false),
+                "180" => (T::Otoc180, false),
+                "270" => (T::Otoc270, false),
+                "exif" => {
+                    let n = orchidea_formaty::citaj(&d, &Limity::default()).map_err(|e| e.to_string())?.metadata.natocenie;
+                    (T::z_natocenia(n), true)
+                }
+                x => return Err(format!("neznáma transformácia {x}")),
+            };
+            let vyrez = a.get(5).map(|v| {
+                let c: Vec<usize> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                Vyrez { x: c[0], y: c[1], sirka: c[2], vyska: c[3] }
+            });
+            let von = uprav(&d, t, vyrez, exif, &Limity::default()).map_err(|e| e.to_string())?;
+            std::fs::write(&a[3], von).map_err(|e| e.to_string())
         }
         Some("zlib-zbal") if a.len() == 5 => {
             let d = std::fs::read(&a[3]).map_err(|e| e.to_string())?;

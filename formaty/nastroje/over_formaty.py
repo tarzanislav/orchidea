@@ -2,7 +2,7 @@
 """Nezávislé overenie obrazových formátov ORCHIDEE (R211) – len v CI, nie súčasť programu.
 
 Rozhodcami sú cudzie knižnice: libpng, libjpeg-turbo, libtiff, libjxl a OpenEXR (cez imagecodecs), Pillow,
-ExifTool (metadáta);
+ExifTool (metadáta), jpegtran (bezstratové úpravy JPEG);
 skúšobné súbory TIFF zapisuje tifffile. Skript vytvorí náhodné obrázky, uloží ich rozhodcom v mnohých
 variantoch a porovná s naším dekodérom; potom naopak – naše súbory musí prečítať rozhodca.
 
@@ -681,10 +681,61 @@ def over_metadata(rng):
                 zapis_vysledok("Metadáta", f"{zdroj} → {ciel}", False, str(e)[:160])
 
 
+def over_bezstratovo(rng):
+    """Bezstratové otočenie a orezanie JPEG proti jpegtran (libjpeg-turbo): obraz výsledku bit po bite."""
+    import shutil
+
+    from PIL import Image
+
+    jt = os.environ.get("ORCHIDEA_JPEGTRAN") or shutil.which("jpegtran")
+    if not jt:
+        zapis_vysledok("JPEG bezstratovo", "jpegtran", False, "rozhodca jpegtran chýba")
+        return
+    y, x = np.mgrid[0:203, 0:301]
+    pole = np.stack([(np.sin(x / 7 + k) + np.cos(y / 11 - k)) * 60 + 128 for k in range(3)], -1).clip(0, 255)
+    pole = (pole + rng.random(pole.shape) * 20).clip(0, 255).astype(np.uint8)
+    zdroje = []
+    for meno, kw in (("420", dict(subsampling=2)), ("422", dict(subsampling=1)), ("444", dict(subsampling=0)),
+                     ("progresivny", dict(progressive=True)), ("siva", {})):
+        c = os.path.join(PRAC, f"bez_{meno}.jpg")
+        (Image.fromarray(pole[..., 0]) if meno == "siva" else Image.fromarray(pole)).save(c, quality=85, **kw)
+        zdroje.append((meno, c))
+    tr = {"h": ["-flip", "horizontal"], "v": ["-flip", "vertical"], "transp": ["-transpose"],
+          "transv": ["-transverse"], "90": ["-rotate", "90"], "180": ["-rotate", "180"], "270": ["-rotate", "270"]}
+    nase_c, ich_c = os.path.join(PRAC, "bez_nase.jpg"), os.path.join(PRAC, "bez_ich.jpg")
+
+    def porovnaj(meno, nase_arg, ich_arg, zdroj):
+        try:
+            subprocess.run([PROGRAM, "bezstratovo", zdroj, nase_c] + nase_arg, check=True, capture_output=True)
+            subprocess.run([jt] + ich_arg + ["-outfile", ich_c, zdroj], check=True, capture_output=True)
+            n, i = np.asarray(Image.open(nase_c)), np.asarray(Image.open(ich_c))
+            ok = n.shape == i.shape and np.array_equal(n, i)
+            zapis_vysledok("JPEG bezstratovo", meno, ok, f"{n.shape[1]}×{n.shape[0]} bit po bite" if ok else f"{n.shape} ≠ {i.shape}")
+        except subprocess.CalledProcessError as e:
+            zapis_vysledok("JPEG bezstratovo", meno, False, (e.stderr or b"").decode(errors="replace")[-160:])
+
+    for zm, zc in zdroje:
+        for t, arg in tr.items():
+            porovnaj(f"{zm} {t}", [t], arg + ["-trim"], zc)
+        for t in ("ziadna", "90"):
+            for v in ((17, 9, 100, 80), (40, 33, 120, 150)):
+                porovnaj(f"{zm} {t} orez {v}", [t, ",".join(map(str, v))],
+                         tr.get(t, []) + (["-trim"] if t != "ziadna" else []) + ["-crop", f"{v[2]}x{v[3]}+{v[0]}+{v[1]}"], zc)
+    # natočenie podľa Exif: výsledok má natočenie 1 a obraz ako jpegtran
+    e = Image.Exif()
+    e[0x0112] = 6
+    c = os.path.join(PRAC, "bez_exif6.jpg")
+    Image.fromarray(pole).save(c, quality=85, exif=e)
+    porovnaj("Exif 6 → 90°", ["exif"], ["-rotate", "90", "-trim"], c)
+    natocenie = Image.open(nase_c).getexif().get(0x0112)
+    zapis_vysledok("JPEG bezstratovo", "Exif natočenie po úprave", natocenie == 1, f"natočenie {natocenie}")
+
+
 def main():
     rng = np.random.default_rng(2026)
     overenia = {"png": over_png, "jpeg": over_jpeg, "tiff": over_tiff, "exr": over_exr, "jxl": over_jxl,
-                "metadata": over_metadata}
+                "metadata": over_metadata,
+                "bezstratovo": over_bezstratovo}
     for meno, f in overenia.items():
         if not VYBER or meno in VYBER:
             f(rng)

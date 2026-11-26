@@ -47,18 +47,18 @@ fn tabulka(zaklad: &[u16; 64], kvalita: u8) -> [u16; 64] {
 }
 
 /// Rovina 8-bitových vzoriek jednej zložky, doplnená opakovaním okraja na celé bloky MCU.
-struct Rovina {
-    w: usize,
-    h: usize,
-    vzorky: Vec<u8>,
-    hf: usize,
-    vf: usize,
-    tq: usize,
+pub(super) struct Rovina {
+    pub(super) w: usize,
+    pub(super) h: usize,
+    pub(super) vzorky: Vec<u8>,
+    pub(super) hf: usize,
+    pub(super) vf: usize,
+    pub(super) tq: usize,
     /// Bloky so skutočnými údajmi (neprekladaný sken kóduje len tieto).
-    bw_ucinne: usize,
-    bh_ucinne: usize,
+    pub(super) bw_ucinne: usize,
+    pub(super) bh_ucinne: usize,
     /// Kvantizované koeficienty blokov (prirodzené poradie).
-    koef: Vec<i16>,
+    pub(super) koef: Vec<i16>,
 }
 
 /// Cieľ zápisu znakov – raz počítadlo početností, raz skutočný zápis.
@@ -133,10 +133,10 @@ fn bity_hodnoty(v: i32, s: u32) -> u32 {
 }
 
 /// Opis skenu: zložky, spektrálny výber od–po, tabuľky (DC, AC).
-struct Sken {
-    zlozky: Vec<usize>,
-    od: usize,
-    po: usize,
+pub(super) struct Sken {
+    pub(super) zlozky: Vec<usize>,
+    pub(super) od: usize,
+    pub(super) po: usize,
 }
 
 /// Zapíše obrázok do JPEG. Sivý obrázok má jednu zložku, RGB sa prevedie na YCbCr, CMYK sa uloží
@@ -322,7 +322,7 @@ pub fn zapis(o: &Obraz, n: &NastavenieJpeg) -> Vysledok<Vec<u8>> {
     Ok(von)
 }
 
-fn segment(von: &mut Vec<u8>, znacka: u8, obsah: &[u8]) {
+pub(super) fn segment(von: &mut Vec<u8>, znacka: u8, obsah: &[u8]) {
     von.extend_from_slice(&[0xFF, znacka]);
     von.extend_from_slice(&((obsah.len() + 2) as u16).to_be_bytes());
     von.extend_from_slice(obsah);
@@ -531,4 +531,78 @@ fn vypis_eob<C: Ciel>(c: &mut C, ta: usize, eob: &mut u32) {
     c.znak(ta, (n << 4) as u8);
     c.bity(*eob - (1 << n), n);
     *eob = 0;
+}
+
+/// Zapíše JPEG z hotových kvantizovaných koeficientov (bezstratové úpravy): segmenty APPn/COM bez zmeny,
+/// kvantizačné tabuľky, SOF0 (8 b) alebo SOF1 (12 b), jeden sekvenčný sken s optimalizovanými Huffmanovými
+/// tabuľkami (jas 0, ostatné zložky 1).
+pub(super) fn zapis_koeficienty(
+    roviny: &[Rovina],
+    ids: &[u8],
+    (sirka, vyska): (usize, usize),
+    presnost: u8,
+    tabulky: &[(u8, [u16; 64])],
+    segmenty: &[(u8, Vec<u8>)],
+) -> Vysledok<Vec<u8>> {
+    if sirka == 0 || vyska == 0 || sirka > 65_535 || vyska > 65_535 {
+        return Err(Chyba::Limit("JPEG: neplatný rozmer".into()));
+    }
+    let hmax = roviny.iter().map(|r| r.hf).max().unwrap_or(1);
+    let vmax = roviny.iter().map(|r| r.vf).max().unwrap_or(1);
+    let (mcux, mcuy) = (sirka.div_ceil(8 * hmax), vyska.div_ceil(8 * vmax));
+    let mut von = vec![0xFF, 0xD8];
+    for (z, seg) in segmenty {
+        if seg.len() + 2 <= 65_535 {
+            segment(&mut von, *z, seg);
+        }
+    }
+    for (t, tab) in tabulky {
+        let sestnast = tab.iter().any(|&q| q > 255);
+        let mut d = vec![(sestnast as u8) << 4 | t];
+        for &i in CIK_CAK.iter() {
+            if sestnast {
+                d.extend_from_slice(&tab[i].to_be_bytes());
+            } else {
+                d.push(tab[i] as u8);
+            }
+        }
+        segment(&mut von, 0xDB, &d);
+    }
+    let mut sof = vec![presnost];
+    sof.extend_from_slice(&(vyska as u16).to_be_bytes());
+    sof.extend_from_slice(&(sirka as u16).to_be_bytes());
+    sof.push(roviny.len() as u8);
+    for (r, id) in roviny.iter().zip(ids) {
+        sof.extend_from_slice(&[*id, (r.hf as u8) << 4 | r.vf as u8, r.tq as u8]);
+    }
+    segment(&mut von, if presnost > 8 { 0xC1 } else { 0xC0 }, &sof);
+    let sken = Sken { zlozky: (0..roviny.len()).collect(), od: 0, po: 63 };
+    let tab: Vec<usize> = (0..roviny.len()).map(|c| (c > 0) as usize).collect();
+    let mut pocty = Pocty([[0; 257]; 4]);
+    koduj_sken(&mut pocty, roviny, &sken, (mcux, mcuy), &tab);
+    let mut kody = [[(0u16, 0u8); 256]; 4];
+    let mut dht = Vec::new();
+    for (t, poc) in pocty.0.iter().enumerate() {
+        if poc.iter().all(|&x| x == 0) {
+            continue;
+        }
+        let (bity, hodnoty, k) = huffman_tabulka(poc);
+        kody[t] = k;
+        dht.push(if t < 2 { t as u8 } else { 0x10 | (t - 2) as u8 });
+        dht.extend_from_slice(&bity);
+        dht.extend_from_slice(&hodnoty);
+    }
+    segment(&mut von, 0xC4, &dht);
+    let mut sos = vec![roviny.len() as u8];
+    for (c, id) in ids.iter().enumerate() {
+        let t = tab[c] as u8;
+        sos.extend_from_slice(&[*id, t << 4 | t]);
+    }
+    sos.extend_from_slice(&[0, 63, 0]);
+    segment(&mut von, 0xDA, &sos);
+    let mut z = Zapisovac { von: &mut von, akum: 0, pocet: 0, kody };
+    koduj_sken(&mut z, roviny, &sken, (mcux, mcuy), &tab);
+    z.dokonci();
+    von.extend_from_slice(&[0xFF, 0xD9]);
+    Ok(von)
 }

@@ -264,6 +264,8 @@ struct Stav {
     meta: Metadata,
     metadat: u64,
     eob: u32,
+    /// Segmenty APPn a COM v pôvodnom poradí.
+    segmenty: Vec<(u8, Vec<u8>)>,
 }
 
 fn be16(d: &[u8], i: usize) -> Vysledok<usize> {
@@ -324,6 +326,62 @@ pub fn citaj_zmensene(data: &[u8], limity: &Limity, mierka: usize) -> Vysledok<O
 }
 
 fn dekoduj(data: &[u8], limity: &Limity, n: usize) -> Vysledok<Obraz> {
+    let (snimka, mut s) = rozober(data, limity)?;
+    let mut o = zostav(&snimka, &s, n)?;
+    if !s.icc.is_empty() {
+        s.icc.sort_by_key(|c| c.0);
+        o.farba.icc = Some(s.icc.iter().flat_map(|c| c.1.iter().copied()).collect());
+    }
+    if let Some(e) = &s.meta.exif {
+        s.meta.natocenie = crate::exif::natocenie(e).unwrap_or(1);
+    }
+    o.metadata = s.meta;
+    Ok(o)
+}
+
+/// Kvantizované koeficienty jednej zložky (bloky po 64 v prirodzenom poradí, riadok bloku po riadku).
+#[derive(Debug, Clone)]
+pub struct ZlozkaKoef {
+    pub id: u8,
+    pub h: usize,
+    pub v: usize,
+    pub kvant: [u16; 64],
+    /// Bloky vrátane doplnenia na celé MCU.
+    pub bw: usize,
+    pub bh: usize,
+    pub koef: Vec<i16>,
+}
+
+/// Koeficienty celého súboru a jeho segmenty APPn a COM (na prenesenie bez zmeny).
+#[derive(Debug, Clone)]
+pub struct Koeficienty {
+    pub sirka: usize,
+    pub vyska: usize,
+    pub presnost: u8,
+    pub zlozky: Vec<ZlozkaKoef>,
+    pub segmenty: Vec<(u8, Vec<u8>)>,
+}
+
+/// Prečíta kvantizované koeficienty (bez inverznej DCT) – základ bezstratových úprav.
+pub fn citaj_koeficienty(data: &[u8], limity: &Limity) -> Vysledok<Koeficienty> {
+    let (sn, s) = rozober(data, limity)?;
+    let zlozky = sn
+        .zlozky
+        .into_iter()
+        .map(|z| ZlozkaKoef {
+            id: z.id,
+            h: z.h,
+            v: z.v,
+            kvant: z.kvant.unwrap_or([1; 64]),
+            bw: z.bw,
+            bh: z.bh,
+            koef: z.koef,
+        })
+        .collect();
+    Ok(Koeficienty { sirka: sn.sirka, vyska: sn.vyska, presnost: sn.presnost, zlozky, segmenty: s.segmenty })
+}
+
+fn rozober(data: &[u8], limity: &Limity) -> Vysledok<(Snimka, Stav)> {
     if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
         return Err(chyba("chýba značka začiatku (SOI)"));
     }
@@ -339,6 +397,7 @@ fn dekoduj(data: &[u8], limity: &Limity, n: usize) -> Vysledok<Obraz> {
         meta: Metadata { natocenie: 1, ..Default::default() },
         metadat: 0,
         eob: 0,
+        segmenty: Vec::new(),
     };
     let mut poz = 2;
     let mut skenov = 0usize;
@@ -385,7 +444,10 @@ fn dekoduj(data: &[u8], limity: &Limity, n: usize) -> Vysledok<Obraz> {
                 skenov += 1;
             }
             0xDC => return Err(chyba("značka DNL nie je podporená")),
-            0xE0..=0xEF | 0xFE => app(&mut s, z, seg, limity)?,
+            0xE0..=0xEF | 0xFE => {
+                app(&mut s, z, seg, limity)?;
+                s.segmenty.push((z, seg.to_vec()));
+            }
             _ => {}
         }
     }
@@ -393,16 +455,7 @@ fn dekoduj(data: &[u8], limity: &Limity, n: usize) -> Vysledok<Obraz> {
     if skenov == 0 {
         return Err(chyba("súbor nemá obrazové údaje"));
     }
-    let mut o = zostav(&snimka, &s, n)?;
-    if !s.icc.is_empty() {
-        s.icc.sort_by_key(|c| c.0);
-        o.farba.icc = Some(s.icc.iter().flat_map(|c| c.1.iter().copied()).collect());
-    }
-    if let Some(e) = &s.meta.exif {
-        s.meta.natocenie = crate::exif::natocenie(e).unwrap_or(1);
-    }
-    o.metadata = s.meta;
-    Ok(o)
+    Ok((snimka, s))
 }
 
 fn dqt(s: &mut Stav, mut seg: &[u8]) -> Vysledok<()> {

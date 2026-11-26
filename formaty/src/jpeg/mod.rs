@@ -10,11 +10,14 @@
 //! podvzorkovanie 4:4:4, 4:2:2, 4:2:0 (pri vysokej kvalite automaticky 4:4:4), Huffmanove tabuľky
 //! optimalizované pre každý obrázok, voliteľne progresívny zápis; ICC, Exif a XMP sa zachovajú.
 
+pub mod bezstratovo;
 pub mod dct;
 mod dekoder;
 mod koder;
 
-pub use dekoder::{Hlavicka, citaj, citaj_hlavicku, citaj_zmensene};
+pub use dekoder::{
+    Hlavicka, Koeficienty, ZlozkaKoef, citaj, citaj_hlavicku, citaj_koeficienty, citaj_zmensene,
+};
 pub use koder::{NastavenieJpeg, Podvzorkovanie, zapis};
 
 /// Prirodzený index (riadok·8 + stĺpec) k-teho koeficientu v poradí cik-cak.
