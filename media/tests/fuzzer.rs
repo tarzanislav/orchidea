@@ -7,6 +7,8 @@ mod spolocne;
 
 use orchidea_jadro::nahoda::Nahoda;
 use orchidea_media::cas::zakladna_z_ns;
+use orchidea_media::flac::FlacDekoder;
+use orchidea_media::flac_subor::FlacSubor;
 use orchidea_media::mkv::Mkv;
 use orchidea_media::r5::{self, HlbkaPcm, PrevodnikVidea};
 use orchidea_media::{
@@ -212,4 +214,64 @@ fn matroska() {
         }
     }
     assert!(otvorenych > pocet_pokusov() / 40, "mutácie musia často ostať otvoriteľné ({otvorenych})");
+}
+
+fn subory_flac() -> Vec<Vec<u8>> {
+    ["stereo16_lpc.flac", "kanaly6_24b.flac", "mono8_pevny.flac"]
+        .iter()
+        .map(|m| {
+            std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(m))
+                .unwrap()
+        })
+        .collect()
+}
+
+#[test]
+fn flac_subory_a_dekoder() {
+    let mut n = nahoda(6);
+    let zaklady = subory_flac();
+    let mut blok = BlokZvuku::cele(0, RozlozenieKanalov::STEREO, 16);
+    for i in 0..pocet_pokusov() / 20 {
+        let d = if i % 10 == 0 { bajty(&mut n, 400) } else { zmutuj(&zaklady[i % zaklady.len()], &mut n) };
+        let Ok(mut f) = FlacSubor::otvor(PametovyZdroj::novy(d), prisne()) else { continue };
+        let Ok(mut dek) = FlacDekoder::novy(&f.stopy()[0].konfiguracia, None) else { continue };
+        for _ in 0..64 {
+            match f.dalsi_paket() {
+                Ok(Some(p)) => {
+                    let _ = dek.dekoduj_ramec(&p.data, &mut blok);
+                }
+                _ => break,
+            }
+        }
+        let _ = f.posun(n.mensie_ako(200_000_000) as i64, Posun::Presny);
+        let _ = f.dalsi_paket();
+    }
+}
+
+#[test]
+fn flac_ramce_s_platnym_crc() {
+    // mutácie vnútri rámca s prepočítaným CRC-16 – dekodér musí prejsť cez podrámce a zvyšky, nie skončiť na CRC
+    let mut n = nahoda(7);
+    let mut ramce = Vec::new();
+    let mut konfiguracie = Vec::new();
+    for d in subory_flac() {
+        let mut f = FlacSubor::otvor(PametovyZdroj::novy(d), Limity::default()).unwrap();
+        let k = f.stopy()[0].konfiguracia.clone();
+        while let Some(p) = f.dalsi_paket().unwrap() {
+            ramce.push((konfiguracie.len(), p.data));
+        }
+        konfiguracie.push(k);
+    }
+    let mut blok = BlokZvuku::cele(0, RozlozenieKanalov::STEREO, 16);
+    for i in 0..pocet_pokusov() / 4 {
+        let (k, r) = &ramce[i % ramce.len()];
+        let mut m = zmutuj(r, &mut n);
+        if m.len() > 8 {
+            let l = m.len() - 2;
+            let c = orchidea_media::flac::crc16(&m[..l]);
+            m[l..].copy_from_slice(&c.to_be_bytes());
+        }
+        let mut d = FlacDekoder::novy(&konfiguracie[*k], None).unwrap();
+        let _ = d.dekoduj_ramec(&m, &mut blok);
+    }
 }

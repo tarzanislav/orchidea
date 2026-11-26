@@ -21,15 +21,18 @@
 //!
 //! Moduly: [`zdroj`] (čítanie na pozícii), [`cas`] (časová základňa), [`limity`], [`stopa`] (stopy a kodeky),
 //! [`paket`], [`kontajner`] (rozpoznanie formátu, rozhranie čítačky), [`mkv`] (Matroska a WebM), [`zvuk`] (bloky vzoriek, rozhranie
-//! dekodéra) a [`r5`] (rozhranie pre ORCHIDEA OS).
+//! dekodéra), dekodéry [`pcm`] a [`flac`] a [`r5`] (rozhranie pre ORCHIDEA OS).
 #![forbid(unsafe_code)]
 
 pub mod cas;
+pub mod flac;
+pub mod flac_subor;
 pub mod kontajner;
 pub mod limity;
 pub mod mkv;
 pub mod opus;
 pub mod paket;
+pub mod pcm;
 pub mod r5;
 pub mod stopa;
 pub mod zdroj;
@@ -40,4 +43,4 @@ pub use limity::Limity;
 pub use paket::Paket;
 pub use stopa::{DruhStopy, Kodek, ParametreVidea, ParametreZvuku, Stopa};
 pub use zdroj::{Citac, PametovyZdroj, SuborovyZdroj, ZdrojBajtov};
-pub use zvuk::{BlokZvuku, DekoderZvuku, RozlozenieKanalov, VzorkyZvuku};
+pub use zvuk::{BlokZvuku, DekoderZvuku, RozlozenieKanalov, VzorkyZvuku, dekoder_zvuku};

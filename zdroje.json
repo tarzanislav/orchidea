@@ -295,6 +295,22 @@
       "kde": "len CI – inštalujú sa z balíkov Ubuntu pri behu (media/nastroje/over_media.py); nie sú v repozitári ani v programe",
       "ucel": "nezávislé overenie čítačiek kontajnerov balíka media (L1–L4): FFmpeg a mkvmerge zapíšu skúšobné súbory, ffprobe vypíše pakety (čas, trvanie, kľúčovosť, veľkosť, MD5) na porovnanie bit po bite",
       "posudenie_charty": "slobodné nástroje použité len ako rozhodcovia správnosti; žiadny ich kód nie je v ORCHIDEI, čítačky sú písané podľa RFC 9559 a RFC 8794"
+    },
+    {
+      "meno": "skúšobné súbory FLAC IETF CELLAR (ietf-wg-cellar/flac-test-files: subset, uncommon, faulty)",
+      "trieda": "B",
+      "licencia": "CC0-1.0",
+      "kde": "len CI – stiahnu sa pri behu do dočasného priečinka (media/nastroje/over_flac.py); nie sú v repozitári",
+      "ucel": "zhoda dekodéra FLAC s RFC 9639: MD5 v STREAMINFO = MD5 nášho dekódovania; neobvyklé a poškodené súbory",
+      "posudenie_charty": "verejné dáta pracovnej skupiny IETF bez obmedzení, len na skúšky"
+    },
+    {
+      "meno": "referenčný kodér FLAC (xiph/flac – program flac) a FFmpeg ako rozhodcovia dekodéra FLAC",
+      "trieda": "B",
+      "licencia": "flac GPL-2.0-or-later (program), libFLAC BSD-3-Clause; FFmpeg LGPL/GPL",
+      "kde": "len CI – z balíkov Ubuntu pri behu; malé výstupy kodéra flac 1.4.3 (media/tests/data/*.flac, spolu ≈ 28 kB) sú v repozitári ako skúšobné dáta, nie kód",
+      "ucel": "cudzí kodér zapíše súbory FLAC s MD5 v STREAMINFO v mnohých nastaveniach; naše dekódovanie musí mať to isté MD5",
+      "posudenie_charty": "slobodné nástroje len ako rozhodcovia; žiadny ich kód nie je v ORCHIDEI, dekodér je písaný podľa RFC 9639"
     }
   ],
   "triedy": {

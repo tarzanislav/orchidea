@@ -24,6 +24,8 @@ pub enum FormatKontajnera {
     MpegTs {
         velkost_paketu: u16,
     },
+    /// Súbor FLAC (`.flac`, RFC 9639) – zároveň kontajner aj kodek.
+    Flac,
 }
 
 impl FormatKontajnera {
@@ -35,6 +37,7 @@ impl FormatKontajnera {
             FormatKontajnera::QuickTime => "QuickTime",
             FormatKontajnera::MpegTs { velkost_paketu: 192 } => "MPEG-TS (M2TS)",
             FormatKontajnera::MpegTs { .. } => "MPEG-TS",
+            FormatKontajnera::Flac => "FLAC",
         }
     }
 }
@@ -48,6 +51,10 @@ const BOXY_NA_ZACIATKU: [&[u8; 4]; 11] =
 pub fn rozpoznaj(zaciatok: &[u8]) -> Option<FormatKontajnera> {
     if zaciatok.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
         return Some(FormatKontajnera::Matroska);
+    }
+    // FLAC: „fLaC“, alebo tok začínajúci rámcom s platnou hlavičkou (CRC-8)
+    if zaciatok.starts_with(b"fLaC") || crate::flac::hlavicka_ramca(zaciatok, None).is_some() {
+        return Some(FormatKontajnera::Flac);
     }
     if zaciatok.len() >= 8 {
         let velkost = u32::from_be_bytes([zaciatok[0], zaciatok[1], zaciatok[2], zaciatok[3]]);
@@ -104,17 +111,31 @@ pub trait Kontajner: std::fmt::Debug {
 
 /// Otvorí kontajner podľa obsahu zdroja.
 pub fn otvor<Z: ZdrojBajtov + 'static>(zdroj: Z, limity: Limity) -> Vysledok<Box<dyn Kontajner>> {
-    let mut zaciatok = vec![0u8; 1024.min(zdroj.dlzka() as usize)];
-    let n = zdroj.citaj_na(0, &mut zaciatok)?;
-    zaciatok.truncate(n);
+    let citaj = |od: u64| -> Vysledok<Vec<u8>> {
+        let mut d = vec![0u8; 1024.min(zdroj.dlzka().saturating_sub(od) as usize)];
+        let n = zdroj.citaj_na(od, &mut d)?;
+        d.truncate(n);
+        Ok(d)
+    };
+    let mut zaciatok = citaj(0)?;
+    // značka ID3v2 (hudobné súbory): formát sa určí podľa toho, čo je za ňou
+    if zaciatok.len() >= 10 && zaciatok.starts_with(b"ID3") {
+        let v = zaciatok[6..10].iter().fold(0u64, |x, &b| (x << 7) | (b & 0x7F) as u64);
+        zaciatok = citaj(10 + v + if zaciatok[5] & 0x10 != 0 { 10 } else { 0 })?;
+    }
     match rozpoznaj(&zaciatok) {
+        Some(FormatKontajnera::Flac) => Ok(Box::new(crate::flac_subor::FlacSubor::otvor(zdroj, limity)?)),
         Some(FormatKontajnera::Matroska | FormatKontajnera::WebM) => {
             Ok(Box::new(crate::mkv::Mkv::otvor(zdroj, limity)?))
         }
         Some(f) => {
             Err(Chyba::MimoRozsahu(format!("čítačka kontajnera {} ešte nie je (etapy L3, L4)", f.meno())))
         }
-        None => Err(Chyba::PoskodeneData("neznámy formát kontajnera".into())),
+        // posledný pokus: tok FLAC s neparsovateľnými údajmi na začiatku (rámec overí CRC-8 aj CRC-16)
+        None => match crate::flac_subor::FlacSubor::otvor(zdroj, limity) {
+            Ok(f) => Ok(Box::new(f)),
+            Err(_) => Err(Chyba::PoskodeneData("neznámy formát kontajnera".into())),
+        },
     }
 }
 

@@ -1,9 +1,10 @@
-name: Médiá – kontajnery, rozhodca a dlhý fuzzer (LÝRA)
+name: Médiá – kontajnery, FLAC, rozhodca a dlhý fuzzer (LÝRA)
 
 # Prúd D (médiá): beží len pri zmene balíka media a toho, od čoho závisí – ostatné prúdy nebrzdí.
 # - rozhodca: FFmpeg a mkvmerge zapíšu skúšobné súbory, ffprobe vypíše pakety; naša čítačka musí dať
 #   bit po bite tie isté pakety (čas, kľúčovosť, veľkosť, MD5 obsahu),
-# - dlhý fuzzer čítačiek (R211) s viacerými semienkami.
+# - FLAC: MD5 dekódovania sa rovná MD5 v STREAMINFO (sada IETF CELLAR, kodéry flac a FFmpeg),
+# - dlhý fuzzer čítačiek a dekodérov (R211) s viacerými semienkami.
 on:
   push:
     paths:
@@ -46,6 +47,25 @@ jobs:
         run: |
           echo "### Médiá – kontajnery proti rozhodcovi" >> "$GITHUB_STEP_SUMMARY"
           python3 media/nastroje/over_media.py target/release/examples/media_pakety "$RUNNER_TEMP/media" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  flac:
+    name: Médiá – FLAC bitovo presne (sada IETF, kodéry flac a FFmpeg)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Rozhodcovia (referenčný kodér flac, FFmpeg)
+        run: sh nastroje/balicky.sh flac ffmpeg
+      - name: Skúšobné súbory FLAC IETF CELLAR (CC0, len na čítanie)
+        run: git clone --depth 1 https://github.com/ietf-wg-cellar/flac-test-files "$RUNNER_TEMP/flac-test-files"
+      - name: Zostavenie
+        run: cargo build --locked --release -p orchidea-media --example media_flac
+      - name: MD5 dekódovania proti MD5 v STREAMINFO
+        shell: bash
+        run: |
+          echo "### Médiá – FLAC (RFC 9639) bitovo presne" >> "$GITHUB_STEP_SUMMARY"
+          python3 media/nastroje/over_flac.py target/release/examples/media_flac "$RUNNER_TEMP/flac-test-files" "$RUNNER_TEMP/flac" | tee -a "$GITHUB_STEP_SUMMARY"
 
   fuzzer:
     name: Médiá – dlhý fuzzer čítačiek (R211)

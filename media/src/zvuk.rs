@@ -162,6 +162,46 @@ pub trait DekoderZvuku: std::fmt::Debug + Send {
     fn reset(&mut self);
 }
 
+/// Oreže `zaciatok` rámcov zo začiatku a `koniec` rámcov z konca bloku (bezmedzerové prehrávanie).
+pub fn orez(blok: &mut BlokZvuku, zaciatok: usize, koniec: usize) {
+    let n = blok.ramcov;
+    let zaciatok = zaciatok.min(n);
+    let koniec = koniec.min(n - zaciatok);
+    if zaciatok == 0 && koniec == 0 {
+        return;
+    }
+    let novych = n - zaciatok - koniec;
+    let k = blok.kanalov();
+    fn presun<T: Copy>(d: &mut Vec<T>, k: usize, n: usize, od: usize, novych: usize) {
+        for c in 0..k {
+            d.copy_within(c * n + od..c * n + od + novych, c * novych);
+        }
+        d.truncate(k * novych);
+    }
+    match &mut blok.vzorky {
+        VzorkyZvuku::Cele { data, .. } if data.len() == k * n => presun(data, k, n, zaciatok, novych),
+        VzorkyZvuku::F32(data) if data.len() == k * n => presun(data, k, n, zaciatok, novych),
+        _ => return,
+    }
+    blok.ramcov = novych;
+    if let Some(p) = &mut blok.pts_ns
+        && blok.frekvencia > 0
+    {
+        *p += (zaciatok as i64 * 1_000_000_000) / blok.frekvencia as i64;
+    }
+}
+
+/// Dekodér pre zvukovú stopu: PCM a FLAC (L2); ďalšie kodeky pribudnú v etapách L7–L9.
+pub fn dekoder_zvuku(stopa: &crate::stopa::Stopa) -> Vysledok<Box<dyn DekoderZvuku>> {
+    use crate::stopa::Kodek;
+    let parametre = stopa.zvuk.ok_or_else(|| Chyba::Chybajuce("stopa nemá parametre zvuku".into()))?;
+    match &stopa.kodek {
+        Kodek::Pcm(p) => Ok(Box::new(crate::pcm::PcmDekoder::novy(*p, parametre)?)),
+        Kodek::Flac => Ok(Box::new(crate::flac::FlacDekoder::novy(&stopa.konfiguracia, Some(parametre))?)),
+        k => Err(Chyba::MimoRozsahu(format!("dekodér zvuku {} ešte nie je", k.meno()))),
+    }
+}
+
 #[cfg(test)]
 mod skusky {
     use super::*;
@@ -194,5 +234,23 @@ mod skusky {
         f.ramcov = 2;
         f.vzorky = VzorkyZvuku::F32(vec![0.0; 2]);
         assert!(f.over().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod skusky_orezania {
+    use super::*;
+
+    #[test]
+    fn orezanie_planarnych_vzoriek() {
+        let mut b = BlokZvuku::cele(1000, RozlozenieKanalov::STEREO, 16);
+        b.ramcov = 4;
+        b.pts_ns = Some(0);
+        b.vzorky = VzorkyZvuku::Cele { bitov: 16, data: vec![1, 2, 3, 4, 11, 12, 13, 14] };
+        orez(&mut b, 1, 2);
+        assert_eq!(b.vzorky, VzorkyZvuku::Cele { bitov: 16, data: vec![2, 12] });
+        assert_eq!((b.ramcov, b.pts_ns), (1, Some(1_000_000)));
+        orez(&mut b, 5, 5);
+        assert_eq!(b.ramcov, 0);
     }
 }
