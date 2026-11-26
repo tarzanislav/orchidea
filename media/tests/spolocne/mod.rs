@@ -185,7 +185,10 @@ pub fn segment(obsah: &[u8]) -> Vec<u8> {
 
 /// Typický súbor: video H.264 (25 snímok/s) + zvuk FLAC, `n` zhlukov po 1 s, Cues pre video.
 /// Vracia súbor a zoznam (stopa, čas v ms, kľúčový, údaje) všetkých paketov v poradí súboru.
-pub fn typicky(n: u64, s_cues: bool) -> (Vec<u8>, Vec<(usize, i64, bool, Vec<u8>)>) {
+/// Očakávaný paket: (index stopy, čas v ms, kľúčový, údaje).
+pub type Ocakavany = (usize, i64, bool, Vec<u8>);
+
+pub fn typicky(n: u64, s_cues: bool) -> (Vec<u8>, Vec<Ocakavany>) {
     let avcc = vec![1u8, 0x64, 0, 0x28, 0xFF, 0xE1, 0, 4, 0x67, 0x64, 0, 0x28, 1, 0, 3, 0x68, 0xEE, 0x3C];
     let hlavicka = spoj(&[
         info(1_000_000, n as f64 * 1000.0),
