@@ -1177,10 +1177,44 @@ fn teplota_pamate() -> Option<f64> {
     None
 }
 
+/// R236: grafická karta držaná otvorená (KLÍČ je jej vlastníkom – DRM master), kým nie je zapojený monitor.
+static DRZANA_KARTA: Mutex<Option<fs::File>> = Mutex::new(None);
+static BEZ_MONITORA_OHLASENE: AtomicBool = AtomicBool::new(false);
+
+/// R236: X96 26. 11. (monitor zapojený až po štarte): jadro samo nastavilo obraz na nezapojený výstup
+/// (režim z `video=` mimo CEA – „User-defined mode not supported“), zatvorenie karty KLÍČOM ho obnovilo
+/// („vblank wait timed out“, 3 s) a kreslenie cez `/dev/fb0` potom čakalo na snímky, ktoré neprišli
+/// („flip_done timed out“) – hlavná slučka stála a strážny časovač dosku reštartoval. Kým nie je monitor
+/// zapojený, KLÍČ kartu drží (jadro na ňu nesiahne) a nekreslí nič; obraz otvorí, keď sa monitor ozve.
+fn drz_kartu(drzat: bool) {
+    let Ok(mut d) = DRZANA_KARTA.lock() else { return };
+    if !drzat {
+        d.take();
+        return;
+    }
+    if d.is_none() {
+        *d = fs::OpenOptions::new().read(true).write(true).open("/dev/dri/card0").ok();
+    }
+}
+
 /// Otvorí obrazovku: na TV krabičke vlastný ovládač KMS (chladný obraz), inak a pri chybe `/dev/fb0`.
 fn otvor_displej(chlad: bool, ciel: Ciel, ostre: bool) -> Option<Displej> {
-    if chlad && let Some(d) = Displej::otvor_kms(ciel, ostre) {
-        return Some(d);
+    if chlad {
+        // R236: výstup HDMI je, monitor nie – bez obrazu, karta držaná
+        if !vystupy_hdmi().is_empty() && !hdmi_zapojene() {
+            drz_kartu(true);
+            if !BEZ_MONITORA_OHLASENE.swap(true, Ordering::Relaxed) {
+                hlas("obraz: monitor nie je zapojený – nič sa nekreslí, kým sa neozve (R236)");
+            }
+            return None;
+        }
+        if BEZ_MONITORA_OHLASENE.swap(false, Ordering::Relaxed) {
+            hlas("obraz: monitor sa ozval (R236)");
+        }
+        drz_kartu(false);
+        if let Some(d) = Displej::otvor_kms(ciel, ostre) {
+            return Some(d);
+        }
     }
     Displej::otvor()
 }
