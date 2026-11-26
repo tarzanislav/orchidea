@@ -599,6 +599,10 @@ pub fn identifikacia() -> String {
             ),
             None => riadok(&mut t, format!("monitor {vystup}: popis EDID je poškodený ({} B)", edid.len())),
         }
+        // R226: čo vie televízor prehrať cez HDMI (rozšírenie CTA-861) – pre prehrávač LÝRA
+        if let Some(z) = samomeranie::rozloz_zvuk_edid(&edid) {
+            riadok(&mut t, format!("zvuk monitora {vystup}: {}", z.popis()));
+        }
     }
     if !monitor {
         let fb = citaj("/sys/class/graphics/fb0/virtual_size").unwrap_or_else(|| "–".into());

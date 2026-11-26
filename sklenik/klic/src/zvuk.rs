@@ -21,6 +21,7 @@ const fn io(smer: u32, nr: u32, velkost: usize) -> c_ulong {
     ((smer << 30) | ((velkost as u32) << 16) | ((b'A' as u32) << 8) | nr) as c_ulong
 }
 const PIS: u32 = 1;
+const CITAJ: u32 = 2;
 const CITAJ_PIS: u32 = 3;
 
 /// Maska parametra (256 bitov).
@@ -76,6 +77,7 @@ const HW_PARAMS: c_ulong = io(CITAJ_PIS, 0x11, size_of::<HwParams>());
 const PREPARE: c_ulong = io(0, 0x40, 0);
 const DRAIN: c_ulong = io(0, 0x44, 0);
 const WRITEI: c_ulong = io(PIS, 0x50, size_of::<Xferi>());
+const DELAY: c_ulong = io(CITAJ, 0x21, size_of::<std::ffi::c_long>());
 
 // parametre (SNDRV_PCM_HW_PARAM_*)
 const P_PRISTUP: usize = 0;
@@ -253,16 +255,28 @@ pub fn skuska_tonu(zariadenie: &str) -> Result<String, String> {
     let na_ramec = KANALY as usize * format.bajtov();
     let mut zapisanych = 0usize;
     let mut podtecenia = 0u32;
+    // R5c: po každej perióde (čas, prehraté rámce = zapísané − oneskorenie v zariadení) → skutočný takt zvuku
+    let mut body: Vec<(f64, f64)> = Vec::new();
+    let mut oneskorenie_max = 0i64;
+    let kus = (perioda as usize).clamp(64, 4096);
     let start = std::time::Instant::now();
     while zapisanych < ramcov {
         let zvysok = &mut data[zapisanych * na_ramec..];
         let mut x = Xferi {
             vysledok: 0,
             buf: zvysok.as_mut_ptr() as *mut std::ffi::c_void,
-            ramcov: (ramcov - zapisanych) as std::ffi::c_ulong,
+            ramcov: (ramcov - zapisanych).min(kus) as std::ffi::c_ulong,
         };
         match sys::ioctl_struct(fd, WRITEI, &mut x) {
-            Ok(()) if x.vysledok > 0 => zapisanych += x.vysledok as usize,
+            Ok(()) if x.vysledok > 0 => {
+                zapisanych += x.vysledok as usize;
+                let mut d: std::ffi::c_long = 0;
+                if sys::ioctl_raz(fd, DELAY, &mut d).is_ok() && podtecenia == 0 {
+                    let d = d as i64;
+                    oneskorenie_max = oneskorenie_max.max(d);
+                    body.push((start.elapsed().as_secs_f64(), zapisanych as f64 - d as f64));
+                }
+            }
             Ok(()) => break,
             Err(e) if e.raw_os_error() == Some(32) => {
                 // EPIPE = podtečenie – pripraviť znova a pokračovať
@@ -276,14 +290,33 @@ pub fn skuska_tonu(zariadenie: &str) -> Result<String, String> {
         }
     }
     let _ = sys::ioctl_raz(fd, DRAIN, &mut nic);
+    let takt = namerany_takt(&body)
+        .map_or("takt nezmeraný".into(), |(t, n)| format!("nameraný takt {t:.0} Hz ({n} bodov)"));
     Ok(format!(
         "tón 1 kHz −20 dBFS 1,5 s: {} · {} Hz · 2 kanály · buffer {buffer} rámcov ({:.0} ms), perióda {perioda} · \
-         zapísaných {zapisanych} rámcov za {} ms · podtečení {podtecenia}",
+         zapísaných {zapisanych} rámcov za {} ms · podtečení {podtecenia} · {takt} · oneskorenie v zariadení \
+         najviac {oneskorenie_max} rámcov ({:.0} ms)",
         format.popis(),
         TAKT,
         buffer as f64 * 1000.0 / TAKT as f64,
-        start.elapsed().as_millis()
+        start.elapsed().as_millis(),
+        oneskorenie_max as f64 * 1000.0 / TAKT as f64
     ))
+}
+
+/// Takt zvuku zo smernice priamky (čas → prehraté rámce), metóda najmenších štvorcov; prvá štvrtina bodov
+/// sa vynechá (rozbeh, plnenie buffra). Vráti (rámce/s, počet bodov).
+pub fn namerany_takt(body: &[(f64, f64)]) -> Option<(f64, usize)> {
+    let b = &body[body.len() / 4..];
+    if b.len() < 8 {
+        return None;
+    }
+    let n = b.len() as f64;
+    let (st, sr) = b.iter().fold((0.0, 0.0), |(a, c), &(t, r)| (a + t, c + r));
+    let (mt, mr) = (st / n, sr / n);
+    let (cit, men) =
+        b.iter().fold((0.0, 0.0), |(c, m), &(t, r)| (c + (t - mt) * (r - mr), m + (t - mt) * (t - mt)));
+    (men > 0.0).then(|| (cit / men, b.len()))
 }
 
 #[cfg(test)]
@@ -313,6 +346,20 @@ mod testy {
         // 48 kHz a 24 bitov v stave kanála
         assert_eq!(st[3] & 0x0F, 0b0010);
         assert_eq!(st[4] & 0x0F, 0b1011);
+    }
+
+    #[test]
+    fn takt_zo_smernice() {
+        // 48 kHz s periódami po 1024 rámcoch (prehraté skáču po perióde) a rozbehom na začiatku
+        let mut body = vec![(0.001, 0.0), (0.002, 0.0)];
+        for i in 1..70 {
+            let t = i as f64 * 1024.0 / 48_000.0 + 0.0003;
+            body.push((t, (i as f64 * 1024.0).floor()));
+        }
+        let (takt, n) = namerany_takt(&body).unwrap();
+        assert!((takt - 48_000.0).abs() < 5.0, "{takt}");
+        assert!(n > 40);
+        assert_eq!(namerany_takt(&body[..6]), None);
     }
 
     #[test]

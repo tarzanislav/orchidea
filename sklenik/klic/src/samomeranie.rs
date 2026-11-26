@@ -320,6 +320,148 @@ pub fn rozloz_edid(d: &[u8]) -> Option<Edid> {
     Some(e)
 }
 
+/// R226: jeden krátky popis zvuku (SAD) z rozšírenia CTA-861 – čo televízor (monitor) vie prehrať cez HDMI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PopisZvuku {
+    /// kód formátu CTA-861 (1 = LPCM, 2 = AC-3, 7 = DTS, 10 = E-AC-3, 11 = DTS-HD, 12 = MAT/TrueHD …)
+    pub format: u8,
+    pub kanalov: u8,
+    /// frekvencie: bit 0 = 32 kHz, 1 = 44,1, 2 = 48, 3 = 88,2, 4 = 96, 5 = 176,4, 6 = 192 kHz
+    pub frekvencie: u8,
+    /// LPCM: bity 0–2 = 16/20/24 bitov; formáty 2–8: najvyšší tok / 8 kb/s; ostatné podľa formátu
+    pub doplnok: u8,
+}
+
+/// R226: zvuk podľa rozšírenia EDID CTA-861 (pre prehrávač LÝRA – rozhranie R5b).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ZvukMonitora {
+    /// rozšírenie CTA-861 hlási základný zvuk (2 kanály LPCM)
+    pub zakladny: bool,
+    pub popisy: Vec<PopisZvuku>,
+    /// pridelenie reproduktorov (prvý bajt bloku: FL/FR, LFE, FC, RL/RR, RC, FLC/FRC, RLC/RRC)
+    pub reproduktory: Option<u8>,
+    /// je to prijímač HDMI (blok výrobcu HDMI, OUI 00-0C-03)
+    pub hdmi: bool,
+    /// oneskorenie obrazu a zvuku televízora v ms (blok HDMI; None = neuvedené alebo neznáme)
+    pub oneskorenie_obrazu_ms: Option<u16>,
+    pub oneskorenie_zvuku_ms: Option<u16>,
+}
+
+/// R226: rozloží bloky rozšírenia CTA-861 za základným EDID (bloky so zlým súčtom vynechá). None, keď EDID
+/// rozšírenie CTA nemá (monitor bez zvuku, VGA redukcia).
+pub fn rozloz_zvuk_edid(d: &[u8]) -> Option<ZvukMonitora> {
+    let mut z = ZvukMonitora::default();
+    let mut najdene = false;
+    for b in d.chunks_exact(128).skip(1) {
+        if b[0] != 0x02 || b.iter().fold(0u8, |a, &x| a.wrapping_add(x)) != 0 {
+            continue;
+        }
+        najdene = true;
+        z.zakladny |= b[3] & 0x40 != 0;
+        let koniec = (b[2] as usize).clamp(4, 127);
+        let mut i = 4;
+        while i < koniec {
+            let (znacka, dlzka) = (b[i] >> 5, (b[i] & 0x1F) as usize);
+            let Some(p) = b.get(i + 1..i + 1 + dlzka) else { break };
+            match znacka {
+                1 => {
+                    for sad in p.chunks_exact(3) {
+                        z.popisy.push(PopisZvuku {
+                            format: (sad[0] >> 3) & 0x0F,
+                            kanalov: (sad[0] & 7) + 1,
+                            frekvencie: sad[1] & 0x7F,
+                            doplnok: sad[2],
+                        });
+                    }
+                }
+                3 if p.len() >= 5 && p[..3] == [0x03, 0x0C, 0x00] => {
+                    z.hdmi = true;
+                    // oneskorenia: (hodnota − 1) · 2 ms; 0 = neznáme, 255 = obraz/zvuk nejde
+                    let ms = |v: u8| (1..=251).contains(&v).then(|| (v as u16 - 1) * 2);
+                    if p.len() >= 10 && p[7] & 0x80 != 0 {
+                        z.oneskorenie_obrazu_ms = ms(p[8]);
+                        z.oneskorenie_zvuku_ms = ms(p[9]);
+                    }
+                }
+                4 if !p.is_empty() => z.reproduktory = Some(p[0]),
+                _ => {}
+            }
+            i += 1 + dlzka;
+        }
+    }
+    najdene.then_some(z)
+}
+
+impl ZvukMonitora {
+    /// Popis do záznamu, napr. „LPCM 2 k. 32/44,1/48 kHz 16/20/24 b · AC-3 6 k. do 640 kb/s · …“.
+    pub fn popis(&self) -> String {
+        const MENA: [&str; 16] = [
+            "?",
+            "LPCM",
+            "AC-3",
+            "MPEG-1",
+            "MP3",
+            "MPEG-2",
+            "AAC",
+            "DTS",
+            "ATRAC",
+            "DSD",
+            "E-AC-3",
+            "DTS-HD",
+            "TrueHD (MAT)",
+            "DST",
+            "WMA Pro",
+            "rozšírený",
+        ];
+        const KHZ: [&str; 7] = ["32", "44,1", "48", "88,2", "96", "176,4", "192"];
+        let mut casti: Vec<String> = self
+            .popisy
+            .iter()
+            .map(|p| {
+                let f: Vec<&str> = (0..7).filter(|b| p.frekvencie >> b & 1 == 1).map(|b| KHZ[b]).collect();
+                let mut t = format!("{} {} k. {} kHz", MENA[p.format as usize], p.kanalov, f.join("/"));
+                match p.format {
+                    1 => {
+                        let b: Vec<&str> = [(0, "16"), (1, "20"), (2, "24")]
+                            .iter()
+                            .filter(|(i, _)| p.doplnok >> i & 1 == 1)
+                            .map(|x| x.1)
+                            .collect();
+                        t += &format!(" {} b", b.join("/"));
+                    }
+                    2..=8 => t += &format!(" do {} kb/s", p.doplnok as u32 * 8),
+                    _ => {}
+                }
+                t
+            })
+            .collect();
+        if casti.is_empty() {
+            casti.push(if self.zakladny {
+                "len základný zvuk (LPCM 2 k.)".into()
+            } else {
+                "bez zvuku".into()
+            });
+        }
+        if let Some(r) = self.reproduktory {
+            let mena = ["FL/FR", "LFE", "FC", "RL/RR", "RC", "FLC/FRC", "RLC/RRC"];
+            let v: Vec<&str> = (0..7).filter(|b| r >> b & 1 == 1).map(|b| mena[b]).collect();
+            casti.push(format!("reproduktory {}", v.join(" ")));
+        }
+        if !self.hdmi {
+            casti.push("bez bloku HDMI (DVI?)".into());
+        }
+        match (self.oneskorenie_obrazu_ms, self.oneskorenie_zvuku_ms) {
+            (None, None) => {}
+            (o, z) => casti.push(format!(
+                "oneskorenie obrazu {} · zvuku {}",
+                o.map_or("?".into(), |v| format!("{v} ms")),
+                z.map_or("?".into(), |v| format!("{v} ms"))
+            )),
+        }
+        casti.join(" · ")
+    }
+}
+
 /// Popis rozhrania USB podľa triedy (a protokolu pri HID).
 pub fn rozhranie_usb(trieda: u8, podtrieda: u8, protokol: u8) -> &'static str {
     match (trieda, podtrieda, protokol) {
@@ -352,6 +494,39 @@ mod skusky {
             vytazenie: Some(0.02),
             okolie: Some(22.0 + s as f64 / 1800.0),
         }
+    }
+
+    #[test]
+    fn zvuk_z_rozsirenia_cta() {
+        // základný blok (len hlavička, súčet sa pri rozšírení nekontroluje) + blok CTA-861
+        let mut d = vec![0u8; 256];
+        d[..8].copy_from_slice(&[0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0]);
+        let mut c = vec![0x02, 0x03, 0, 0x40 | 0x80];
+        // zvuk: LPCM 2 k. 32/44,1/48 kHz 16/20/24 b; AC-3 6 k. 48 kHz do 640 kb/s
+        c.extend([(1 << 5) | 6, (1 << 3) | 1, 0b111, 0b111, (2 << 3) | 5, 0b100, 80]);
+        // reproduktory FL/FR + LFE + FC
+        c.extend([(4 << 5) | 3, 0b111, 0, 0]);
+        // HDMI VSDB s oneskorením: obraz 41 → 80 ms, zvuk 11 → 20 ms
+        c.extend([(3 << 5) | 10, 0x03, 0x0C, 0x00, 0x10, 0x00, 0, 0, 0x80, 41, 11]);
+        c[2] = c.len() as u8;
+        c.resize(127, 0);
+        let sucet = c.iter().fold(0u8, |a, &x| a.wrapping_add(x));
+        c.push(0u8.wrapping_sub(sucet));
+        d[128..].copy_from_slice(&c);
+        let z = rozloz_zvuk_edid(&d).unwrap();
+        assert!(z.zakladny && z.hdmi);
+        assert_eq!(z.popisy.len(), 2);
+        assert_eq!(z.oneskorenie_obrazu_ms, Some(80));
+        assert_eq!(z.oneskorenie_zvuku_ms, Some(20));
+        assert_eq!(
+            z.popis(),
+            "LPCM 2 k. 32/44,1/48 kHz 16/20/24 b · AC-3 6 k. 48 kHz do 640 kb/s · reproduktory FL/FR LFE FC · \
+             oneskorenie obrazu 80 ms · zvuku 20 ms"
+        );
+        // zlý súčet → blok vynechaný; bez rozšírenia → None
+        d[200] ^= 1;
+        assert_eq!(rozloz_zvuk_edid(&d), None);
+        assert_eq!(rozloz_zvuk_edid(&d[..128]), None);
     }
 
     #[test]
