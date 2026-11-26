@@ -684,12 +684,23 @@ fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex
                         cakane.len()
                     ));
                     let mut jadro = kmsg_od_konca();
+                    // R225: pri H.264 aj ladiace hlásenia ovládača (časové značky, posuny v toku, DPB, orezanie,
+                    // chyby dekódovania) – len počas skúšky
+                    let ladenie = f == v4l2::H264 && ladenie_vdec(true);
                     match v4l2::skus(&d.cesta, f, &toky, cakane, Duration::from_secs(10)) {
                         Ok(v) => pridaj(format!("{meno} {sirka}×{vyska}: {}", v.popis(cakane.len()))),
                         Err(e) => pridaj(format!("{meno} {sirka}×{vyska}: chyba – {e}")),
                     }
-                    for r in jadro.as_mut().map(kmsg_nove).unwrap_or_default() {
+                    if ladenie {
+                        ladenie_vdec(false);
+                    }
+                    let nove = jadro.as_mut().map(kmsg_nove).unwrap_or_default();
+                    let vynechane = nove.len().saturating_sub(40);
+                    for r in nove.into_iter().take(40) {
                         pridaj(format!("  jadro: {r}"));
+                    }
+                    if vynechane > 0 {
+                        pridaj(format!("  jadro: … a ďalších {vynechane} hlásení"));
                     }
                 }
             }
@@ -990,6 +1001,13 @@ fn kmsg_od_konca() -> Option<fs::File> {
     let mut f = fs::OpenOptions::new().read(true).custom_flags(0o4000).open("/dev/kmsg").ok()?;
     f.seek(std::io::SeekFrom::End(0)).ok()?;
     Some(f)
+}
+
+/// R225: ladiace hlásenia ovládača meson-vdec zapnuté/vypnuté (dynamické ladenie jadra); `true`, ak sa podarilo.
+#[cfg(target_pointer_width = "64")]
+fn ladenie_vdec(zapni: bool) -> bool {
+    let prikaz = format!("file *meson/vdec/* {}p", if zapni { '+' } else { '-' });
+    fs::write("/proc/dynamic_debug/control", prikaz).is_ok()
 }
 
 /// Nové hlásenia jadra o dekodéri (vlastný kodek HEVC, meson-vdec) od otvorenia.
