@@ -494,6 +494,9 @@ jobs:
     name: Prehliadač a editor fotografií (Pohľad) – okno vo Windows (samotest)
     runs-on: windows-latest
     timeout-minutes: 20
+    env:
+      # konzola Windows (cp1252) nevie vypísať slovenské znaky z kontrol v Pythone
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v5
       - name: Prekladač podľa rust-toolchain.toml
