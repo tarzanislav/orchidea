@@ -144,7 +144,12 @@ mod skusky {
         // vo WebAssembly (WASI) je prístupný len pracovný priečinok (`wasmtime run --dir=.`)
         let priecinok =
             if cfg!(target_family = "wasm") { std::path::PathBuf::from(".") } else { std::env::temp_dir() };
-        let cesta = priecinok.join(format!("orchidea-media-zdroj-{}.bin", std::process::id()));
+        // `std::process::id` vo WASI nie je – meno podľa času
+        let cas = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let cesta = priecinok.join(format!("orchidea-media-zdroj-{cas}.bin"));
         std::fs::write(&cesta, (0u8..=255).cycle().take(5000).collect::<Vec<_>>()).unwrap();
         let z = SuborovyZdroj::otvor(&cesta).unwrap();
         assert_eq!(z.dlzka(), 5000);
