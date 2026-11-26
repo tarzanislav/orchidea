@@ -320,7 +320,9 @@ fn rozsir(a: &mut [i64], sc0: i64) {
 }
 
 /// Kontrola stability filtra (§4.2.7.5.8) – Levinsonova rekurzia v pevnej čiarke (RFC 8251: hodnoty mimo 32 bitov
-/// znamenajú nestabilný filter).
+/// znamenajú nestabilný filter). **Odvodené meraním** (text RFC 6716 to neuvádza): filter so ziskom predikcie
+/// (výkonu) nad 10⁴ – inverzný zisk Π(1 − rc²) v Q30 pod 107 374 – je tiež nestabilný a dostane ďalšie kolo
+/// rozšírenia pásma; prah je ostré optimum zhody s libopus 1.4 (polovičný aj dvojnásobný dávajú horšiu zhodu).
 fn stabilny(a_q12: &[i32]) -> bool {
     let dc: i32 = a_q12.iter().sum();
     if dc > 4096 {
@@ -328,12 +330,17 @@ fn stabilny(a_q12: &[i32]) -> bool {
     }
     let d = a_q12.len();
     let mut a: Vec<i64> = a_q12.iter().map(|&x| (x as i64) << 12).collect();
+    let mut inv_zisk_q30: i64 = 1 << 30;
     for k in (0..d).rev() {
         if a[k].abs() > 16_773_022 {
             return false;
         }
         let rc_q31 = -a[k] << 7;
         let div_q30 = (1i64 << 30) - ((rc_q31 * rc_q31) >> 32);
+        inv_zisk_q30 = ((inv_zisk_q30 * div_q30) >> 32) << 2;
+        if inv_zisk_q30 < 107_374 {
+            return false;
+        }
         let b1 = ilog(div_q30 as u32) as i64;
         let b2 = b1 - 16;
         let inv_qb2 = ((1i64 << 29) - 1) / (div_q30 >> (b2 + 1));

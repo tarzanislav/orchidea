@@ -392,9 +392,10 @@ def main():
         sum_r = sum((a - b) ** 2 for a, b in zip(x, y))
         snr = 10 * math.log10(sig / sum_r) if sum_r > 0 else float("inf")
         # stereo: stredný signál (L + R) / 2 musí sedieť ako mono (≥ 40 dB); ľavý a pravý kanál menej – bočný kanál
-        # má pri tomto signáli filtre LPC so súčtom koeficientov 4095/4096 (jednosmerný zisk 4 096), ktoré zosilnia
+        # má pri tomto signáli veľmi rezonančné filtre LPC (súčet koeficientov blízko 4096/4096), ktoré zosilnia
         # rozdiel zaokrúhlenia pevnej čiarky libopus a našej plávajúcej čiarky (RFC 6716 §4.2.7.9 bitovú zhodu
-        # nevyžaduje; f64 namiesto f32 výsledok nezmení – určuje ho libopus)
+        # nevyžaduje); obmedzenie zisku predikcie na 10⁴ (odvodené meraním, silk.rs `stabilny`) zlepšilo L/R
+        # z 29 na 39 dB pri WB
         snr_stred = snr
         if kanalov == 2:
             xs = [(x[i] + x[i + 1]) / 2 for i in range(0, len(x) - 1, 2)]
