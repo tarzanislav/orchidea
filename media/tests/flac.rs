@@ -1,5 +1,5 @@
 //! Skúšky dekodéra FLAC a čítačky súborov FLAC (RFC 9639) na malých súboroch z referenčného kodéra `flac` 1.4.3
-//! (`tests/data`, zapísané v zdroje.json): bitová zhoda s MD5 v STREAMINFO, posun, FLAC v Matroske.
+//! (`tests/data`, zapísané v zdroje.json; vložené do programu skúšok): bitová zhoda s MD5 v STREAMINFO, posun, FLAC v Matroske.
 
 mod spolocne;
 
@@ -14,8 +14,14 @@ use orchidea_media::{
 
 const SUBORY: [&str; 3] = ["stereo16_lpc.flac", "kanaly6_24b.flac", "mono8_pevny.flac"];
 
+/// Súbory sú vložené do programu skúšok – bežia rovnako vo WebAssembly, na Androide aj v QEMU.
 fn subor(meno: &str) -> Vec<u8> {
-    std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(meno)).unwrap()
+    match meno {
+        "stereo16_lpc.flac" => include_bytes!("data/stereo16_lpc.flac").to_vec(),
+        "kanaly6_24b.flac" => include_bytes!("data/kanaly6_24b.flac").to_vec(),
+        "mono8_pevny.flac" => include_bytes!("data/mono8_pevny.flac").to_vec(),
+        _ => unreachable!("{meno}"),
+    }
 }
 
 /// MD5 dekódovaného zvuku podľa RFC 9639 (prekladané, malokoncové, ⌈bitov/8⌉ B) a počet rámcov.
