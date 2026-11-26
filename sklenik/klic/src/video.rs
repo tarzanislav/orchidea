@@ -72,6 +72,59 @@ pub fn porovnaj(cakany: &Obraz, y: &[u8], cb: &[u8], cr: &[u8]) -> (usize, Optio
     (chyb, prva)
 }
 
+/// R237: riadky v rámci bloku (0..vyska_bloku), ktoré sú chybné aspoň v polovici radov blokov – napr. „12–15“
+/// ukáže, že dekodér zle zapisuje spodok každého radu makroblokov; „žiadne“ = chyby nie sú viazané na riadok bloku.
+pub fn chybne_riadky_bloku(ziadane: &[u8], skutocne: &[u8], sirka: usize, vyska_bloku: usize) -> String {
+    if sirka == 0 || vyska_bloku == 0 {
+        return "žiadne".into();
+    }
+    let riadkov = ziadane.len().min(skutocne.len()) / sirka;
+    let mut zle = vec![0usize; vyska_bloku];
+    let mut vsetky = vec![0usize; vyska_bloku];
+    for r in 0..riadkov {
+        vsetky[r % vyska_bloku] += 1;
+        if ziadane[r * sirka..(r + 1) * sirka] != skutocne[r * sirka..(r + 1) * sirka] {
+            zle[r % vyska_bloku] += 1;
+        }
+    }
+    let k: Vec<usize> = (0..vyska_bloku).filter(|&k| vsetky[k] > 0 && zle[k] * 2 >= vsetky[k]).collect();
+    if k.is_empty() {
+        return "žiadne".into();
+    }
+    // súvislé úseky ako „a–b“
+    let mut casti = Vec::new();
+    let mut i = 0;
+    while i < k.len() {
+        let mut j = i;
+        while j + 1 < k.len() && k[j + 1] == k[j] + 1 {
+            j += 1;
+        }
+        casti.push(if i == j { k[i].to_string() } else { format!("{}–{}", k[i], k[j]) });
+        i = j + 1;
+    }
+    casti.join(",")
+}
+
+/// R237: odkiaľ je chybný riadok jasu – presne zhodný riadok niektorej čakanej snímky („s2 r12“ = 2. snímka,
+/// riadok 12; stará snímka = zápis do iného bufra, iný riadok = posunutý zápis), stála hodnota, alebo „?“.
+pub fn povod_riadku(cakane: &[Obraz], riadok: &[u8]) -> String {
+    if riadok.is_empty() {
+        return "?".into();
+    }
+    for (k, o) in cakane.iter().enumerate() {
+        if o.sirka != riadok.len() {
+            continue;
+        }
+        if let Some(m) = o.y.chunks(o.sirka).position(|r| r == riadok) {
+            return format!("s{} r{m}", k + 1);
+        }
+    }
+    if riadok.iter().all(|&b| b == riadok[0]) {
+        return format!("všade {}", riadok[0]);
+    }
+    "?".into()
+}
+
 /// Zapisovač bitov (najvyšší bit bajtu prvý) s kódmi Exp-Golomb.
 #[derive(Default)]
 struct Bity {
@@ -748,6 +801,39 @@ pub fn hevc_gop(snimky: &[Obraz], gop: usize, snimok_za_s: Option<u32>) -> (Vec<
 
 #[cfg(test)]
 mod testy {
+    #[test]
+    fn r237_povod_chybneho_riadku() {
+        let snimky: Vec<Obraz> = (0..3).map(|n| vzor(64, 48, n)).collect();
+        // riadok 12 3. snímky v skutočnosti z 2. snímky (zápis do starého bufra)
+        let riadok = &snimky[1].y[12 * 64..13 * 64];
+        assert_eq!(povod_riadku(&snimky, riadok), "s2 r12");
+        assert_eq!(povod_riadku(&snimky, &[0u8; 64]), "všade 0");
+        let mut iny = riadok.to_vec();
+        iny[3] ^= 0x55;
+        assert_eq!(povod_riadku(&snimky, &iny), "?");
+    }
+
+    #[test]
+    fn r237_chybne_riadky_makroblokov() {
+        // 320×240: spodné 4 riadky každého radu makroblokov zlé (ako X96 26. 11.)
+        let dobry = vzor(320, 240, 0);
+        let mut zly = dobry.y.clone();
+        for r in (0..240).filter(|r| r % 16 >= 12) {
+            zly[r * 320 + 5] ^= 0x40;
+        }
+        assert_eq!(chybne_riadky_bloku(&dobry.y, &zly, 320, 16), "12–15");
+        assert_eq!(chybne_riadky_bloku(&dobry.y, &dobry.y, 320, 16), "žiadne");
+        // jediný chybný riadok obrazu nie je vzorec
+        let mut jeden = dobry.y.clone();
+        jeden[100 * 320] ^= 1;
+        assert_eq!(chybne_riadky_bloku(&dobry.y, &jeden, 320, 16), "žiadne");
+        let mut dva = dobry.y.clone();
+        for r in (0..240).filter(|r| r % 16 == 0 || r % 16 == 7) {
+            dva[r * 320] ^= 1;
+        }
+        assert_eq!(chybne_riadky_bloku(&dobry.y, &dva, 320, 16), "0,7");
+    }
+
     use super::*;
 
     #[test]

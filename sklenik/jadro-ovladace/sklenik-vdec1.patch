@@ -1,0 +1,69 @@
+--- a/drivers/staging/media/meson/vdec/vdec_1.c
++++ b/drivers/staging/media/meson/vdec/vdec_1.c
+@@ -9,6 +9,8 @@
+ 
+ #include <linux/firmware.h>
+ #include <linux/clk.h>
++#include <linux/moduleparam.h>
++#include <linux/string.h>
+ 
+ #include "vdec_1.h"
+ #include "vdec_helpers.h"
+@@ -22,6 +24,46 @@
+ 
+ #define MC_SIZE			(4096 * 4)
+ 
++/*
++ * R237 (ORCHIDEA OS): pokusné zápisy do registrov DOS pred spustením procesora dekodéra – na overenie
++ * hypotéz o chybe H.264 na SM1 bez nového jadra. Zoznam „posun=hodnota“, „posun|bity“ (nastaviť bity)
++ * alebo „posun&bity“ (vynulovať bity), oddelené čiarkou; posuny a hodnoty šestnástkovo. Prázdny = nič.
++ * /sys/module/meson_vdec/parameters/sklenik_zapisy – KLÍČ ho nastavuje len počas skúšky videa.
++ */
++static char sklenik_zapisy[256];
++module_param_string(sklenik_zapisy, sklenik_zapisy, sizeof(sklenik_zapisy), 0644);
++MODULE_PARM_DESC(sklenik_zapisy, "R237: pokusné zápisy DOS pred štartom VDEC_1 (posun=hodnota,posun|bity,posun&bity)");
++
++static void sklenik_pokusne_zapisy(struct amvdec_core *core)
++{
++	char kopia[sizeof(sklenik_zapisy)];
++	char *zvysok = kopia, *polozka;
++
++	strscpy(kopia, sklenik_zapisy, sizeof(kopia));
++	while ((polozka = strsep(&zvysok, ",")) != NULL) {
++		char *op = strpbrk(polozka, "=|&");
++		u32 posun, hodnota, pred;
++		char druh;
++
++		if (!op)
++			continue;
++		druh = *op;
++		*op = '\0';
++		if (kstrtou32(strim(polozka), 16, &posun) || kstrtou32(strim(op + 1), 16, &hodnota) ||
++		    posun > 0xfffc || (posun & 3))
++			continue;
++		pred = amvdec_read_dos(core, posun);
++		if (druh == '=')
++			amvdec_write_dos(core, posun, hodnota);
++		else if (druh == '|')
++			amvdec_write_dos_bits(core, posun, hodnota);
++		else
++			amvdec_clear_dos_bits(core, posun, hodnota);
++		dev_info(core->dev_dec, "sklenik R237: DOS 0x%04x %08x -> %08x\n", posun, pred,
++			 amvdec_read_dos(core, posun));
++	}
++}
++
+ static int
+ vdec_1_load_firmware(struct amvdec_session *sess, const char *fwname)
+ {
+@@ -234,6 +276,10 @@
+ 	else
+ 		amvdec_clear_dos_bits(core, MDEC_PIC_DC_CTRL, BIT(17));
+ 
++	/* R237: pokusné zápisy (len počas skúšky videa) */
++	if (sklenik_zapisy[0])
++		sklenik_pokusne_zapisy(core);
++
+ 	/* Enable firmware processor */
+ 	amvdec_write_dos(core, MPSR, 1);
+ 	/* Let the firmware settle */

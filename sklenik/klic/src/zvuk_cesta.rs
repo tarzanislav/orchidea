@@ -171,13 +171,21 @@ pub fn nastav_cestu(karta: &str, zariadenie: u32) -> Option<String> {
     idy.truncate(l.used as usize);
     let mut casti = Vec::new();
     for (nazov, chcem) in &pravidla {
-        let Some(id) = idy.iter().find(|i| meno(i) == *nazov) else {
+        // X96 26. 11.: prepínač výstupu TOHDMITX sa volá „TOHDMITX Switch“ (nie „… I2S OUT EN Switch“) – bez
+        // neho cesta nie je celá, zadná časť nedostane takt a zápis po 10 s skončí EIO
+        let nahrady: &[&str] = if nazov == "TOHDMITX I2S OUT EN Switch" { &["TOHDMITX Switch"] } else { &[] };
+        let Some(id) = idy
+            .iter()
+            .find(|i| meno(i) == *nazov)
+            .or_else(|| nahrady.iter().find_map(|n| idy.iter().find(|i| meno(i) == *n)))
+        else {
             casti.push(format!("{nazov}: chýba"));
             continue;
         };
+        let skutocne = meno(id);
         casti.push(match nastav(fd, id, chcem) {
-            Ok(t) => format!("{nazov} = {t}"),
-            Err(e) => format!("{nazov}: {e}"),
+            Ok(t) => format!("{skutocne} = {t}"),
+            Err(e) => format!("{skutocne}: {e}"),
         });
     }
     let chybaju = casti.iter().filter(|c| c.ends_with(": chýba")).count();

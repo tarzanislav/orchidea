@@ -673,11 +673,29 @@ pub fn skus(
                                 y[r * c.sirka..(r + 1) * c.sirka] == c.y[r * c.sirka..(r + 1) * c.sirka]
                             })
                             .count();
+                        // R237: ktoré riadky v rámci makrobloku sú chybné (Y 0–15, Cb 0–7)
+                        let zle_y = crate::video::chybne_riadky_bloku(&c.y, &y, c.sirka, 16);
+                        let zle_cb = crate::video::chybne_riadky_bloku(&c.cb, &cb, c.sirka / 2, 8);
+                        // R237: pôvod prvých chybných riadkov jasu (stará snímka? posunutý riadok? stála hodnota?)
+                        let povod: Vec<String> = (0..c.vyska.min(y.len() / c.sirka.max(1)))
+                            .filter(|&r| {
+                                y[r * c.sirka..(r + 1) * c.sirka] != c.y[r * c.sirka..(r + 1) * c.sirka]
+                            })
+                            .take(6)
+                            .map(|r| {
+                                let p =
+                                    crate::video::povod_riadku(cakane, &y[r * c.sirka..(r + 1) * c.sirka]);
+                                format!("r{r}={p}")
+                            })
+                            .collect();
                         v.prva_chyba = prva.map(|(rov, r, s, a, b)| {
                             format!(
                                 "snímka {} {rov} riadok {r} stĺpec {s}: {a} → {b} ({chyb} bodov; Y priemer {priemer:.0}, \
-                                 nuly {nuly:.0} %, 255 {plne:.0} %, presných riadkov zhora {riadkov_ok}; riadok Y {} B, UV {} B)",
+                                 nuly {nuly:.0} %, 255 {plne:.0} %, presných riadkov zhora {riadkov_ok}; chybné riadky \
+                                 makroblokov Y {zle_y}, Cb {zle_cb}; pôvod riadkov (táto = s{}) {}; riadok Y {} B, UV {} B)",
                                 v.snimok + 1,
+                                v.snimok + 1,
+                                povod.join(" "),
                                 vy.riadok_y,
                                 vy.riadok_uv
                             )

@@ -217,6 +217,10 @@ jobs:
           # R189: karta SD, ktorá neprečíta voliteľné rozširujúce registre, sa už nezahodí; strop taktu SD
           # (/sys/module/mmc_core/parameters/sklenik_sd_max_khz) – KLÍČ ho zníži, keď karta opakovane zlyháva
           patch -p1 --forward < ../sklenik/jadro-ovladace/sklenik-sd.patch
+          # R237: pokusné zápisy do registrov dekodéra VDEC_1 (chyba H.264 na SM1) –
+          # /sys/module/meson_vdec/parameters/sklenik_zapisy, KLÍČ ho nastavuje len počas skúšky videa
+          patch -p1 --forward < ../sklenik/jadro-ovladace/sklenik-vdec1.patch
+          grep -q sklenik_zapisy drivers/staging/media/meson/vdec/vdec_1.c || { echo "úprava R237 sa neuplatnila"; exit 1; }
           grep -q sklenik_sd_max_khz drivers/mmc/core/sd.c || { echo "úprava R189 sa neuplatnila"; exit 1; }
           grep -q sklenik_bez_kodovania drivers/gpu/drm/bridge/synopsys/dw-hdmi.c || { echo "úprava R187 sa neuplatnila"; exit 1; }
           # R167: vlastný ovládač hlbokého spánku jadier (cpuidle cez PSCI) – pri štarte vypnutý, zapína ho KLÍČ

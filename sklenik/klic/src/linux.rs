@@ -719,6 +719,44 @@ fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex
                     }
                 }
             }
+            // R237: H.264 na SM1 – pri každej snímke chybné spodné riadky makroblokov (26. 11.: 12.–15. riadok,
+            // aj s vypnutým odblokovaním). Pokus: tie isté snímky s pokusnými zápismi do registrov dekodéra pred
+            // jeho spustením (hodiny podblokov, výstup cez MDEC) – ktorý zápis chybu odstráni, ukáže príčinu.
+            const POKUSY_VDEC1: [(&str, &str); 4] = [
+                ("hodiny všetkých podblokov (DOS_GCLK_EN0)", "fc04=ffffffff"),
+                ("+ hodiny MDEC (GCLK_EN)", "fc04=ffffffff,260c=ffffffff"),
+                ("+ MDEC_PIC_DC_MUX_CTRL bit 31", "fc04=ffffffff,2634|80000000"),
+                ("MDEC_PIC_DC_MUX_CTRL bez bitu 31", "2634&80000000"),
+            ];
+            let parameter = Path::new("/sys/module/meson_vdec/parameters/sklenik_zapisy");
+            if d.vie(v4l2::H264) && parameter.exists() {
+                let obrazy: Vec<video::Obraz> = (0..8).map(|n| video::vzor(320, 240, n)).collect();
+                let toky = video::h264_pcm(&obrazy);
+                for (popis, zapisy) in POKUSY_VDEC1 {
+                    if fs::write(parameter, zapisy).is_err() {
+                        pridaj("H.264 pokusy (R237): parameter sa nedá nastaviť".into());
+                        break;
+                    }
+                    let mut jadro = kmsg_od_konca();
+                    match v4l2::skus(&d.cesta, v4l2::H264, &toky, &obrazy, Duration::from_secs(10)) {
+                        Ok(v) => pridaj(format!(
+                            "H.264 pokus R237 – {popis} [{zapisy}]: {}",
+                            v.popis(obrazy.len())
+                        )),
+                        Err(e) => pridaj(format!("H.264 pokus R237 – {popis} [{zapisy}]: chyba – {e}")),
+                    }
+                    for r in jadro
+                        .as_mut()
+                        .map(kmsg_nove)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|r| r.contains("R237"))
+                    {
+                        pridaj(format!("  jadro: {r}"));
+                    }
+                }
+                let _ = fs::write(parameter, "");
+            }
             // R177: HEVC so skupinami snímok – P-snímky kopírujú predošlú snímku cez referenciu (RPS, zoznam L0,
             // kompenzácia pohybu, vektory, správa snímok); časovanie 25 snímok/s – dekodér znižuje takt
             if d.vie(v4l2::HEVC) {
