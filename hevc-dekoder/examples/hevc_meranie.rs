@@ -12,16 +12,17 @@
 //! OBRAZ poradie=<i> poc=<POC> sirka=<w> vyska=<h> md5=<32 hex>       (len v režime md5, v poradí výstupu)
 //! VYSLEDOK obrazov=<n> cas_ms=<ms> obr_s=<x.y> sei_zhoda=<n> sei_nezhoda=<n> sei_bez=<n> chyby=<n> stav=<stav>
 //! CHYBA <text>                                                         (0 až 5 riadkov)
-//! CAS etapa=<meno> ms=<x.y> podiel=<x.y>                               (len s --etapy, 15 riadkov)
+//! CAS etapa=<meno> ms=<x.y> podiel=<x.y>                               (len s --etapy, 16 riadkov)
 //! CAS_SPOLU stena_ms=<x> praca_ms=<x> vlakna=<n> vyuzitie=<x.y>        (len s --etapy)
 //! ```
 //! Etapy (vlastný čas, súčet cez všetky vlákna): `rozbor` (hlavné vlákno: NAL, hlavičky, správa obrazov),
 //! `cabac` (CABAC a syntax CTU okrem koeficientov), `koeficienty` (CABAC koeficientov, residual_coding),
-//! `pohyb` (kandidáti zlúčenia a AMVP vrátane TMVP), `intra`, `inter` (interpolácia a váženie),
+//! `pohyb` (kandidáti zlúčenia a AMVP vrátane TMVP), `intra`, `inter` (interpolácia a váženie jasu),
 //! `transformacia` (dekvantizácia, spätná transformácia, rezíduum), `odblokovanie`, `sao`, `zverejnenie`
 //! (kopírovanie hotových riadkov a pohybu), `odtlacok` (overenie SEI), `ostatne`, a čakania: `cakanie_ref`
 //! (na riadky referencie z iného vlákna), `cakanie_hlavne` (hlavné vlákno na rad úloh či koniec),
-//! `necinnost` (pracovné vlákno bez úlohy). `podiel` = % z `praca_ms` (súčet etáp okrem čakaní); `vyuzitie` =
+//! `necinnost` (pracovné vlákno bez úlohy), `inter_farba` (medzisnímková predikcia farby; od 27. 11. je `inter`
+//! len jas). `podiel` = % z `praca_ms` (súčet etáp okrem čakaní); `vyuzitie` =
 //! praca_ms / (stena_ms × vlákna) v %.
 //! `md5` je MD5 orezaného obrazu YUV 4:2:0 (rovina Y, U, V za sebou; Main 10 po 2 bajtoch, malý koniec –
 //! ako `ffmpeg -pix_fmt yuv420p10le -f framemd5`). `stav`: `ok` (bez chyby a bez nezhody so

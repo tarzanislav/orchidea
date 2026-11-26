@@ -1142,7 +1142,7 @@ impl<'a> DekoderRezu<'a> {
             let rov = &mut self.s.obraz.roviny[c];
             let krok = rov.krok;
             let ciel = &mut rov.data[sy * krok + sx..];
-            let _m = etapy::meraj(Etapa::Inter);
+            let _m = etapy::meraj(if c == 0 { Etapa::Inter } else { Etapa::InterFarba });
             interpolacia::predikuj(
                 c == 0,
                 r0,

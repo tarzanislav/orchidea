@@ -24,7 +24,7 @@ pub enum Etapa {
     Pohyb,
     /// vnútrosnímková predikcia
     Intra,
-    /// medzisnímková predikcia (interpolácia a váženie) bez čakania na referenciu
+    /// medzisnímková predikcia jasu (interpolácia a váženie) bez čakania na referenciu
     Inter,
     /// spätné kvantovanie, transformácia a pripočítanie rezídua
     Transformacia,
@@ -42,10 +42,12 @@ pub enum Etapa {
     CakanieHlavne,
     /// pracovné vlákno nemá úlohu
     Necinnost,
+    /// medzisnímková predikcia farby (Cb, Cr) – od 27. 11. oddelená od `inter`
+    InterFarba,
 }
 
 /// Počet etáp.
-pub const POCET: usize = 15;
+pub const POCET: usize = 16;
 
 /// Všetky etapy v poradí výpisu.
 pub const VSETKY: [Etapa; POCET] = [
@@ -64,6 +66,7 @@ pub const VSETKY: [Etapa; POCET] = [
     Etapa::CakanieRef,
     Etapa::CakanieHlavne,
     Etapa::Necinnost,
+    Etapa::InterFarba,
 ];
 
 impl Etapa {
@@ -85,6 +88,7 @@ impl Etapa {
             Etapa::CakanieRef => "cakanie_ref",
             Etapa::CakanieHlavne => "cakanie_hlavne",
             Etapa::Necinnost => "necinnost",
+            Etapa::InterFarba => "inter_farba",
         }
     }
 

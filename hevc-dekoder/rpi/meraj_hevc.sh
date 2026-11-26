@@ -61,8 +61,8 @@ s_teplotou() {
     s_teplotou env ORCHIDEA_HEVC_RYCHLOST=1 ORCHIDEA_HEVC_VLAKNA="$n" ./hevc_dekoduj toky
     echo
   done
-  # rozpis času po etapách (riadky CAS, rozhranie R4)
-  for n in 1 4; do
+  # rozpis času po etapách (riadky CAS, rozhranie R4); 6 a 8 vlákien na 4 jadrách – vyplní čakanie na referencie?
+  for n in 1 4 6 8; do
     ochlad
     echo "## Etapy – film1080, vlákien: $n (štart pri $(teplota) °C)"
     s_teplotou ./hevc_meranie --rychlost --etapy --vlakna "$n" toky/film1080.hevc | grep -v '^OBRAZ'

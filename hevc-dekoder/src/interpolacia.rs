@@ -329,7 +329,8 @@ fn riadok_vodorovne<const N: usize>(
     odcitaj: i32,
 ) {
     let w = ciel.len();
-    let zdroj = &zdroj[..w + N - 1];
+    // zdroj nechaný dlhší (zvyšok roviny): NEON z neho číta 16 vzoriek naraz bez kópie; počíta sa len w + N − 1
+    assert!(zdroj.len() >= w + N - 1, "HEVC: krátky riadok zdroja");
     if shift1 == 0 {
         // 8 bitov: výsledok (aj s odčítaním 8192) leží v −14 312 … 22 440, teda v i16 – počítanie v i16
         // modulo 2^16 je presné a vektor má 8 dráh namiesto 4
@@ -357,7 +358,8 @@ fn riadok_zvislo<const N: usize>(
     odcitaj: i32,
 ) {
     let w = ciel.len();
-    let riadky: [&[Vzorka]; N] = std::array::from_fn(|k| &zdroj[k * krok..][..w]);
+    // riadky nechané dlhšie (zvyšok roviny) – NEON číta po 8 vzorkách aj pri užšom bloku bez kópie
+    let riadky: [&[Vzorka]; N] = std::array::from_fn(|k| &zdroj[k * krok..]);
     if shift1 == 0 {
         // 8 bitov: presné v i16 (pozri riadok_vodorovne)
         zvislo8(&riadky, koef, ciel, odcitaj as i16);
@@ -377,7 +379,7 @@ fn riadok_zvislo<const N: usize>(
 /// i16, preto súčiny i16 · i16 → i32.
 fn riadok_zvislo_medzi<const N: usize>(medzi: &[i16], koef: &[i16; N], ciel: &mut [i16]) {
     let w = ciel.len();
-    let riadky: [&[i16]; N] = std::array::from_fn(|k| &medzi[k * w..][..w]);
+    let riadky: [&[i16]; N] = std::array::from_fn(|k| &medzi[k * w..]);
     zvislo_medzi(&riadky, koef, ciel);
 }
 
