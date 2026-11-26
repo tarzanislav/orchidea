@@ -1,4 +1,4 @@
-//! Pohľad – prehliadač obrázkov. `pohlad [súbor | priečinok]`; súbor alebo priečinok sa dá aj pretiahnuť do okna.
+//! Prehliadač a editor fotografií (Pohľad). `pohlad [súbor | priečinok]`; súbor alebo priečinok sa dá aj pretiahnuť do okna.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -12,7 +12,7 @@ fn main() {
     {
         let _ = argumenty;
         eprintln!(
-            "Pohľad: okno je zatiaľ pre Windows. Na Linuxe a macOS použite príkazový riadok \
+            "Prehliadač a editor fotografií (Pohľad): okno je zatiaľ pre Windows. Na Linuxe a macOS použite príkazový riadok \
              (cargo run -p orchidea-pohlad --example prikazy)."
         );
         std::process::exit(1);

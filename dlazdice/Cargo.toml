@@ -1,6 +1,6 @@
 [package]
 name = "orchidea-dlazdice"
-description = "Dlaždicový raster s kopírovaním pri zápise a odtlačkami (R70) a pyramída náhľadu (R71) – základ prehliadača obrázkov (Pohľad)"
+description = "Dlaždicový raster s kopírovaním pri zápise a odtlačkami (R70) a pyramída náhľadu (R71) – základ prehliadača a editora fotografií (Pohľad)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

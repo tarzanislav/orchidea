@@ -1,6 +1,6 @@
 [package]
 name = "orchidea-pohlad"
-description = "Pohľad – prehliadač obrázkov: hromadný prevod, premenovanie a zmenšenie, náhľady priečinka (bez importu)"
+description = "Prehliadač a editor fotografií (Pohľad): prehliadanie, úpravy, porovnanie, prezentácia, hromadný prevod, náhľady; katalóg fotografií (Herbár) bez importu"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

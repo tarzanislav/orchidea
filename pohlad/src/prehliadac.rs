@@ -1,4 +1,4 @@
-//! Jadro okna Pohľadu – nezávislé od systému okien, bez `unsafe`.
+//! Jadro okna prehliadača a editora fotografií (Pohľad) – nezávislé od systému okien, bez `unsafe`.
 //!
 //! **Chladný návrh (R208):** jadro nič nerobí samo od seba. Okno mu odovzdá vstup (`vstup`) alebo ho zobudí
 //! pracovné vlákno (`spracuj_pozadie`); každá z týchto funkcií vráti, či treba prekresliť. Okno potom zavolá
@@ -1037,12 +1037,14 @@ impl Prehliadac {
     pub fn titulok(&self) -> String {
         match self.polozky.get(self.aktualny) {
             Some(p) => format!(
-                "{} – Pohľad ({}/{})",
+                "{} ({}/{}) – prehliadač a editor fotografií (Pohľad)",
                 p.cesta.file_name().map(|m| m.to_string_lossy().into_owned()).unwrap_or_default(),
                 self.aktualny + 1,
                 self.polozky.len()
             ),
-            None => "Pohľad – pretiahnite sem obrázok alebo priečinok".into(),
+            None => {
+                "prehliadač a editor fotografií (Pohľad) – pretiahnite sem obrázok alebo priečinok".into()
+            }
         }
     }
 

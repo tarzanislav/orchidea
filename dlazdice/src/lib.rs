@@ -1,5 +1,5 @@
-//! **Dlaždicový raster s kopírovaním pri zápise (R70) a pyramída náhľadu (R71)** – základ prehliadača obrázkov
-//! (Pohľad) a celej práce s obrazom v ORCHIDEI.
+//! **Dlaždicový raster s kopírovaním pri zápise (R70) a pyramída náhľadu (R71)** – základ prehliadača
+//! a editora fotografií (Pohľad) a celej práce s obrazom v ORCHIDEI.
 //!
 //! - **Dlaždice:** obraz je mriežka štvorcových dlaždíc. Dlaždica je nemenná a zdieľaná; úprava vytvorí novú
 //!   len pre dlaždice, ktorých sa dotkne. História (späť, znova) tak zdieľa všetko nezmenené – sto ťahov

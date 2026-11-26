@@ -1,4 +1,4 @@
-//! # orchidea-pohlad – Pohľad (prehliadač obrázkov), vrstva 3
+//! # orchidea-pohlad – prehliadač a editor fotografií (Pohľad), vrstva 3
 //!
 //! Používa len verejné rozhrania balíkov `formaty`, `farba` a `jadro` (R30).
 //!

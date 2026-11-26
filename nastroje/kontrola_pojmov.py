@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Kontrola pojmov (ORCHIDEA/terminologia.md, časť 7): tvorivý názov smie byť v textoch pre ľudí len spolu
-s tradičným pojmom alebo menom produktu – napríklad „SKLENÍK“ len vedľa „ORCHIDEA OS“.
+s tradičným pojmom alebo menom produktu – napríklad „SKLENÍK“ len vedľa „ORCHIDEA OS“, „Pohľad“ len vedľa
+„prehliadač a editor fotografií“, „Herbár“ len vedľa „katalóg fotografií“ (v ľubovoľnom páde).
 
 Prechádza:
 - reťazce v zdrojovom kóde Rust (mimo komentárov a modulov so skúškami),
-- README.md,
+- README.md a návody v balíkoch (NAVOD.txt),
+- popisy balíkov (description v Cargo.toml),
 - texty v pracovných postupoch CI, ktoré vidí človek (name:, echo, printf, Write-Output).
 
 Výnimka pre jeden riadok: značka „pojmy: výnimka“ v riadku (napríklad v komentári za reťazcom).
@@ -23,6 +25,9 @@ DVOJICE = [
     (re.compile(r"\bPÔD[AUYE]\b"), "rofil hardvéru"),
     (re.compile(r"SÚPIS\w*"), "periféri"),
     (re.compile(r"STRÁŽC\w*"), "REGULÁTOR"),
+    # 26. 11. 2026, vlastník: tradičný odborný pojem, tvorivý názov v zátvorke
+    (re.compile(r"\bPohľad\w*"), re.compile(r"prehliada\w* a editor\w* fotografi", re.I)),
+    (re.compile(r"\bHerbár\w*"), re.compile(r"katal[oó]g\w* fotografi", re.I)),
 ]
 RETAZEC = re.compile(r'"(?:[^"\\]|\\.)*"')
 VYNIMKA = "pojmy: výnimka"
@@ -37,12 +42,23 @@ def priecinky_rust() -> list[pathlib.Path]:
     return [KOREN / c for c in clenovia]
 
 
-def problemy(text: str) -> list[str]:
+# Popisy balíkov ORCHIDEA OS ešte používajú staré názvy – prevedie ich relácia ORCHIDEA OS (issue v repozitári);
+# dovtedy sa v popisoch balíkov kontrolujú len ostatné dvojice.
+ODLOZENE_V_POPISOCH = ("SKLENÍK", "SADIČ", "PÔD", "SÚPIS", "STRÁŽC")
+
+
+def problemy(text: str, odlozene: tuple[str, ...] = ()) -> list[str]:
     chyby = []
     for vzor, musi in DVOJICE:
+        if any(vzor.pattern.lstrip("\\b").startswith(o) for o in odlozene):
+            continue
         for m in vzor.finditer(text):
-            if musi.lower() not in text.lower():
-                chyby.append(f"„{m.group(0)}“ bez „{musi}“")
+            if isinstance(musi, str):
+                ok, meno = musi.lower() in text.lower(), musi
+            else:
+                ok, meno = musi.search(text) is not None, musi.pattern
+            if not ok:
+                chyby.append(f"„{m.group(0)}“ bez „{meno}“")
     return chyby
 
 
@@ -75,10 +91,18 @@ def main() -> int:
             for c, t in texty_rust(subor):
                 for ch in problemy(t):
                     najdene.append(f"{subor.relative_to(KOREN)}:{c}: {ch} – {t[:90]}")
-    for c, riadok in enumerate((KOREN / "README.md").read_text(encoding="utf-8").splitlines(), 1):
-        if VYNIMKA not in riadok:
-            for ch in problemy(riadok):
-                najdene.append(f"README.md:{c}: {ch}")
+    texty = [KOREN / "README.md"] + sorted(p / "NAVOD.txt" for p in priecinky_rust() if (p / "NAVOD.txt").exists())
+    for subor in texty:
+        for c, riadok in enumerate(subor.read_text(encoding="utf-8").splitlines(), 1):
+            if VYNIMKA not in riadok:
+                for ch in problemy(riadok):
+                    najdene.append(f"{subor.relative_to(KOREN)}:{c}: {ch}")
+    for p in priecinky_rust():
+        if (p / "Cargo.toml").exists():
+            for c, riadok in enumerate((p / "Cargo.toml").read_text(encoding="utf-8").splitlines(), 1):
+                if riadok.startswith("description") and VYNIMKA not in riadok:
+                    for ch in problemy(riadok, ODLOZENE_V_POPISOCH):
+                        najdene.append(f"{(p / 'Cargo.toml').relative_to(KOREN)}:{c}: {ch}")
     for subor in sorted((KOREN / ".github" / "workflows").glob("*.yml")):
         for c, t in texty_ci(subor):
             for ch in problemy(t):

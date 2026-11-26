@@ -1,4 +1,4 @@
-//! Príkazový riadok Pohľadu (aj pre nezávislé overenie v CI). Okno je program `pohlad`.
+//! Príkazový riadok prehliadača a editora fotografií (Pohľad) (aj pre nezávislé overenie v CI). Okno je program `pohlad`.
 //!
 //! - `prikazy davka <vstupný priečinok> <výstupný priečinok> [--format jpg|png|tif|exr] [--max N] [--meno ŠABLÓNA]
 //!   [--vlakna N] [--kvalita Q] [--prestavka MS]` – riadok na každý súbor: `SUBOR poradie ms_od_začiatku ok|chyba text`
@@ -256,7 +256,7 @@ fn spusti(a: &[String]) -> Result<(), String> {
                     println!("NAJDENYCH {} z {} za {us} µs", v.len(), h.zaznamy.len());
                     Ok(())
                 }
-                x => Err(format!("neznámy príkaz Herbára {x}")),
+                x => Err(format!("neznámy príkaz katalógu fotografií (Herbár): {x}")),
             }
         }
         Some("zmensi") if a.len() == 6 => {

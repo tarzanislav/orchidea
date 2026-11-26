@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nezávislé overenie Pohľadu (CI): zmenšenie proti Pillow, hromadný prevod, brána E1 – 1000 fotiek bez
+"""Nezávislé overenie prehliadača a editora fotografií (Pohľad, CI): zmenšenie proti Pillow, hromadný prevod, brána E1 – 1000 fotiek bez
 zamrznutia, s obmedzeným počtom vlákien a ohraničenou pamäťou – náhľady priečinka (natočenie, zoznam) a
 porovnanie obrázkov (PSNR, SSIM proti scikit-image).
 
@@ -509,13 +509,13 @@ def upravy(rng):
 
 
 def herbar(rng):
-    """Herbár: index priečinkov bez importu, metadáta proti ExifTool, dotazy, obnova len zmenených, rýchlosť."""
+    """Katalóg fotografií (Herbár): index priečinkov bez importu, metadáta proti ExifTool, dotazy, obnova len zmenených, rýchlosť."""
     import json
     import shutil
 
     et = os.environ.get("ORCHIDEA_EXIFTOOL", "").split() or ([shutil.which("exiftool")] if shutil.which("exiftool") else [])
     if not et:
-        vysledok("Herbár", False, "rozhodca ExifTool chýba")
+        vysledok("katalóg fotografií (Herbár)", False, "rozhodca ExifTool chýba")
         return
     koren = os.path.join(PRAC, "herbar")
     if os.path.isdir(koren):
@@ -554,7 +554,7 @@ def herbar(rng):
         return subprocess.run([PROGRAM, "herbar", katalog, *arg], capture_output=True, text=True)
 
     r = herbar_cmd("pridaj", koren)
-    vysledok("Herbár: index priečinka s podpriečinkami", "precitanych=301" in r.stdout,
+    vysledok("katalóg fotografií: index priečinka s podpriečinkami", "precitanych=301" in r.stdout,
              r.stdout.strip() + (f" ({len(vsetky)} obrázkov, .txt sa nepridal)" if "precitanych=301" in r.stdout else r.stderr[-200:]))
     # metadáta proti ExifTool
     ich = {d["SourceFile"]: d for d in json.loads(subprocess.run(et + ["-j", "-n", "-r", koren], capture_output=True, text=True).stdout)}
@@ -585,17 +585,17 @@ def herbar(rng):
     for dotaz, f in dotazy:
         nase, txt = hladaj(dotaz)
         o = ocakavane(f)
-        vysledok(f"Herbár: dotaz „{dotaz}“", nase == o, f"{len(nase)} nájdených = podľa ExifTool" if nase == o else f"{len(nase)} ≠ {len(o)}")
+        vysledok(f"katalóg fotografií: dotaz „{dotaz}“", nase == o, f"{len(nase)} nájdených = podľa ExifTool" if nase == o else f"{len(nase)} ≠ {len(o)}")
     # obnova: nič nové → nič sa nečíta; zmena jedného, zmazanie jedného
     r = herbar_cmd("obnov")
-    vysledok("Herbár: obnova bez zmien", "precitanych=0 preskocenych=301 zmazanych=0" in r.stdout, r.stdout.strip())
+    vysledok("katalóg fotografií: obnova bez zmien", "precitanych=0 preskocenych=301 zmazanych=0" in r.stdout, r.stdout.strip())
     zmeneny = os.path.join(koren, "2024", "kopia_000.jpg")
     subprocess.run(et + ["-q", "-overwrite_original", "-IPTC:Keywords+=nové", zmeneny], check=True)
     os.remove(os.path.join(koren, "2024", "kopia_003.jpg"))
     r = herbar_cmd("obnov")
-    vysledok("Herbár: obnova len zmeneného", "precitanych=1 preskocenych=299 zmazanych=1" in r.stdout, r.stdout.strip())
+    vysledok("katalóg fotografií: obnova len zmeneného", "precitanych=1 preskocenych=299 zmazanych=1" in r.stdout, r.stdout.strip())
     nase, _ = hladaj("kluc:nove")
-    vysledok("Herbár: nové kľúčové slovo nájdené", nase == [zmeneny], f"{nase}")
+    vysledok("katalóg fotografií: nové kľúčové slovo nájdené", nase == [zmeneny], f"{nase}")
     # rýchlosť: katalóg so 100 000 záznamami
     with open(katalog, encoding="utf-8") as f:
         riadky = f.read().splitlines()
@@ -610,7 +610,7 @@ def herbar(rng):
                        capture_output=True, text=True)
     riadok = [x for x in r.stdout.splitlines() if x.startswith("NAJDENYCH")]
     us = int(riadok[0].split()[-2]) if riadok else 10**9
-    vysledok("Herbár: dotaz nad 100 000 záznamami", us < 200_000, riadok[0] if riadok else r.stderr[-200:])
+    vysledok("katalóg fotografií: dotaz nad 100 000 záznamami", us < 200_000, riadok[0] if riadok else r.stderr[-200:])
 
 
 rng = np.random.default_rng(2026)

@@ -1,4 +1,4 @@
-//! Okno Pohľadu pre Windows – vlastné väzby na user32, gdi32 a shell32 (prvky okna Windows – platforma).
+//! Okno prehliadača a editora fotografií (Pohľad) pre Windows – vlastné väzby na user32, gdi32 a shell32 (prvky okna Windows – platforma).
 //!
 //! Chladné: slučka `GetMessageW` spí, kým nepríde správa; žiadny časovač. Pracovné vlákno jadra pošle
 //! `WM_HOTOVE` (PostMessageW), keď dokončí prácu. Kreslí sa len pri `WM_PAINT` a len vtedy, keď jadro povie,
@@ -621,7 +621,7 @@ pub fn spusti(argumenty: &[String]) -> i32 {
             ikona_mala: 0,
         };
         RegisterClassExW(&wc);
-        let nazov = w("Pohľad");
+        let nazov = w("prehliadač a editor fotografií (Pohľad)");
         let hwnd = CreateWindowExW(
             0,
             trieda.as_ptr(),
@@ -637,7 +637,7 @@ pub fn spusti(argumenty: &[String]) -> i32 {
             std::ptr::null_mut(),
         );
         if hwnd == 0 {
-            eprintln!("Pohľad: okno sa nepodarilo vytvoriť");
+            eprintln!("prehliadač a editor fotografií (Pohľad): okno sa nepodarilo vytvoriť");
             return 1;
         }
         let ciel = hwnd;

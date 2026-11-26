@@ -1,4 +1,4 @@
-//! Herbár – základ katalógu fotiek: index zvolených priečinkov bez importu (súbory ostávajú, kde sú),
+//! Katalóg fotografií (Herbár) – základ: index zvolených priečinkov bez importu (súbory ostávajú, kde sú),
 //! metadáta z Exif, IPTC a XMP, rýchle vyhľadávanie jedným jazykom dotazov.
 //!
 //! - **Bez importu:** katalóg je jeden textový súbor s údajmi o súboroch (cesta, veľkosť, čas zmeny, rozmery,
@@ -298,7 +298,9 @@ impl Herbar {
         };
         let mut r = t.lines();
         if r.next() != Some("ORCHIDEA-HERBAR 1") {
-            return Err(Chyba::PoskodeneData("Herbár: neznámy formát katalógu".into()));
+            return Err(Chyba::PoskodeneData(
+                "katalóg fotografií (Herbár): neznámy formát súboru katalógu".into(),
+            ));
         }
         let mut h = Herbar::novy();
         for riadok in r {
@@ -636,7 +638,10 @@ mod skusky {
         z.popis = "riadok 1\nriadok 2 \\ koniec".into();
         z.hodnotenie = Some(4);
         h.zaznamy.push(z.clone());
-        let c = std::env::temp_dir().join(format!("herbar_skuska_{}.txt", std::process::id()));
+        // vo WASI nie je dočasný priečinok ani číslo procesu (#18)
+        let priecinok = if cfg!(target_family = "wasm") { PathBuf::from(".") } else { std::env::temp_dir() };
+        let cas = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let c = priecinok.join(format!("herbar_skuska_{cas}.txt"));
         h.uloz(&c).unwrap();
         let n = Herbar::nacitaj(&c).unwrap();
         let _ = std::fs::remove_file(&c);

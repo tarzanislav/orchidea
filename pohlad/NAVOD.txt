@@ -1,9 +1,9 @@
-ORCHIDEA Pohľad – skúšobná zostava pre Windows (10/11, 64-bit)
-=================================================================
+ORCHIDEA – prehliadač a editor fotografií (Pohľad) – skúšobná zostava pre Windows (10/11, 64-bit)
+==================================================================================================
 
 Obsah balíka
-  pohlad.exe    prehliadač obrázkov (okno)
-  prikazy.exe   príkazový riadok: dávka, náhľady, porovnanie, Herbár (katalóg fotiek)
+  pohlad.exe    prehliadač a editor fotografií (Pohľad) – okno
+  prikazy.exe   príkazový riadok: dávka, náhľady, porovnanie, katalóg fotografií (Herbár)
   NAVOD.txt     tento návod
 
 Inštalácia nie je potrebná. Rozbaľte ZIP do ľubovoľného priečinka a spustite pohlad.exe.
@@ -15,24 +15,32 @@ Otvorenie obrázkov
   - pohlad.exe C:\Fotky\Dovolenka   (alebo cesta k jednému súboru)
   Formáty: JPEG, PNG, TIFF, OpenEXR, JPEG XL.
 
+Panel nástrojov (hore v okne)
+  Otočiť vľavo / vpravo, Zrkadliť, Orezať, Jas - / +, Kontrast - / +, Gama - / +, Zmenšiť,
+  Späť, Znova, Uložiť, Označiť, Porovnať, Prezentácia, ? (nápoveda).
+  Sivé tlačidlo práve nič neurobí (napríklad Späť, kým nie je čo vrátiť).
+  Pri myši nad tlačidlom sa ukáže bublina s klávesom. Tab panel skryje a znova ukáže.
+
+Nápoveda klávesov: F1 alebo ? (zavrie ju Esc alebo kliknutie)
+
 Prehliadanie
   šípky / medzerník / PageUp / PageDown / Backspace   ďalší a predošlý
   Home / End                                         prvý a posledný
-  + / −, koliesko                                     priblížiť / oddialiť,  0 = prispôsobiť,  1 = skutočná veľkosť
+  + / -, koliesko                                     priblížiť / oddialiť,  0 = prispôsobiť,  1 = skutočná veľkosť
   ťahanie myšou                                       posun priblíženého obrazu
   M označiť obraz, C porovnanie označeného s aktuálnym (vedľa seba / rozdiel), T pás náhľadov, I údaje
   F5 alebo F11   prezentácia na celú obrazovku (každých 5 s ďalší, P pozastaví, Esc ukončí)
-  Esc            koniec
+  Esc            zavrie nápovedu alebo prezentáciu, inak koniec
 
-Úpravy (originál sa nikdy neprepíše; Ctrl+S uloží vedľa ako „meno_upravene.jpg“)
+Úpravy (originál sa nikdy neprepíše; Uložiť / Ctrl+S uloží vedľa ako „meno_upravene.jpg“)
   R / Shift+R    otočiť vpravo / vľavo          F  zrkadliť
   X              orezať na práve zobrazený výrez (najprv priblížte)
-  J / Shift+J    jas +/−      K / Shift+K  kontrast +/−      G / Shift+G  gama +/−
+  J / Shift+J    jas +/-      K / Shift+K  kontrast +/-      G / Shift+G  gama +/-
   Z              zmenšiť na polovicu (kvalitné zmenšenie)
   Ctrl+Z / Ctrl+Y   späť / znova
   Pri JPEG bez zmeny bodov (len otočenie, zrkadlenie, orezanie) sa ukladá bezstratovo – kvalita sa nestratí.
 
-Herbár – katalóg fotiek (bez importu, fotky ostávajú, kde sú)
+Katalóg fotografií (Herbár) – bez importu, fotky ostávajú, kde sú
   prikazy.exe herbar C:\Fotky\herbar.txt pridaj C:\Fotky
   prikazy.exe herbar C:\Fotky\herbar.txt obnov
   prikazy.exe herbar C:\Fotky\herbar.txt hladaj kvet datum:2024 -vianoce
