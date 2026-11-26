@@ -217,13 +217,12 @@ fn matroska() {
 }
 
 fn subory_flac() -> Vec<Vec<u8>> {
-    ["stereo16_lpc.flac", "kanaly6_24b.flac", "mono8_pevny.flac"]
-        .iter()
-        .map(|m| {
-            std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(m))
-                .unwrap()
-        })
-        .collect()
+    // vložené do programu skúšok – fuzzer beží rovnako vo WebAssembly, na Androide aj v QEMU
+    vec![
+        include_bytes!("data/stereo16_lpc.flac").to_vec(),
+        include_bytes!("data/kanaly6_24b.flac").to_vec(),
+        include_bytes!("data/mono8_pevny.flac").to_vec(),
+    ]
 }
 
 #[test]
