@@ -11,7 +11,12 @@ Pripustené a vypísané rozdiely – každý je overiteľný z ostatných údaj
 - trvanie zo súboru, ktoré presne sedí s časom ďalšieho paketu (FFmpeg hlási dĺžku rámca), a trvanie
   posledného paketu stopy (BlockDuration, posledná vzorka),
 - stály posun PTS celej stopy pri zhodných DTS: FFmpeg pri záporných posunoch zobrazenia posunie PTS, aby
-  PTS ≥ DTS; podľa ISO/IEC 14496-12 platí PTS = DTS + posun.
+  PTS ≥ DTS; podľa ISO/IEC 14496-12 platí PTS = DTS + posun,
+- MPEG-TS: čas ďalších rámcov zvuku v tom istom PES ±1 tik (my presne z počtu vzoriek a PTS PES, FFmpeg sčíta
+  zaokrúhlené trvania rámcov),
+- MPEG-TS, video Annex B: nulový bajt (zero_byte) pred počiatočným kódom 00 00 01 patrí podľa ITU-T H.264/H.265
+  príloha B k prístupovej jednotke za ním (my), FFmpeg ho nechá v predošlom pakete – overí sa, že celý tok
+  stopy je bit po bite rovnaký a hranice paketov sa líšia len o tento nulový bajt (obsah paketov je tým určený).
 
 Použitie: over_media.py <cesta k media_pakety> <pracovný priečinok>
 Návratový kód 0 = všetko sedí. Výsledok je tabuľka v Markdowne (pre súhrn CI).
@@ -65,6 +70,19 @@ VARIANTY = [
     ("mov_in24", "mov", ZVUK + ["-c:a", "pcm_s24be"]),
     ("mov_fl32", "mov", ZVUK + ["-c:a", "pcm_f32be"]),
     ("mov_prores_s24le", "mov", OBRAZ + ZVUK + ["-c:v", "prores_ks", "-c:a", "pcm_s24le"]),
+    # MPEG-TS a M2TS (L4): zvuk vyrezaný po rámcoch (ADTS, AC-3, E-AC-3, MPEG audio, Opus), video po PES
+    ("ts_h264_aac", "ts", OBRAZ + ZVUK + ["-c:v", "libx264", "-bf", "2", "-g", "12", "-c:a", "aac"]),
+    ("ts_hevc_opus", "ts", OBRAZ + ZVUK + ["-c:v", "libx265", "-x265-params", "log-level=none:keyint=10", "-c:a", "libopus"]),
+    ("ts_mpeg2_mp2", "ts", OBRAZ + ZVUK + ["-c:v", "mpeg2video", "-c:a", "mp2"]),
+    ("ts_mpeg2_mp3_44k", "ts", OBRAZ + ZVUK44 + ["-c:v", "mpeg2video", "-c:a", "libmp3lame"]),
+    ("ts_aac_44k", "ts", ZVUK44 + ["-c:a", "aac"]),
+    ("ts_mpeg4_eac3", "ts", OBRAZ + ZVUK + ["-c:v", "mpeg4", "-c:a", "eac3"]),
+    ("ts_dva_zvuky", "ts", OBRAZ + ZVUK + ZVUK44 + ["-map", "0", "-map", "1", "-map", "2", "-c:v", "libx264",
+                                                   "-c:a:0", "ac3", "-c:a:1", "mp2"]),
+    ("m2ts_h264_ac3", "m2ts", OBRAZ + ZVUK + ["-c:v", "libx264", "-c:a", "ac3", "-mpegts_m2ts_mode", "1"]),
+    ("ts_vysoky_tok", "ts", ["-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=20"] + ZVUK[:3]
+     + ["sine=frequency=440:sample_rate=48000:duration=20", "-ac", "2", "-c:v", "libx264", "-preset", "ultrafast",
+        "-b:v", "6M", "-c:a", "aac", "-mpegts_flags", "+resend_headers"]),
     ("av1_opus", "mkv", OBRAZ + ZVUK + ["-c:v", "libaom-av1", "-cpu-used", "8", "-g", "10", "-c:a", "libopus"]),
 ]
 
@@ -98,7 +116,8 @@ def rozhodca(cesta):
             "velkost": int(p["size"]),
             "md5": p.get("data_hash", "").split(":")[-1],
         })
-    return pakety, pcm
+    kodeky = {s["index"]: s.get("codec_name", "") for s in j.get("streams", [])}
+    return pakety, pcm, kodeky
 
 
 def nas(cesta):
@@ -116,7 +135,7 @@ def nas(cesta):
             pakety.append({"stopa": int(pole["stopa"]), "pts": cislo("pts"), "dts": cislo("dts"),
                            "trvanie": cislo("trvanie"),
                            "kluc": pole["kluc"] == "1", "velkost": int(pole["velkost"]), "md5": pole["md5"],
-                           "blok": pole.get("blok")})
+                           "blok": pole.get("blok"), "zaciatok": pole.get("zaciatok", "")})
         elif slova[0] == "TOK":
             toky[int(pole["index"])] = (pole["md5"], int(pole["bajtov"]))
         elif slova[0] == "VYSLEDOK":
@@ -130,7 +149,7 @@ def nas(cesta):
 
 def porovnaj(meno, cesta):
     try:
-        ocak, pcm = rozhodca(cesta)
+        ocak, pcm, kodeky = rozhodca(cesta)
         moje, stopy, citani, toky = nas(cesta)
         pcm_zhoda = []
         for i in sorted(pcm):
@@ -163,6 +182,24 @@ def porovnaj(meno, cesta):
         if len(rozdiely) == 1 and dts_rovnake and 0 not in rozdiely:
             posun_pts = rozdiely.pop()
             poznamky.append(f"stopa {stopa}: FFmpeg posúva PTS o {posun_pts} (PTS ≥ DTS), my PTS = DTS + posun (ISO/IEC 14496-12)")
+        if cesta.endswith((".ts", ".m2ts")) and kodeky.get(stopa) in ("h264", "hevc") and \
+                [p["velkost"] for p in a_s] != [p["velkost"] for p in b_s]:
+            # zero_byte pred počiatočným kódom: hranice sa smú líšiť len o nulový bajt na začiatku nášho paketu
+            md5, n = tok_rozhodcu(cesta, stopa)
+            if toky.get(stopa) != (md5, n):
+                nezhody.append(f"stopa {stopa}: tok {toky.get(stopa)}, rozhodca {(md5, n)}")
+                continue
+            z = [1 if p["zaciatok"].startswith("00000001") else 0 for p in a_s] + [0]
+            # prvý paket toku si svoj nulový bajt nechá aj u FFmpeg (nie je predošlý paket)
+            ok = all(b["velkost"] == a["velkost"] - (z[i] if i else 0) + (z[i + 1] if i + 1 < len(a_s) else 0)
+                     for i, (a, b) in enumerate(zip(a_s, b_s)))
+            if not ok:
+                nezhody.append(f"stopa {stopa}: hranice paketov sa líšia viac ako o zero_byte")
+                continue
+            posunutych = sum(1 for a, b in zip(a_s, b_s) if a["velkost"] != b["velkost"] or a["md5"] != b["md5"])
+            poznamky.append(f"stopa {stopa}: tok {n} B bit po bite, {posunutych} paketov s nulovým bajtom zero_byte "
+                            "na začiatku (H.26x príloha B), FFmpeg ho dáva na koniec predošlého")
+            a_s = [dict(a, md5=b["md5"], velkost=b["velkost"]) for a, b in zip(a_s, b_s)]
         zaokruhlenych = trvani_zaokruhlenych = trvani_zo_suboru = 0
         predosly_blok = None
         for i, (a, b) in enumerate(zip(a_s, b_s)):
@@ -172,6 +209,8 @@ def porovnaj(meno, cesta):
             if v_lacingu and a["pts"] is not None and b["pts"] is not None and abs(a["pts"] - b["pts"]) == 1:
                 zaokruhlenych += 1
                 b["pts"] = a["pts"]
+            if v_lacingu and a["dts"] is not None and b["dts"] is not None and abs(a["dts"] - b["dts"]) == 1:
+                b["dts"] = a["dts"]
             for k in ("pts", "kluc", "velkost", "md5"):
                 if a[k] != b[k]:
                     nezhody.append(f"stopa {stopa} paket {i} {k}: náš {a[k]}, rozhodca {b[k]}")
@@ -190,7 +229,10 @@ def porovnaj(meno, cesta):
             if len(nezhody) > 5:
                 break
         if zaokruhlenych:
-            poznamky.append(f"stopa {stopa}: čas {zaokruhlenych} rámcov lacingu ±1 tik (my k najbližšiemu, rozhodca nadol)")
+            if cesta.endswith((".ts", ".m2ts")):
+                poznamky.append(f"stopa {stopa}: čas {zaokruhlenych} ďalších rámcov v PES ±1 tik (my presne z počtu vzoriek, rozhodca súčtom zaokrúhlených trvaní)")
+            else:
+                poznamky.append(f"stopa {stopa}: čas {zaokruhlenych} rámcov lacingu ±1 tik (my k najbližšiemu, rozhodca nadol)")
         if trvani_zaokruhlenych:
             poznamky.append(f"stopa {stopa}: trvanie {trvani_zaokruhlenych} paketov ±1 tik (DefaultDuration nie je násobok tiku)")
         if trvani_zo_suboru:

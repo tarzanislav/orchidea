@@ -20,7 +20,8 @@
 //! - **chladne** – čítanie súvisle dopredu po dávkach, kompaktné indexy, priechod zvuku do televízora (R303, R306).
 //!
 //! Moduly: [`zdroj`] (čítanie na pozícii), [`cas`] (časová základňa), [`limity`], [`stopa`] (stopy a kodeky),
-//! [`paket`], [`kontajner`] (rozpoznanie formátu, rozhranie čítačky), [`mkv`] (Matroska a WebM), [`mp4`] (MP4 a MOV), [`flac_subor`] (súbory FLAC), [`zvuk`] (bloky vzoriek, rozhranie
+//! [`paket`], [`kontajner`] (rozpoznanie formátu, rozhranie čítačky), [`mkv`] (Matroska a WebM), [`mp4`] (MP4 a MOV), [`ts`] (MPEG-TS a M2TS), [`ramce`]
+//! (rámce zvukových tokov), [`flac_subor`] (súbory FLAC), [`zvuk`] (bloky vzoriek, rozhranie
 //! dekodéra), dekodéry [`pcm`] a [`flac`] a [`r5`] (rozhranie pre ORCHIDEA OS).
 #![forbid(unsafe_code)]
 
@@ -35,7 +36,9 @@ pub mod opus;
 pub mod paket;
 pub mod pcm;
 pub mod r5;
+pub mod ramce;
 pub mod stopa;
+pub mod ts;
 pub mod zdroj;
 pub mod zvuk;
 

@@ -323,3 +323,68 @@ fn mp4_a_mov() {
     }
     assert!(otvorenych > pocet_pokusov() / 40, "mutácie musia často ostať otvoriteľné ({otvorenych})");
 }
+
+#[test]
+fn ts_a_m2ts() {
+    use orchidea_media::ts::Ts;
+    use spolocne::ts::*;
+    let mut n = nahoda(9);
+    let mut zmiesane = Zapisovac::novy(188);
+    zmiesane.pat(&[(1, 0x1000)]);
+    zmiesane.pmt(
+        0x1000,
+        1,
+        &[],
+        &[
+            (0x81, 0x101, vec![]),
+            (0x06, 0x102, vec![0x7A, 1, 0]),
+            (0x03, 0x103, vec![]),
+            (0x06, 0x104, vec![0x05, 4, b'O', b'p', b'u', b's', 0x7F, 2, 0x80, 2]),
+            (0x24, 0x105, vec![]),
+        ],
+    );
+    for k in 0..6u64 {
+        let t = 90_000 + k * 2880;
+        zmiesane.pes(0x101, 0xBD, Some(t), None, false, &[ac3(1), ac3(2)].concat(), true);
+        zmiesane.pes(
+            0x102,
+            0xBD,
+            Some(t),
+            None,
+            false,
+            &[eac3(400, false, 1), eac3(200, true, 2)].concat(),
+            true,
+        );
+        zmiesane.pes(0x103, 0xC0, Some(t), None, false, &mp2(3), true);
+        zmiesane.pes(0x104, 0xBD, Some(t), None, false, &[0x7F, 0xF0, 3, 0, 9, 15 << 3, 1, 2], true);
+        zmiesane.pes(0x105, 0xE0, Some(t), Some(t - 3000), k == 0, &[0, 0, 1, 0x26, 1, 0xAF, 9], false);
+    }
+    let zaklady = [
+        typicky(188, 1, 126_000).0,
+        typicky(192, 1, (1 << 33) - 50_000).0,
+        typicky(204, 1, 0).0,
+        zmiesane.data,
+    ];
+    let mut otvorenych = 0;
+    for i in 0..pocet_pokusov() / 4 {
+        let d = if i % 10 == 0 { bajty(&mut n, 2_000) } else { zmutuj(&zaklady[i % zaklady.len()], &mut n) };
+        let Ok(mut m) = Ts::otvor(PametovyZdroj::novy(d), prisne()) else { continue };
+        otvorenych += 1;
+        let stopy = m.stopy().len();
+        for _ in 0..2_000 {
+            match m.dalsi_paket() {
+                Ok(Some(p)) => assert!(p.stopa < stopy),
+                _ => break,
+            }
+        }
+        let sposob = if n.mensie_ako(2) == 0 { Posun::KlucovyPred } else { Posun::Presny };
+        if m.posun(n.mensie_ako(4_000_000_000) as i64, sposob).is_ok() {
+            for _ in 0..100 {
+                if !matches!(m.dalsi_paket(), Ok(Some(_))) {
+                    break;
+                }
+            }
+        }
+    }
+    assert!(otvorenych > pocet_pokusov() / 40, "mutácie musia často ostať otvoriteľné ({otvorenych})");
+}

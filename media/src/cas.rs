@@ -91,6 +91,11 @@ impl Rozbalenie33 {
         r
     }
 
+    /// Začne od známej rozbalenej hodnoty (po posune v súbore: ďalšie hodnoty sa rozbalia k nej).
+    pub fn zacni(&mut self, hodnota: i64) {
+        self.posledna = Some(hodnota);
+    }
+
     /// Zabudne históriu (po posune v súbore alebo prerušení toku).
     pub fn reset(&mut self) {
         self.posledna = None;

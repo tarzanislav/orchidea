@@ -3,7 +3,7 @@
 //! Použitie: `media_pakety <súbor>` – na stdout riadky v pevnom tvare:
 //! ```text
 //! STOPA index=<i> cislo=<n> druh=<Video|Zvuk|Titulky|Ine> kodek=<meno>
-//! PAKET stopa=<i> pts=<tiky|-> dts=<tiky|-> trvanie=<tiky|-> kluc=<0|1> velkost=<B> orezat=<vzoriek na konci> blok=<poloha v súbore> md5=<32 hex>
+//! PAKET stopa=<i> pts=<tiky|-> dts=<tiky|-> trvanie=<tiky|-> kluc=<0|1> velkost=<B> orezat=<vzoriek na konci> blok=<poloha v súbore> zaciatok=<prvé 4 B hex> md5=<32 hex>
 //! TOK index=<i> paketov=<n> bajtov=<n> md5=<32 hex>          (MD5 všetkých údajov stopy za sebou)
 //! VYSLEDOK paketov=<n>
 //! ```
@@ -55,7 +55,7 @@ fn main() {
                 }
                 let md5: String = h.vysledok().iter().map(|b| format!("{b:02x}")).collect();
                 println!(
-                    "PAKET stopa={} pts={} dts={} trvanie={} kluc={} velkost={} orezat={} blok={} md5={md5}",
+                    "PAKET stopa={} pts={} dts={} trvanie={} kluc={} velkost={} orezat={} blok={} zaciatok={} md5={md5}",
                     p.stopa,
                     cas(p.pts),
                     cas(p.dts),
@@ -63,7 +63,8 @@ fn main() {
                     p.klucovy as u8,
                     p.data.len(),
                     p.orezat_koniec,
-                    p.pozicia
+                    p.pozicia,
+                    p.data.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>()
                 );
             }
             Ok(None) => break,

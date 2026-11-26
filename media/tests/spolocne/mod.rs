@@ -1,8 +1,9 @@
 //! Malý zapisovač Matrosky len pre skúšky – súbory s presne známym obsahom vrátane okrajových prípadov
 //! (neznáma veľkosť, lacing, odstránená hlavička, Cues na konci cez SeekHead). Podľa RFC 8794 a RFC 9559.
-#![allow(dead_code)]
+#![allow(dead_code, clippy::too_many_arguments)]
 
 pub mod mp4;
+pub mod ts;
 
 /// Bajty ID (ID v Matroske už obsahujú bity dĺžky).
 fn id_bajty(id: u32) -> Vec<u8> {
