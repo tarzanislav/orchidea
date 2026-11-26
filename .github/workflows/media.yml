@@ -41,12 +41,17 @@ jobs:
       - name: Rozhodcovia (FFmpeg, MKVToolNix)
         run: sh nastroje/balicky.sh ffmpeg mkvtoolnix
       - name: Zostavenie
-        run: cargo build --locked --release -p orchidea-media --example media_pakety --example media_hdmi
+        run: cargo build --locked --release -p orchidea-media --example media_pakety --example media_hdmi --example media_opus
       - name: Porovnanie paketov s rozhodcom
         shell: bash
         run: |
           echo "### Médiá – kontajnery proti rozhodcovi" >> "$GITHUB_STEP_SUMMARY"
           python3 media/nastroje/over_media.py target/release/examples/media_pakety "$RUNNER_TEMP/media" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Opus (L7) – bitovo presné entropické dekódovanie a rekonštrukcia proti libopus
+        shell: bash
+        run: |
+          echo "### Médiá – dekodér Opus proti libopus" >> "$GITHUB_STEP_SUMMARY"
+          python3 media/nastroje/over_opus.py target/release/examples/media_opus "$RUNNER_TEMP/opus" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Zvuk pre HDMI (R5b) – priechod IEC 61937 a PCM v poradí CTA-861
         shell: bash
         run: |
