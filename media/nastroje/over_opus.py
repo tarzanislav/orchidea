@@ -268,6 +268,29 @@ def ramce_celt_snr(x, y, kanalov, pp):
     return min(vysl) if vysl else None
 
 
+def diagnostika(x, y, kanalov, pp, hrana):
+    """Pri neúspechu: rámce (20 ms) s najväčším podielom chyby v nízkom pásme a ich konfigurácie TOC."""
+    try:
+        import numpy as np
+    except ImportError:
+        return
+    def nizke(v):
+        f = np.fft.rfft(np.asarray(v, dtype=np.float64).reshape(-1, kanalov).mean(axis=1))
+        k = np.fft.rfftfreq((len(v) // kanalov), 1 / 48000)
+        f[(k < 50) | (k >= hrana)] = 0
+        return np.fft.irfft(f, len(v) // kanalov)
+    a, b = nizke(x), nizke(y)
+    e = (a - b) ** 2
+    spolu = float(np.sum(e))
+    rad = sorted(range(len(pp)), key=lambda k: -float(np.sum(e[k * 960:(k + 1) * 960])))
+    for k in rad[:8]:
+        ek = float(np.sum(e[k * 960:(k + 1) * 960]))
+        sk = float(np.sum(a[k * 960:(k + 1) * 960] ** 2))
+        pred = pp[k - 1][0] >> 3 if k else -1
+        print(f"  diagnostika: rámec {k} konfigurácia {pred}->{pp[k][0] >> 3} (dĺžka {len(pp[k])} B), "
+              f"podiel chyby {100 * ek / spolu:.1f} %, SNR rámca {10 * math.log10(sk / ek) if ek else 999:.1f} dB")
+
+
 def pasmovy_snr(x, y, kanalov, od, do):
     """SNR v pásme od–do Hz (stredný signál pri sterei); None bez numpy."""
     try:
@@ -407,6 +430,8 @@ def main():
             pokrytie.append((meno, re.search(r"CELT (.*)", r.stdout).group(1)))
         if frekvencia == 48000 and "REZIMY " in r.stdout:
             pokrytie.append((meno, re.search(r"REZIMY (.*)", r.stdout).group(1)))
+        if not ok and silk48:
+            diagnostika(x, y, kanalov, pp, 1500 if "_nb" in meno else 3000)
         stred = "" if kanalov == 1 else f", stred {snr_stred:.1f} dB"
         print(f"| {meno} | {len(pp)} | {konfig} | {stav} | {snr:.1f} dB{stred}{pasma} (oneskorenie {lag}) "
               f"| {'✅' if ok else '❌'}{dlzka} |")
