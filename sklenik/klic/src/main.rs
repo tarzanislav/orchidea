@@ -75,6 +75,9 @@ mod hevc_meranie;
 // R226: zvuk cez HDMI – vlastný zápis do ALSA, skúšobný tón pri štarte
 #[cfg(target_os = "linux")]
 mod zvuk;
+// R230: cesta zvuku na kartách ASoC s prepínačmi (Amlogic)
+#[cfg(target_os = "linux")]
+mod zvuk_cesta;
 // vlastný klient schránky firmvéru Raspberry Pi – takty, napätia, škrtenie VideoCore (R193)
 #[cfg(target_os = "linux")]
 mod vcio;

@@ -859,6 +859,32 @@ fn kms_rpi_zlyhal() -> bool {
 /// R227: RPi – vc4 nemá na vývod HPD prerušenie (rozširovač firmvéru), jadro sa preto každých 10 s pýta monitora
 /// a pri zapojenom monitore zakaždým prečíta celý popis EDID cez I2C (3f805000.i2c, ~2,5 budenia/s). KLÍČ dopyt
 /// jadra vypne a pýta sa sám raz za 2 min; keď monitor zmizne, dopyt jadra zapne späť (zapojenie sa zachytí hneď).
+/// R231: kontrolky, ktoré blikajú časovačom („tep srdca“ na Odroide C4, „timer“, „activity“), budia procesor
+/// niekoľkokrát za sekundu – namiesto blikania svietia trvalo (zariadenie stále ukazuje, že je zapnuté).
+fn pokojne_kontrolky() -> Vec<String> {
+    let mut v = Vec::new();
+    for z in fs::read_dir("/sys/class/leds").into_iter().flatten().flatten() {
+        let p = z.path();
+        let Some(spustac) = fs::read_to_string(p.join("trigger")).ok().and_then(|t| {
+            t.split_whitespace().find(|w| w.starts_with('[')).map(|w| w.trim_matches(['[', ']']).to_string())
+        }) else {
+            continue;
+        };
+        if !matches!(spustac.as_str(), "heartbeat" | "timer" | "activity" | "pattern") {
+            continue;
+        }
+        let jas = citaj(p.join("max_brightness")).unwrap_or_else(|| "1".into());
+        let ok =
+            fs::write(p.join("trigger"), "none").is_ok() && fs::write(p.join("brightness"), &jas).is_ok();
+        v.push(format!(
+            "{}: {spustac} → {}",
+            z.file_name().to_string_lossy(),
+            if ok { "svieti trvalo" } else { "nedá sa zmeniť" }
+        ));
+    }
+    v
+}
+
 const DOPYT_JADRA: &str = "/sys/module/drm_kms_helper/parameters/poll";
 const DOPYT_KLICA: Duration = Duration::from_secs(120);
 
@@ -1520,6 +1546,8 @@ pub fn spusti() {
     let mut kms_kontrola = false;
     // R227: dopyt na monitor (RPi s vlastným ovládačom obrazu)
     let mut dopyt_monitora: Option<DopytMonitora> = None;
+    // R231: kontrolky bez blikania
+    let mut kontrolky_hotove = false;
     let mut pokus_bez_kms_ohlaseny = false;
     let mut pokus_hotovy_text: Option<String> = None;
     // R192: fázy tepelného pokusu podľa zariadenia (RPi: spánok siete zvlášť, bez fáz taktu VPU)
@@ -2305,6 +2333,15 @@ pub fn spusti() {
             }));
             pokoj_stav = Some((pokoj::Stav::Overene, true, n));
         }
+        // R231: blikajúce kontrolky (tep srdca) → trvalo svietia – raz, keď je známe nastavenie
+        if pid1 && !kontrolky_hotove && hore >= 15.0 {
+            kontrolky_hotove = true;
+            if novinka(&nastavenie, "kontrolka_pokojna") {
+                for k in pokojne_kontrolky() {
+                    hlas(&format!("kontrolka (R231): {k}"));
+                }
+            }
+        }
         // R227: RPi s vc4 – menej čítaní popisu monitora (budenia I2C)
         if pid1
             && !skuska
@@ -2378,7 +2415,8 @@ pub fn spusti() {
             let _ = std::thread::Builder::new().name("zvuk".into()).spawn(move || {
                 let mut v = Vec::new();
                 let karty = std::fs::read_to_string("/proc/asound/cards").unwrap_or_default();
-                for r in karty.lines().filter(|r| !r.trim().is_empty()) {
+                // riadky „N [id]: ovládač – meno“ (druhý riadok každej karty je len dlhé meno)
+                for r in karty.lines().filter(|r| r.trim_start().starts_with(|c: char| c.is_ascii_digit())) {
                     v.push(format!("karta: {}", r.trim()));
                 }
                 let zariadenia = crate::zvuk::zariadenia();
@@ -2389,11 +2427,38 @@ pub fn spusti() {
                         "karta je, ale bez výstupu PCM".into()
                     });
                 }
+                // R230: na každej karte len prvý výstup (jeden tón, nie tri)
+                let mut karty_hotove = std::collections::BTreeSet::new();
                 for (z, meno) in zariadenia {
-                    let t = match crate::zvuk::skuska_tonu(&z) {
-                        Ok(t) => format!("{z} ({meno}): {t}"),
-                        Err(e) => format!("{z} ({meno}): CHYBA – {e}"),
+                    let Some((karta, dev)) = z
+                        .strip_prefix("pcmC")
+                        .and_then(|x| x.strip_suffix('p'))
+                        .and_then(|x| x.split_once('D'))
+                        .map(|(k, d)| (k.to_string(), d.parse::<u32>().unwrap_or(0)))
+                    else {
+                        continue;
                     };
+                    if !karty_hotove.insert(karta.clone()) {
+                        continue;
+                    }
+                    // R230: cesta zvuku na kartách s prepínačmi (Amlogic: FRDDR → TDM → HDMI)
+                    if let Some(c) = crate::zvuk_cesta::nastav_cestu(&karta, dev) {
+                        hlas(&format!("zvuk: {c}"));
+                        v.push(c);
+                    }
+                    // R229: vc4 na RPi zvuk neotvorí, kým nebeží obraz (ENOTSUPP) – skúsiť znova o minútu, najviac 5×
+                    let mut pokus = 1;
+                    let t = loop {
+                        match crate::zvuk::skuska_tonu(&z) {
+                            Ok(t) => break format!("{z} ({meno}): {t}"),
+                            Err(e) if pokus < 5 && e.contains("sa nedá otvoriť") => {
+                                pokus += 1;
+                                std::thread::sleep(Duration::from_secs(60));
+                            }
+                            Err(e) => break format!("{z} ({meno}): CHYBA – {e}"),
+                        }
+                    };
+                    let t = if pokus > 1 { format!("{t} (pokus {pokus})") } else { t };
                     hlas(&format!("zvuk (R226): {t}"));
                     v.push(t);
                 }
