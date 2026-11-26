@@ -1013,6 +1013,7 @@ impl<'a> DekoderRezu<'a> {
                 max_zlucenie: max_merge,
                 aktivne: self.h.aktivne,
             };
+            let _m = etapy::meraj(Etapa::Pohyb);
             if zlucenie {
                 ok.zlucenie(&blok, merge_idx)
             } else {
@@ -1074,6 +1075,7 @@ impl<'a> DekoderRezu<'a> {
     }
 
     fn uloz_pohyb(&mut self, x: usize, y: usize, w: usize, h: usize, p: PohybPu) {
+        let _m = etapy::meraj(Etapa::Pohyb);
         let s4 = self.s.mapy.sirka4;
         Self::vypln(&mut self.s.pohyb, s4, x, y, w, h, p);
         let poc_z = |lx: usize| (p.pred(lx)).then(|| self.refs.poc[lx][p.ref_idx[lx] as usize]);
@@ -1187,6 +1189,7 @@ impl<'a> DekoderRezu<'a> {
 
     /// Označí ľavú a hornú hranu bloku n × n ako hranu TU (hodnota 2).
     fn hrany_tu(&mut self, x0: usize, y0: usize, n: usize) {
+        let _m = etapy::meraj(Etapa::Odblokovanie);
         if self.h.odblokovanie_vypnute {
             return;
         }
@@ -1205,6 +1208,7 @@ impl<'a> DekoderRezu<'a> {
 
     /// Vnútorné hrany predikčných blokov jednotky (hodnota 1, ak tam nie je hrana TU).
     fn hrany_pu(&mut self, x0: usize, y0: usize, n: usize, r: Rozdelenie) {
+        let _m = etapy::meraj(Etapa::Odblokovanie);
         if self.h.odblokovanie_vypnute {
             return;
         }
@@ -1453,7 +1457,10 @@ impl<'a> DekoderRezu<'a> {
         } else {
             0
         };
-        let (preskocenie, max_x, max_y) = self.rezidua(c, log2, skenovanie)?;
+        let (preskocenie, max_x, max_y) = {
+            let _m = etapy::meraj(Etapa::Koeficienty);
+            self.rezidua(c, log2, skenovanie)?
+        };
         let qp = if c == 0 {
             self.qp_y + self.qp_bd
         } else {

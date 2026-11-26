@@ -3,7 +3,7 @@
 //!
 //! Úseky sa môžu vnárať (napr. čakanie na referenciu vnútri medzisnímkovej predikcie vnútri rezu): každá etapa
 //! dostane len **vlastný čas** – čas úseku mínus čas vnorených meraných úsekov. Etapa `cabac` je tak vlastný čas
-//! dekódovania rezu: aritmetické dekódovanie a syntax (aj odvodenie pohybu), bez predikcie, transformácií a filtrov.
+//! dekódovania rezu: syntax CTU okrem koeficientov a odvodenia pohybu, bez predikcie, transformácií a filtrov.
 //! Každé vlákno sčítava zvlášť a do spoločných súčtov prispeje po každom obraze ([`vyprazdni`]).
 
 use std::cell::Cell;
@@ -15,8 +15,13 @@ use std::time::Instant;
 pub enum Etapa {
     /// hlavné vlákno: jednotky NAL, sady parametrov, hlavičky rezov, správa obrazov
     Rozbor,
-    /// vlastný čas dekódovania rezu: CABAC a syntax CTU (aj zlučovanie a AMVP)
+    /// vlastný čas dekódovania rezu: CABAC a syntax CTU okrem koeficientov (delenie, režimy, príznaky, SAO,
+    /// rozdiely pohybu, mapy a hrany pre filtre)
     Cabac,
+    /// CABAC koeficientov transformácie (residual_coding)
+    Koeficienty,
+    /// odvodenie pohybu: kandidáti zlúčenia a AMVP vrátane TMVP
+    Pohyb,
     /// vnútrosnímková predikcia
     Intra,
     /// medzisnímková predikcia (interpolácia a váženie) bez čakania na referenciu
@@ -40,12 +45,14 @@ pub enum Etapa {
 }
 
 /// Počet etáp.
-pub const POCET: usize = 13;
+pub const POCET: usize = 15;
 
 /// Všetky etapy v poradí výpisu.
 pub const VSETKY: [Etapa; POCET] = [
     Etapa::Rozbor,
     Etapa::Cabac,
+    Etapa::Koeficienty,
+    Etapa::Pohyb,
     Etapa::Intra,
     Etapa::Inter,
     Etapa::Transformacia,
@@ -65,6 +72,8 @@ impl Etapa {
         match self {
             Etapa::Rozbor => "rozbor",
             Etapa::Cabac => "cabac",
+            Etapa::Koeficienty => "koeficienty",
+            Etapa::Pohyb => "pohyb",
             Etapa::Intra => "intra",
             Etapa::Inter => "inter",
             Etapa::Transformacia => "transformacia",

@@ -12,11 +12,12 @@
 //! OBRAZ poradie=<i> poc=<POC> sirka=<w> vyska=<h> md5=<32 hex>       (len v režime md5, v poradí výstupu)
 //! VYSLEDOK obrazov=<n> cas_ms=<ms> obr_s=<x.y> sei_zhoda=<n> sei_nezhoda=<n> sei_bez=<n> chyby=<n> stav=<stav>
 //! CHYBA <text>                                                         (0 až 5 riadkov)
-//! CAS etapa=<meno> ms=<x.y> podiel=<x.y>                               (len s --etapy, 13 riadkov)
+//! CAS etapa=<meno> ms=<x.y> podiel=<x.y>                               (len s --etapy, 15 riadkov)
 //! CAS_SPOLU stena_ms=<x> praca_ms=<x> vlakna=<n> vyuzitie=<x.y>        (len s --etapy)
 //! ```
 //! Etapy (vlastný čas, súčet cez všetky vlákna): `rozbor` (hlavné vlákno: NAL, hlavičky, správa obrazov),
-//! `cabac` (CABAC a syntax CTU vrátane odvodenia pohybu), `intra`, `inter` (interpolácia a váženie),
+//! `cabac` (CABAC a syntax CTU okrem koeficientov), `koeficienty` (CABAC koeficientov, residual_coding),
+//! `pohyb` (kandidáti zlúčenia a AMVP vrátane TMVP), `intra`, `inter` (interpolácia a váženie),
 //! `transformacia` (dekvantizácia, spätná transformácia, rezíduum), `odblokovanie`, `sao`, `zverejnenie`
 //! (kopírovanie hotových riadkov a pohybu), `odtlacok` (overenie SEI), `ostatne`, a čakania: `cakanie_ref`
 //! (na riadky referencie z iného vlákna), `cakanie_hlavne` (hlavné vlákno na rad úloh či koniec),
