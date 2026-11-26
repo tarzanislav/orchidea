@@ -15,5 +15,9 @@ vrstva = 2
 orchidea-jadro.workspace = true
 orchidea-zariadenie.workspace = true
 
+[dev-dependencies]
+# len pomocný program pre rozhodcu (MD5 paketov ako ffprobe); knižnica od balíka hevc nezávisí
+orchidea-hevc.workspace = true
+
 [lints]
 workspace = true

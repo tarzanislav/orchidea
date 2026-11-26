@@ -261,6 +261,8 @@ struct StavStopy {
     trvanie_ns: Option<u64>,
     /// Ďalší paket je po posune alebo poškodení.
     prerusenie: bool,
+    /// `CodecDelay` v tikoch – RFC 9559: odčíta sa od času každého rámca (čas, keď rámec naozaj zaznie).
+    oneskorenie: i64,
 }
 
 /// Bod posunu z `Cues`.
@@ -485,8 +487,9 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
             return Err(Chyba::PoskodeneData("súbor Matroska nemá stopy".into()));
         }
         self.p = self.prvy_zhluk.unwrap_or(self.koniec);
-        for s in &mut self.stav {
+        for (s, stopa) in self.stav.iter_mut().zip(&self.stopy) {
             s.prerusenie = true;
+            s.oneskorenie = z_ns(stopa.oneskorenie_kodeku_ns, self.zakladna).unwrap_or(0);
         }
         Ok(())
     }
@@ -620,7 +623,7 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
                 bitov,
             });
         }
-        let stav = StavStopy { cislo, hlavicka, trvanie_ns, prerusenie: true };
+        let stav = StavStopy { cislo, hlavicka, trvanie_ns, prerusenie: true, oneskorenie: 0 };
         Ok((stopa, stav))
     }
 
@@ -737,7 +740,12 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
             None => priznaky & 0x80 != 0,
             Some(s) => !s.referencia,
         };
-        let zaklad = self.zhluk.and_then(|z| z.cas).unwrap_or(0).saturating_add(rel);
+        let zaklad = self
+            .zhluk
+            .and_then(|z| z.cas)
+            .unwrap_or(0)
+            .saturating_add(rel)
+            .saturating_sub(self.stav[ix].oneskorenie);
         // trvanie rámca v ns: BlockDuration bloku delené počtom rámcov, inak DefaultDuration stopy
         let pocet = ramce.len() as u64;
         let trvanie_ns = skupina

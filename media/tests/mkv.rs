@@ -69,7 +69,8 @@ fn webm_a_neznama_velkost() {
     assert_eq!((s.oneskorenie_kodeku_ns, s.predbeh_posunu_ns), (6_500_000, 80_000_000));
     let p = vsetky(&mut m);
     assert_eq!(p.len(), 15);
-    assert_eq!(p.iter().map(|p| p.pts.unwrap()).collect::<Vec<_>>()[..7], [0, 20, 40, 60, 80, 100, 120]);
+    // RFC 9559: CodecDelay (6,5 ms = 7 tikov po 1 ms) sa odčíta od času každého rámca
+    assert_eq!(p.iter().map(|p| p.pts.unwrap()).collect::<Vec<_>>()[..7], [-7, 13, 33, 53, 73, 93, 113]);
     assert_eq!(p[14].data, [2, 4]);
 }
 

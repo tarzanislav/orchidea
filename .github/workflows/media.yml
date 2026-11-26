@@ -1,0 +1,62 @@
+name: Médiá – kontajnery, rozhodca a dlhý fuzzer (LÝRA)
+
+# Prúd D (médiá): beží len pri zmene balíka media a toho, od čoho závisí – ostatné prúdy nebrzdí.
+# - rozhodca: FFmpeg a mkvmerge zapíšu skúšobné súbory, ffprobe vypíše pakety; naša čítačka musí dať
+#   bit po bite tie isté pakety (čas, kľúčovosť, veľkosť, MD5 obsahu),
+# - dlhý fuzzer čítačiek (R211) s viacerými semienkami.
+on:
+  push:
+    paths:
+      - "media/**"
+      - "jadro/**"
+      - "zariadenie/**"
+      - "hevc/src/odtlacok.rs"
+      - "Cargo.lock"
+      - ".github/workflows/media.yml"
+  pull_request:
+    paths:
+      - "media/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rozhodca:
+    name: Médiá – kontajnery proti rozhodcovi (FFmpeg, ffprobe, mkvmerge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Rozhodcovia (FFmpeg, MKVToolNix)
+        run: sh nastroje/balicky.sh ffmpeg mkvtoolnix
+      - name: Zostavenie
+        run: cargo build --locked --release -p orchidea-media --example media_pakety
+      - name: Porovnanie paketov s rozhodcom
+        shell: bash
+        run: |
+          echo "### Médiá – kontajnery proti rozhodcovi" >> "$GITHUB_STEP_SUMMARY"
+          python3 media/nastroje/over_media.py target/release/examples/media_pakety "$RUNNER_TEMP/media" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  fuzzer:
+    name: Médiá – dlhý fuzzer čítačiek (R211)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Fuzzer – 4 semienka po 2 milióny pokusov
+        shell: bash
+        run: |
+          for s in 1 2 3 4; do
+            ORCHIDEA_FUZZER=2000000 ORCHIDEA_FUZZER_SEMIENKO=$s cargo test --locked --release -p orchidea-media --test fuzzer
+          done
