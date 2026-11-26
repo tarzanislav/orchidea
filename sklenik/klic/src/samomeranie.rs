@@ -249,7 +249,7 @@ pub fn vyrobca_karty(typ: &str, manfid: u32) -> Option<&'static str> {
         (0x74, "Transcend"),
         (0x76, "Patriot"),
         (0x82, "Sony"),
-        (0x9F, "Taishin (lacné značky)"),
+        (0x9F, "Kingston (Canvas; ovládač 0x9F)"),
     ];
     let emmc = [
         (0x11, "Toshiba/Kioxia"),
