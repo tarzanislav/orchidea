@@ -100,11 +100,12 @@ VARIANTY = [
     ("celt_ticho", 1, CELT + ["-b:a", "32k", "-frame_duration", "10"], 48000, 120),
     # SILK pri 48 kHz (vlastné prevzorkovanie – nenormatívne, preto miera podobnosti s prevzorkovaním libopus)
     ("silk_nb_48k", 1, ["-b:a", "12k", "-cutoff", "4000"], 48000, 15),
+    ("silk_mb_48k", 1, ["-b:a", "16k", "-cutoff", "6000"], 48000, 15),
     ("silk_wb_48k_stereo", 2, ["-b:a", "24k", "-cutoff", "8000"], 48000, 15),
     # hybrid (SILK WB + CELT od pásma 17)
-    ("hybrid_swb", 1, ["-b:a", "24k", "-cutoff", "12000"], 48000, 20),
-    ("hybrid_fb", 1, ["-b:a", "32k", "-cutoff", "20000"], 48000, 20),
-    ("hybrid_fb_10_stereo", 2, ["-b:a", "48k", "-cutoff", "20000", "-frame_duration", "10"], 48000, 20),
+    ("hybrid_swb", 1, ["-b:a", "24k", "-cutoff", "12000"], 48000, 15),
+    ("hybrid_fb", 1, ["-b:a", "32k", "-cutoff", "20000"], 48000, 15),
+    ("hybrid_fb_10_stereo", 2, ["-b:a", "48k", "-cutoff", "20000", "-frame_duration", "10"], 48000, 15),
     # prechody: kodér libopus cez ctypes s vynúteným režimom (každých 0,5 s), nadbytočné rámce vkladá sám
     ("prechody_silk_hybrid_celt", 1, {"rezimy": [1000, 1001, 1002], "tok": 32000}, 48000, 15),
     ("prechody_celt_silk_stereo", 2, {"rezimy": [1002, 1000], "tok": 48000}, 48000, 15),

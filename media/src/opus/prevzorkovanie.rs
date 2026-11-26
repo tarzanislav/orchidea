@@ -8,16 +8,18 @@
 use orchidea_jadro::matematika;
 
 /// Parametre podľa vstupnej frekvencie: (pomer, oneskorenie pri 48 kHz vo vzorkách, medza / Nyquist vstupu, beta).
-fn parametre(frekvencia: u32) -> (usize, usize, f64, f64) {
+fn parametre(frekvencia: u32) -> (usize, f64, f64, f64) {
     match frekvencia {
-        8000 => (6, ONESKORENIE[0], 1.0, 5.0),
-        12000 => (4, ONESKORENIE[1], 1.0, 5.0),
-        _ => (3, ONESKORENIE[2], 1.0, 5.0),
+        8000 => (6, ONESKORENIE_MS[0] * 48.0, 1.0, 5.0),
+        12000 => (4, ONESKORENIE_MS[1] * 48.0, 1.0, 5.0),
+        _ => (3, ONESKORENIE_MS[2] * 48.0, 1.0, 5.0),
     }
 }
 
-/// Oneskorenie prevzorkovania NB, MB, WB pri 48 kHz (vzorky).
-pub(crate) const ONESKORENIE: [usize; 3] = [26, 33, 34];
+/// Oneskorenie prevzorkovania NB, MB, WB v ms – RFC 6716 §4.2.9, tabuľka „SILK Resampler Delay Allocations“
+/// (zlomok vzorky pri 48 kHz: 25,824; 33,216; 33,888). Meranie libopus pri nízkych frekvenciách: ≈ 25,9; 33,24;
+/// 34,0 – rozdiel do 0,11 vzorky (2 µs); celé vzorky (26, 33, 34) dávali v nízkom pásme MB len 29 dB.
+pub(crate) const ONESKORENIE_MS: [f64; 3] = [0.538, 0.692, 0.706];
 
 fn bessel_i0(x: f64) -> f64 {
     // rad Σ ((x/2)^k / k!)^2
@@ -46,18 +48,19 @@ pub struct Prevzorkovac {
 impl Prevzorkovac {
     pub fn novy(frekvencia: u32) -> Prevzorkovac {
         let (l, d, medza, beta) = parametre(frekvencia);
-        let n = 2 * d + 1;
+        // filter s lineárnou fázou okolo zlomkového stredu `d`: sinc aj okno Kaiser vystredené na d
+        let n = (2.0 * d).floor() as usize + 1;
         let fc = medza * 0.5 / l as f64; // medza v násobkoch 48 kHz
         let i0b = bessel_i0(beta);
         let h: Vec<f64> = (0..n)
             .map(|k| {
-                let t = k as f64 - d as f64;
-                let sinc = if t == 0.0 {
+                let t = k as f64 - d;
+                let sinc = if t.abs() < 1e-12 {
                     2.0 * fc
                 } else {
                     matematika::sin(2.0 * core::f64::consts::PI * fc * t) / (core::f64::consts::PI * t)
                 };
-                let r = t / d as f64;
+                let r = t / d;
                 let w = bessel_i0(beta * (1.0 - r * r).max(0.0).sqrt()) / i0b;
                 sinc * w
             })
@@ -120,10 +123,10 @@ mod skusky {
                 .collect();
             let y: Vec<f32> = x.chunks(160).flat_map(|c| p.spracuj(c)).collect();
             assert_eq!(y.len(), x.len() * l);
-            let d = ONESKORENIE[ix];
+            let d = ONESKORENIE_MS[ix] * 48.0;
             let mut chyba: f64 = 0.0;
             for (m, &v) in y.iter().enumerate().skip(400) {
-                let ocakavane = (2.0 * core::f64::consts::PI * ton * (m as f64 - d as f64) / 48000.0).sin();
+                let ocakavane = (2.0 * core::f64::consts::PI * ton * (m as f64 - d) / 48000.0).sin();
                 chyba = chyba.max((v as f64 - ocakavane).abs());
             }
             assert!(chyba < 0.01, "{f} Hz: chyba {chyba}");
