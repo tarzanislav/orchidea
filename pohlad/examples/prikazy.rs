@@ -148,6 +148,7 @@ fn spusti(a: &[String]) -> Result<(), String> {
             p.vstup(Vstup::Otvor(a[2].clone().into()));
             cakaj(&mut p);
             let cisla = |t: &str| -> Vec<f32> { t.split(',').filter_map(|x| x.parse().ok()).collect() };
+            let mut dialog = None;
             for povel in &a[6..] {
                 let v = match povel.split_once(':').map_or((povel.as_str(), ""), |(x, y)| (x, y)) {
                     ("dalsi", _) => Vstup::Povel(Povel::Dalsi),
@@ -186,6 +187,16 @@ fn spusti(a: &[String]) -> Result<(), String> {
                     }
                     ("delic", t) => Vstup::Delic { x: cisla(t)[0] },
                     ("napoveda", _) => Vstup::Povel(Povel::Napoveda),
+                    ("dialogy", _) => {
+                        p.povol_dialogy();
+                        continue;
+                    }
+                    ("ctrl-o", _) => Vstup::Povel(Povel::Otvorit),
+                    // odpoveď na dialóg okna (ako keby človek vybral súbor alebo priečinok)
+                    ("vyber", c) => {
+                        dialog.take().ok_or("vyber: žiadny dialóg nečaká")?;
+                        Vstup::Otvor(c.into())
+                    }
                     ("katalog-subor", c) => {
                         p.nastav_katalog(c.into());
                         continue;
@@ -230,6 +241,10 @@ fn spusti(a: &[String]) -> Result<(), String> {
                     _ => return Err(format!("neznámy povel {povel}")),
                 };
                 p.vstup(v);
+                if let Some(z) = p.vezmi_ziadost_okna() {
+                    println!("DIALOG {z:?}");
+                    dialog = Some(z);
+                }
                 cakaj(&mut p);
             }
             let mut platno = orchidea_pismo::Platno::nove(w, h, 0);

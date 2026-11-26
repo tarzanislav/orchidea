@@ -7,8 +7,8 @@ use orchidea_pismo::{Farba, Pismo, Platno};
 /// Výška panela v bodoch.
 pub const VYSKA: usize = 34;
 const VELKOST: f32 = 12.0;
-const OKRAJ: f32 = 6.0;
-const MEDZI: f32 = 3.0;
+const OKRAJ: f32 = 5.0;
+const MEDZI: f32 = 2.0;
 const SKUPINA: f32 = 6.0;
 
 pub const POZADIE: Farba = 0x26282B;
@@ -54,6 +54,14 @@ const fn t(
 
 /// Panel prehliadača a editora fotografií.
 pub const PREHLIADAC: &[Prvok] = &[
+    t(
+        "otvorit",
+        "Otvoriť",
+        "Otvoriť",
+        "Otvoriť obrázok – otvorí sa celý jeho priečinok (Ctrl+O)",
+        Povel::Otvorit,
+    ),
+    Prvok::Medzera,
     Prvok::Popis("Otočiť"),
     t("otoc_vlavo", "vľavo", "Vľavo", "Otočiť vľavo (Shift+R)", Povel::OtocVlavo),
     t("otoc_vpravo", "vpravo", "Vpravo", "Otočiť vpravo (R)", Povel::OtocVpravo),
@@ -106,7 +114,7 @@ pub const KATALOG: &[Prvok] = &[
         "katalog_pridaj",
         "Pridať priečinok",
         "Pridať",
-        "Pridá otvorený priečinok aj s podpriečinkami – fotky ostanú na mieste (priečinok sa dá aj pretiahnuť sem)",
+        "Pridá priečinok aj s podpriečinkami – fotky ostanú na mieste (priečinok sa dá aj pretiahnuť sem)",
         Povel::KatalogPridaj,
     ),
     t(
@@ -145,14 +153,14 @@ pub fn rozloz(prvky: &[Prvok], pismo: &Pismo, sirka: usize) -> Vec<Umiestnenie> 
             match *p {
                 Prvok::Tlacidlo(t) => {
                     let text = if kratke { t.kratky } else { t.text };
-                    let w = (pismo.sirka(text, VELKOST, 1.0) + 2.0 * OKRAJ).max(26.0);
+                    let w = (pismo.sirka(text, VELKOST, 1.0) + 2.0 * OKRAJ).max(22.0);
                     v.push(Umiestnenie { prvok: *p, x, sirka: w, text });
                     x += w + MEDZI;
                 }
                 Prvok::Popis(text) if !kratke => {
                     let w = pismo.sirka(text, VELKOST, 1.0);
                     v.push(Umiestnenie { prvok: *p, x: x + 2.0, sirka: w, text });
-                    x += w + 5.0;
+                    x += w + 4.0;
                 }
                 Prvok::Popis(_) => {}
                 Prvok::Medzera => x += SKUPINA,
@@ -276,6 +284,7 @@ pub const NAPOVEDA: &[(&str, &str)] = &[
     ("Z", "zmenšiť na polovicu"),
     ("Ctrl+Z  /  Ctrl+Y", "späť  /  znova"),
     ("Ctrl+S", "uložiť vedľa originálu (JPEG s otočením a orezaním bezstratovo)"),
+    ("Ctrl+O", "otvoriť obrázok (otvorí sa celý jeho priečinok)"),
     ("", "Katalóg fotografií (Herbár) – bez importu, fotky ostanú na mieste"),
     ("F3 alebo Katalóg", "otvoriť a zavrieť katalóg; písanie hneď hľadá"),
     ("šípky, Enter, kliknutie", "vybrať a otvoriť fotku; pretiahnutý priečinok sa pridá"),
@@ -283,7 +292,7 @@ pub const NAPOVEDA: &[(&str, &str)] = &[
     ("", "Ostatné"),
     ("F1 alebo ?", "táto nápoveda (zavrie ju Esc alebo kliknutie)"),
     ("Esc", "zavrieť nápovedu, prezentáciu, inak koniec"),
-    ("pretiahnutie do okna", "otvoriť súbor alebo priečinok"),
+    ("pretiahnutie do okna", "otvoriť súbor alebo priečinok (aj Ctrl+O)"),
 ];
 
 /// Nakreslí nápovedu do stredu plátna.

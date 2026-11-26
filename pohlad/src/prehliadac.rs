@@ -82,6 +82,17 @@ pub enum Povel {
     KatalogPridaj,
     /// Obnoviť katalóg (nové a zmenené súbory).
     KatalogObnov,
+    /// Otvoriť obrázok dialógom okna.
+    Otvorit,
+}
+
+/// Žiadosť jadra na okno – systémový dialóg (jadro ho nevie ukázať samo).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ZiadostOkna {
+    /// Dialóg „Otvoriť“ – vybraný súbor sa pošle ako `Vstup::Otvor` (otvorí sa celý jeho priečinok).
+    OtvorSubor { priecinok: Option<PathBuf> },
+    /// Výber priečinka do katalógu – vybraný priečinok sa pošle ako `Vstup::Otvor` (v katalógu sa pridá).
+    VyberPriecinok { priecinok: Option<PathBuf> },
 }
 
 /// Vstup od okna.
@@ -358,6 +369,9 @@ pub struct Prehliadac {
     /// Zoznam priečinka pred otvorením katalógu (položky, aktuálny, priečinok).
     predosle: Option<(Vec<Polozka>, usize, Option<PathBuf>)>,
     katalog_sprava: Option<String>,
+    /// Okno vie ukázať systémové dialógy.
+    dialogy: bool,
+    ziadost_okna: Option<ZiadostOkna>,
 }
 
 impl std::fmt::Debug for Prehliadac {
@@ -546,6 +560,8 @@ impl Prehliadac {
             prvy_riadok: 0,
             predosle: None,
             katalog_sprava: None,
+            dialogy: false,
+            ziadost_okna: None,
         }
     }
 
@@ -804,6 +820,17 @@ impl Prehliadac {
         self.zmena = true;
     }
 
+    /// Okno vie ukázať dialógy „Otvoriť“ a výber priečinka (bez nich pridá katalóg otvorený priečinok).
+    pub fn povol_dialogy(&mut self) {
+        self.dialogy = true;
+        self.zmena = true;
+    }
+
+    /// Vezme žiadosť o dialóg (okno ho ukáže a výsledok pošle ako `Vstup::Otvor`).
+    pub fn vezmi_ziadost_okna(&mut self) -> Option<ZiadostOkna> {
+        self.ziadost_okna.take()
+    }
+
     /// Píše sa do poľa hľadania (okno má posielať znaky ako `Vstup::Znak`, nie ako povely)?
     pub fn pise(&self) -> bool {
         self.katalog
@@ -946,8 +973,9 @@ impl Prehliadac {
             Povel::KatalogPridaj => {
                 self.katalog_subor.is_some()
                     && !self.katalog_pracuje()
-                    && self.priecinok_na_pridanie().is_some()
+                    && (self.dialogy || self.priecinok_na_pridanie().is_some())
             }
+            Povel::Otvorit => self.dialogy,
             Povel::KatalogObnov => {
                 !self.katalog_pracuje() && self.herbar.as_ref().is_some_and(|h| !h.priecinky.is_empty())
             }
@@ -1143,6 +1171,10 @@ impl Prehliadac {
                     self.zmena = true;
                 }
                 Povel::Katalog if self.katalog_subor.is_some() => self.otvor_katalog(),
+                Povel::Otvorit if self.dialogy => {
+                    self.ziadost_okna = Some(ZiadostOkna::OtvorSubor { priecinok: self.priecinok.clone() });
+                    return false;
+                }
                 Povel::Panel => {
                     self.panel = !self.panel;
                     self.pod_mysou = None;
@@ -1357,6 +1389,11 @@ impl Prehliadac {
                 Povel::Katalog => {
                     self.zavri_katalog();
                     return true;
+                }
+                Povel::KatalogPridaj if self.dialogy => {
+                    self.ziadost_okna =
+                        Some(ZiadostOkna::VyberPriecinok { priecinok: self.priecinok_na_pridanie() });
+                    return false;
                 }
                 Povel::KatalogPridaj => {
                     if let (Some(s), Some(p)) = (self.katalog_subor.clone(), self.priecinok_na_pridanie()) {

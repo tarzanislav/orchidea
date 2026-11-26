@@ -675,6 +675,20 @@ def katalog_v_okne(koren, katalog, hladaj):
     _, t, _ = okno_katalogu("katalog", f"otvor:{os.path.join(koren, '2023')}", subor=novy, otvor=os.path.join(koren, "2024", "vzor_0.jpg"))
     ok = nasli(t) == (300, 300)
     vysledok("katalóg v okne: pretiahnutý priečinok sa pridá", ok, "300 fotiek z dvoch priečinkov" if ok else t)
+    # dialógy okna: Otvoriť (Ctrl+O, tlačidlo) a výber priečinka do katalógu – jadro požiada, okno odpovie cestou
+    novy2 = os.path.join(PRAC, "katalog_novy2", "herbar.txt")
+    shutil.rmtree(os.path.dirname(novy2), ignore_errors=True)
+    _, t, txt = okno_katalogu("dialogy", "stlac:otvorit", f"vyber:{os.path.join(koren, '2024', 'vzor_1.jpg')}")
+    ok = "DIALOG OtvorSubor" in txt and t.startswith("vzor_1.jpg (") and f"/{v2024})" in t
+    vysledok("dialóg Otvoriť (tlačidlo)", ok, "otvorí vybraný obrázok aj s jeho priečinkom" if ok else txt[-300:])
+    _, t, txt = okno_katalogu("dialogy", "ctrl-o", f"vyber:{os.path.join(koren, '2024', 'vzor_0.jpg')}")
+    ok = "DIALOG OtvorSubor" in txt and t.startswith("vzor_0.jpg (")
+    vysledok("dialóg Otvoriť (Ctrl+O)", ok, t)
+    _, t, txt = okno_katalogu("dialogy", "katalog", "stlac:katalog_pridaj", f"vyber:{os.path.join(koren, '2023')}", subor=novy2)
+    ok = "DIALOG VyberPriecinok" in txt and nasli(t) == (100, 100)
+    vysledok("katalóg v okne: Pridať priečinok výberom", ok, "vybraný priečinok (100 fotiek) pridaný" if ok else txt[-300:])
+    _, t, txt = okno_katalogu("stlac:otvorit")
+    vysledok("bez dialógov je Otvoriť sivé", "DIALOG" not in txt, t)
 
 
 rng = np.random.default_rng(2026)

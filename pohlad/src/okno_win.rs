@@ -16,7 +16,7 @@
 
 #![allow(unsafe_code)]
 
-use crate::prehliadac::{Povel, Prehliadac, Vstup};
+use crate::prehliadac::{Povel, Prehliadac, Vstup, ZiadostOkna};
 use orchidea_pismo::Platno;
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -112,6 +112,7 @@ unsafe extern "system" {
     fn DispatchMessageW(msg: *const Msg) -> isize;
     fn PostQuitMessage(kod: i32);
     fn PostMessageW(h: Hwnd, m: u32, w: usize, l: isize) -> i32;
+    fn SendMessageW(h: Hwnd, m: u32, w: usize, l: isize) -> isize;
     fn ShowWindow(h: Hwnd, prikaz: i32) -> i32;
     fn UpdateWindow(h: Hwnd) -> i32;
     fn DestroyWindow(h: Hwnd) -> i32;
@@ -175,6 +176,184 @@ unsafe extern "system" {
     fn GetModuleHandleW(meno: *const u16) -> isize;
 }
 
+/// Dialóg „Otvoriť“ (comdlg32, OPENFILENAMEW).
+#[repr(C)]
+struct OtvorSuborW {
+    velkost: u32,
+    vlastnik: Hwnd,
+    instancia: isize,
+    filter: *const u16,
+    vlastny_filter: *mut u16,
+    max_vlastny_filter: u32,
+    index_filtra: u32,
+    subor: *mut u16,
+    max_subor: u32,
+    nazov_suboru: *mut u16,
+    max_nazov_suboru: u32,
+    pociatocny_priecinok: *const u16,
+    titulok: *const u16,
+    priznaky: u32,
+    posun_mena: u16,
+    posun_pripony: u16,
+    predvolena_pripona: *const u16,
+    data: isize,
+    hak: *const c_void,
+    sablona: *const u16,
+    rezerva: *mut c_void,
+    rezerva2: u32,
+    priznaky_ex: u32,
+}
+
+/// Výber priečinka (shell32, BROWSEINFOW).
+#[repr(C)]
+struct VyberPriecinkaW {
+    vlastnik: Hwnd,
+    koren: *const c_void,
+    meno: *mut u16,
+    titulok: *const u16,
+    priznaky: u32,
+    spatne_volanie: Option<unsafe extern "system" fn(Hwnd, u32, isize, isize) -> i32>,
+    data: isize,
+    obrazok: i32,
+}
+
+#[link(name = "comdlg32")]
+unsafe extern "system" {
+    fn GetOpenFileNameW(o: *mut OtvorSuborW) -> i32;
+}
+
+#[link(name = "shell32")]
+unsafe extern "system" {
+    fn SHBrowseForFolderW(b: *const VyberPriecinkaW) -> *mut c_void;
+    fn SHGetPathFromIDListW(pidl: *const c_void, cesta: *mut u16) -> i32;
+}
+
+#[link(name = "ole32")]
+unsafe extern "system" {
+    fn CoInitializeEx(rezerva: *const c_void, model: u32) -> i32;
+    fn CoTaskMemFree(p: *mut c_void);
+}
+
+const OFN_NOCHANGEDIR: u32 = 0x8;
+const OFN_PATHMUSTEXIST: u32 = 0x800;
+const OFN_FILEMUSTEXIST: u32 = 0x1000;
+const OFN_EXPLORER: u32 = 0x8_0000;
+const BIF_RETURNONLYFSDIRS: u32 = 0x1;
+const BIF_NEWDIALOGSTYLE: u32 = 0x40;
+const BFFM_INITIALIZED: u32 = 1;
+const BFFM_SETSELECTIONW: u32 = 0x0467;
+
+fn z_utf16(b: &[u16]) -> PathBuf {
+    let n = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+    PathBuf::from(String::from_utf16_lossy(&b[..n]))
+}
+
+/// Dialóg „Otvoriť“ – vráti vybraný obrázok.
+fn dialog_otvor(hwnd: Hwnd, priecinok: Option<&std::path::Path>) -> Option<PathBuf> {
+    let mut buf = vec![0u16; 32768];
+    let filter: Vec<u16> = "Obrázky (JPEG, PNG, TIFF, OpenEXR, JPEG XL)\0*.jpg;*.jpeg;*.jpe;*.png;*.tif;*.tiff;*.exr;*.jxl\0Všetky súbory\0*.*\0\0"
+        .encode_utf16()
+        .collect();
+    let titulok = w("Otvoriť obrázok – prehliadač a editor fotografií (Pohľad)");
+    let zaciatok = priecinok.map(|p| w(&p.to_string_lossy()));
+    let mut o = OtvorSuborW {
+        velkost: std::mem::size_of::<OtvorSuborW>() as u32,
+        vlastnik: hwnd,
+        instancia: 0,
+        filter: filter.as_ptr(),
+        vlastny_filter: std::ptr::null_mut(),
+        max_vlastny_filter: 0,
+        index_filtra: 1,
+        subor: buf.as_mut_ptr(),
+        max_subor: buf.len() as u32,
+        nazov_suboru: std::ptr::null_mut(),
+        max_nazov_suboru: 0,
+        pociatocny_priecinok: zaciatok.as_ref().map_or(std::ptr::null(), |z| z.as_ptr()),
+        titulok: titulok.as_ptr(),
+        priznaky: OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        posun_mena: 0,
+        posun_pripony: 0,
+        predvolena_pripona: std::ptr::null(),
+        data: 0,
+        hak: std::ptr::null(),
+        sablona: std::ptr::null(),
+        rezerva: std::ptr::null_mut(),
+        rezerva2: 0,
+        priznaky_ex: 0,
+    };
+    // SAFETY: štruktúra má rozloženie OPENFILENAMEW, všetky ukazovatele žijú počas volania
+    if unsafe { GetOpenFileNameW(&mut o) } == 0 {
+        return None;
+    }
+    Some(z_utf16(&buf))
+}
+
+unsafe extern "system" fn vyber_priecinka_init(hwnd: Hwnd, m: u32, _lp: isize, data: isize) -> i32 {
+    if m == BFFM_INITIALIZED && data != 0 {
+        // SAFETY: data je ukazovateľ na reťazec UTF-16 zakončený nulou, žije počas dialógu
+        unsafe { SendMessageW(hwnd, BFFM_SETSELECTIONW, 1, data) };
+    }
+    0
+}
+
+/// Výber priečinka (na pridanie do katalógu).
+fn dialog_priecinok(hwnd: Hwnd, priecinok: Option<&std::path::Path>) -> Option<PathBuf> {
+    let titulok = w(
+        "Vyberte priečinok s fotografiami – pridá sa do katalógu fotografií (Herbár), fotky ostanú na mieste",
+    );
+    let zaciatok = priecinok.map(|p| w(&p.to_string_lossy()));
+    let mut meno = vec![0u16; 260];
+    let b = VyberPriecinkaW {
+        vlastnik: hwnd,
+        koren: std::ptr::null(),
+        meno: meno.as_mut_ptr(),
+        titulok: titulok.as_ptr(),
+        priznaky: BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE,
+        spatne_volanie: Some(vyber_priecinka_init),
+        data: zaciatok.as_ref().map_or(0, |z| z.as_ptr() as isize),
+        obrazok: 0,
+    };
+    // SAFETY: štruktúra má rozloženie BROWSEINFOW; vrátený zoznam ID sa uvoľní cez CoTaskMemFree
+    unsafe {
+        let pidl = SHBrowseForFolderW(&b);
+        if pidl.is_null() {
+            return None;
+        }
+        let mut cesta = vec![0u16; 32768];
+        let ok = SHGetPathFromIDListW(pidl, cesta.as_mut_ptr());
+        CoTaskMemFree(pidl);
+        (ok != 0).then(|| z_utf16(&cesta))
+    }
+}
+
+/// Ukáže dialóg, o ktorý jadro požiadalo (mimo požičania stavu – dialóg má vlastnú slučku správ).
+fn ukaz_dialog(hwnd: Hwnd) {
+    let Some((z, samotest)) =
+        s_stavom(|s| s.jadro.vezmi_ziadost_okna().map(|z| (z, s.samotest.is_some()))).flatten()
+    else {
+        return;
+    };
+    if samotest {
+        // samotest nesmie čakať na človeka – dialóg sa len zaznamená
+        s_stavom(|s| {
+            if let Some(t) = s.samotest.as_mut() {
+                t.dialogy += 1;
+            }
+        });
+        return;
+    }
+    // tlačidlo myši je ešte dole – dialóg nesmie zdediť zachytenie myši ani ťahanie
+    unsafe { ReleaseCapture() };
+    s_stavom(|s| s.tahanie = None);
+    let vyber = match z {
+        ZiadostOkna::OtvorSubor { priecinok } => dialog_otvor(hwnd, priecinok.as_deref()),
+        ZiadostOkna::VyberPriecinok { priecinok } => dialog_priecinok(hwnd, priecinok.as_deref()),
+    };
+    if let Some(c) = vyber {
+        s_stavom(|s| vstup(s, Vstup::Otvor(c)));
+    }
+}
+
 const WM_DESTROY: u32 = 0x0002;
 const WM_SIZE: u32 = 0x0005;
 const WM_PAINT: u32 = 0x000F;
@@ -214,6 +393,8 @@ struct Samotest {
     kod: i32,
     /// Tlačidlo zo samotestu nie je na paneli.
     chyba: bool,
+    /// Koľko dialógov si jadro vyžiadalo (v samoteste sa neukážu).
+    dialogy: usize,
 }
 
 /// Krok samotestu: vstup alebo kliknutie na tlačidlo panela podľa mena.
@@ -224,6 +405,8 @@ enum Krok {
     Pis(String),
     /// Súbor katalógu fotografií.
     Katalog(PathBuf),
+    /// Kontrola: jadro si doteraz vyžiadalo práve toľkoto dialógov.
+    Dialogy(usize),
 }
 
 struct Stav {
@@ -346,6 +529,7 @@ fn povel_znaku(c: char) -> Option<Povel> {
         '\u{1A}' => Povel::Spat,
         '\u{19}' => Povel::Znova,
         '\u{13}' => Povel::Ulozit,
+        '\u{f}' => Povel::Otvorit,
         _ => return None,
     })
 }
@@ -374,6 +558,7 @@ fn samotest_krok(s: &mut Stav) {
                 s.jadro.nastav_katalog(c);
                 Some(Vstup::Tik)
             }
+            Krok::Dialogy(n) => s.samotest.as_ref().is_some_and(|t| t.dialogy == n).then_some(Vstup::Tik),
         };
         match v {
             Some(v) => vstup(s, v),
@@ -412,6 +597,15 @@ fn samotest_krok(s: &mut Stav) {
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize {
+    // SAFETY: rovnaké parametre ako od systému
+    let v = unsafe { spracuj_spravu(hwnd, m, wp, lp) };
+    if matches!(m, WM_KEYDOWN | WM_CHAR | WM_LBUTTONDOWN | WM_SAMOTEST) {
+        ukaz_dialog(hwnd);
+    }
+    v
+}
+
+unsafe fn spracuj_spravu(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize {
     match m {
         WM_HOTOVE => {
             s_stavom(|s| {
@@ -619,6 +813,7 @@ pub fn spusti(argumenty: &[String]) -> i32 {
                     "enter" => Some(Krok::Vstup(Vstup::Znak('\r'))),
                     t if t.starts_with("pis:") => Some(Krok::Pis(t[4..].to_string())),
                     t if t.starts_with("katalog-subor:") => Some(Krok::Katalog(PathBuf::from(&t[14..]))),
+                    t if t.starts_with("dialogy:") => t[8..].parse().ok().map(Krok::Dialogy),
                     // stlac:<tlačidlo> – kliknutie na tlačidlo panela (poloha sa zistí až v okne)
                     t if t.starts_with("stlac:") => Some(Krok::Stlac(t[6..].to_string())),
                     _ => None,
@@ -626,7 +821,13 @@ pub fn spusti(argumenty: &[String]) -> i32 {
                 .collect();
             (
                 Some(PathBuf::from(&argumenty[1])),
-                Some(Samotest { povely, vystup: PathBuf::from(&argumenty[2]), kod: 1, chyba: false }),
+                Some(Samotest {
+                    povely,
+                    vystup: PathBuf::from(&argumenty[2]),
+                    kod: 1,
+                    chyba: false,
+                    dialogy: 0,
+                }),
             )
         }
         Some(c) => (Some(PathBuf::from(c)), None),
@@ -677,7 +878,10 @@ pub fn spusti(argumenty: &[String]) -> i32 {
         });
         let mut r = Rect::default();
         GetClientRect(hwnd, &mut r);
+        // výber priečinka v novom vzhľade potrebuje COM v tomto vlákne
+        CoInitializeEx(std::ptr::null(), 2);
         let mut jadro = Prehliadac::novy(zobud);
+        jadro.povol_dialogy();
         // katalóg fotografií (Herbár): %APPDATA%\ORCHIDEA\herbar.txt, inak vedľa programu
         let katalog = std::env::var_os("APPDATA")
             .map(|a| PathBuf::from(a).join("ORCHIDEA"))
