@@ -38,7 +38,6 @@
 #include "hevc_regs.h"
 #include "dos_regs.h"
 #include "codec_hevc_common.h"
-#include "esparser.h"
 #include "sklenik_hevc.h"
 
 /* poštové registre mikrokódu (HEVC_ASSIST_SCRATCH_x) */
@@ -1281,49 +1280,35 @@ static int skl_stop(struct amvdec_session *sess)
 	return 0;
 }
 
-/* NAL EOS (typ 36) so štartovacím kódom */
-static const u8 skl_eos[] = { 0x00, 0x00, 0x00, 0x01, 0x48, 0x01 };
-
 /*
- * Vyprázdnenie (koniec toku, zastavenie). Rozbor 25. 11. 2026 (X96: 720×576 5/8, „vyprázdnenie po 500 ms –
- * snímka nedokončená“, priemer 144 ms na snímku):
- *   - parser jadra HEVC pozná koniec rezu až podľa ďalšieho štartovacieho kódu; za poslednou snímkou žiadny
- *     nie je, takže jej posledný rez sa nedekóduje celý a mikrokód snímku nikdy neohlási – vyprázdnenie vždy
- *     čakalo celých 500 ms a vydalo snímku s nedokončenými spodnými riadkami,
- *   - tých 500 ms sa započítalo do času dekódovania poslednej snímky (pri 8 snímkach ≈ +60 ms na snímku).
- * Oprava: do toku sa pošle NAL EOS (s výplňou esparsera) – parser dokončí posledný rez a mikrokód ohlási EOS
- * (odpovedz_na_nal dokončí a vydá všetko). Ak EOS neohlási, snímka je hotová, keď parser prejde posledný CTB
- * (HEVC_PARSER_LCU_START) a uplynie chvíľa na zápis SAO. Zámok sa počas čakania nedrží (vlákno prerušenia musí
- * bežať). Čas snímky dokončenej až po vypršaní sa do priemeru nezapočíta.
+ * Vyprázdnenie (koniec toku, zastavenie). Nechať dekodér dokončiť všetko, čo už má (najviac 500 ms) – zámok sa
+ * počas čakania NEDRŽÍ, aby vlákno prerušenia mohlo snímky normálne dokončiť a začať ďalšie. Noc 23./24. 11.:
+ * s držaným zámkom sa posledné snímky PCM vydali nedokončené (spodné riadky nulové, 5/8 a 6/8).
+ *
+ * 26. 11. (karta fa2575d, regresia 7/8 → 1/8): f34bd86 tu posielal NAL EOS cez esparser_queue_eos. Lenže pri
+ * príkaze STOP ešte nemusia byť všetky buffre programu zapísané do toku (zapisuje ich pracovné vlákno esparsera),
+ * takže EOS sa dostal do stredu toku – snímky od 2. ďalej sa pokazili a niekedy sa EOS nepodaril poslať vôbec.
+ * Program (KLÍČ) dáva EOS a EOB na koniec posledného buffra sám, v správnom poradí – ovládač ho preto nepridáva.
+ * Ponechané z f34bd86: čas snímky dokončenej až po vypršaní sa do priemeru nezapočíta.
  */
 static void skl_drain(struct amvdec_session *sess)
 {
 	struct skl_hevc *h = sess->priv;
-	bool hotovo = false, posledny_ctb = false;
+	bool necinny = false;
 	int i;
 
 	if (!h)
 		return;
-	if (esparser_queue_eos(sess->core, skl_eos, sizeof(skl_eos)))
-		dev_warn(jadro(h)->dev, "sklenik-hevc: NAL EOS sa nepodarilo poslať\n");
-	for (i = 0; i < 250 && !hotovo; i++) {
+	for (i = 0; i < 250; i++) {
 		mutex_lock(&h->zamok);
-		if (!atomic_read(&sess->esparser_queued_bufs)) {
-			if (!h->aktualna) {
-				hotovo = true;
-			} else if (h->lcu_x && h->lcu_y &&
-				   (citaj(h, HEVC_PARSER_LCU_START) & 0xffffff) >= h->lcu_x * h->lcu_y - 1) {
-				/* parser prešiel posledný CTB – pri ďalšom kole (2–3 ms) je zapísané aj SAO */
-				hotovo = posledny_ctb;
-				posledny_ctb = true;
-			}
-		}
+		necinny = !h->aktualna && !atomic_read(&sess->esparser_queued_bufs);
 		mutex_unlock(&h->zamok);
-		if (!hotovo)
-			usleep_range(2000, 3000);
+		if (necinny)
+			break;
+		usleep_range(2000, 3000);
 	}
 	mutex_lock(&h->zamok);
-	if (!hotovo) {
+	if (!necinny) {
 		dev_info(jadro(h)->dev, "sklenik-hevc: vyprázdnenie po 500 ms – snímka %s\n",
 			 h->aktualna ? "nedokončená" : "dokončená");
 		h->dekod_od = 0;	/* čas čakania nie je čas dekódovania */
