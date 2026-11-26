@@ -499,7 +499,7 @@ jobs:
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
       - name: Zostavenie okna
-        run: cargo build --locked --release -p orchidea-pohlad --bin pohlad
+        run: cargo build --locked --release -p orchidea-pohlad --bin pohlad --example prikazy
       - name: Skúšobné obrázky (Pillow)
         run: |
           python -m pip install numpy Pillow
@@ -524,6 +524,20 @@ jobs:
           path: |
             snimka.png
             prezentacia.png
+      - name: Balík na vyskúšanie (pohlad.exe, prikazy.exe, návod)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force balik | Out-Null
+          Copy-Item target\release\pohlad.exe, target\release\examples\prikazy.exe, pohlad\NAVOD.txt balik\
+          balik\prikazy.exe herbar balik\skuska.txt pridaj skusobne
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Remove-Item balik\skuska.txt
+          Get-ChildItem balik | Format-Table Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchidea-pohlad-windows
+          path: balik/
+          retention-days: 30
 
   shadery:
     name: Overenie shaderov – ${{ matrix.meno }}

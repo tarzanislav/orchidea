@@ -1,0 +1,43 @@
+ORCHIDEA Pohľad – skúšobná zostava pre Windows (10/11, 64-bit)
+=================================================================
+
+Obsah balíka
+  pohlad.exe    prehliadač obrázkov (okno)
+  prikazy.exe   príkazový riadok: dávka, náhľady, porovnanie, Herbár (katalóg fotiek)
+  NAVOD.txt     tento návod
+
+Inštalácia nie je potrebná. Rozbaľte ZIP do ľubovoľného priečinka a spustite pohlad.exe.
+Windows SmartScreen môže pri prvom spustení upozorniť na neznámeho vydavateľa (program nie je podpísaný):
+„Ďalšie informácie“ → „Spustiť aj tak“.
+
+Otvorenie obrázkov
+  - pretiahnite súbor alebo priečinok do okna, alebo
+  - pohlad.exe C:\Fotky\Dovolenka   (alebo cesta k jednému súboru)
+  Formáty: JPEG, PNG, TIFF, OpenEXR, JPEG XL.
+
+Prehliadanie
+  šípky / medzerník / PageUp / PageDown / Backspace   ďalší a predošlý
+  Home / End                                         prvý a posledný
+  + / −, koliesko                                     priblížiť / oddialiť,  0 = prispôsobiť,  1 = skutočná veľkosť
+  ťahanie myšou                                       posun priblíženého obrazu
+  M označiť obraz, C porovnanie označeného s aktuálnym (vedľa seba / rozdiel), T pás náhľadov, I údaje
+  F5 alebo F11   prezentácia na celú obrazovku (každých 5 s ďalší, P pozastaví, Esc ukončí)
+  Esc            koniec
+
+Úpravy (originál sa nikdy neprepíše; Ctrl+S uloží vedľa ako „meno_upravene.jpg“)
+  R / Shift+R    otočiť vpravo / vľavo          F  zrkadliť
+  X              orezať na práve zobrazený výrez (najprv priblížte)
+  J / Shift+J    jas +/−      K / Shift+K  kontrast +/−      G / Shift+G  gama +/−
+  Z              zmenšiť na polovicu (kvalitné zmenšenie)
+  Ctrl+Z / Ctrl+Y   späť / znova
+  Pri JPEG bez zmeny bodov (len otočenie, zrkadlenie, orezanie) sa ukladá bezstratovo – kvalita sa nestratí.
+
+Herbár – katalóg fotiek (bez importu, fotky ostávajú, kde sú)
+  prikazy.exe herbar C:\Fotky\herbar.txt pridaj C:\Fotky
+  prikazy.exe herbar C:\Fotky\herbar.txt obnov
+  prikazy.exe herbar C:\Fotky\herbar.txt hladaj kvet datum:2024 -vianoce
+  Dotaz: slová (bez ohľadu na diakritiku), -slovo, fotoaparat:canon, objektiv:, kluc:, autor:, nazov:, popis:,
+         format:jpeg, priecinok:, meno:, datum:2024-05, datum:2023-12..2024-05, sirka>4000, iso>=800,
+         hodnotenie>=4, gps:ano
+
+Chyby a postrehy zapíšte prosím do issue #5 v repozitári tarzanislav/orchidea.
