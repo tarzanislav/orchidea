@@ -12,7 +12,8 @@
  *      PPS, hlavičku rezu, alebo zahoď,
  *   2. po hlavičke rezu (HEVC_SLICE_SEGMENT_DONE) zapíše jej polia do pamäte RPM; ovládač určí POC, sadu
  *      referencií, zoznamy L0/L1, kam sa zapíše snímka a nastaví bloky – potom povie „dekóduj rez“,
- *   3. koniec toku (NAL EOS) vydá všetky snímky.
+ *   3. koniec toku (NAL EOS) vydá všetky snímky. Po príkaze STOP sa najprv zapíšu všetky zaradené buffre a za
+ *      ne EOS s výplňou (skl_koniec_toku, úprava esparser.c a vdec.c v sklenik-hevc.patch).
  *
  * Čo robí navyše pre chlad (to, čo pôvodný ovládač výrobcu nerobí):
  *   - **takt podľa potreby** – jadro HEVC beží na 666 MHz aj pri videu, ktoré by stačilo dekódovať pri
@@ -29,12 +30,14 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/ktime.h>
+#include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <media/v4l2-mem2mem.h>
 #include <media/videobuf2-dma-contig.h>
 
 #include "vdec_helpers.h"
+#include "esparser.h"
 #include "hevc_regs.h"
 #include "dos_regs.h"
 #include "codec_hevc_common.h"
@@ -92,6 +95,8 @@
 #define NAL_SPS			33
 #define NAL_PPS			34
 #define NAL_EOS			36
+/* koniec toku: poistka, ak mikrokód EOS neohlási (ms bez novej snímky po zápise EOS) */
+#define SKL_KONIEC_MS		500
 
 #define REZ_B			0
 #define REZ_P			1
@@ -242,6 +247,10 @@ struct skl_hevc {
 	struct amvdec_session *sess;
 	struct mutex zamok;	/* stav dekodéra – vlákno prerušenia, resume a opakovanie */
 	struct delayed_work opakuj;
+	struct delayed_work dovrs;	/* koniec toku: poistka, ak mikrokód EOS neohlási */
+	bool koniec_zapisany;	/* po STOP zapísané všetky buffre aj EOS s výplňou */
+	bool koniec_hotovy;	/* posledné snímky vydané (EOS alebo poistka) */
+	ktime_t koniec_od;
 
 	void *pp_virt;
 	dma_addr_t pp;
@@ -310,6 +319,7 @@ static void odpovedz(struct skl_hevc *h, u32 stav)
 }
 
 static void skl_opakuj(struct work_struct *w);
+static void skl_dovrs(struct work_struct *w);
 static u32 skl_cakajuce(struct amvdec_session *sess);
 
 /* ---------- pracovná pamäť a štart ---------- */
@@ -345,6 +355,7 @@ static int skl_start(struct amvdec_session *sess)
 	h->sess = sess;
 	mutex_init(&h->zamok);
 	INIT_DELAYED_WORK(&h->opakuj, skl_opakuj);
+	INIT_DELAYED_WORK(&h->dovrs, skl_dovrs);
 	h->pp_virt = dma_alloc_coherent(core->dev, PP_SPOLU, &h->pp, GFP_KERNEL);
 	if (!h->pp_virt) {
 		kfree(h);
@@ -1055,6 +1066,8 @@ static bool spracuj_rez(struct skl_hevc *h)
 	sess->keyframe_found = 1;
 	zapis(h, SKL_CAKANIE, citaj(h, SKL_CAKANIE) | 0x2);
 	if (h->nova_snimka) {
+		if (h->koniec_zapisany && !h->koniec_hotovy)
+			mod_delayed_work(system_wq, &h->dovrs, msecs_to_jiffies(SKL_KONIEC_MS));
 		h->dekod_od = ktime_get();
 		h->meranie_platne = atomic_read(&sess->esparser_queued_bufs) > (int)skl_cakajuce(sess);
 	}
@@ -1132,6 +1145,11 @@ static void odpovedz_na_nal(struct skl_hevc *h)
 		dokonci_aktualnu(h);
 		vydavaj(h, true);
 		h->poc_nahodny_pristup = INT_MAX;
+		if (h->koniec_zapisany && !h->koniec_hotovy) {
+			h->koniec_hotovy = true;
+			dev_info(jadro(h)->dev, "sklenik-hevc: koniec toku – EOS spracovaný %lld ms po zápise\n",
+				 ktime_ms_delta(ktime_get(), h->koniec_od));
+		}
 		odpovedz(h, ST_ZAHOD_NAL);
 		return;
 	}
@@ -1254,6 +1272,7 @@ static int skl_stop(struct amvdec_session *sess)
 	int i;
 
 	cancel_delayed_work_sync(&h->opakuj);
+	cancel_delayed_work_sync(&h->dovrs);
 	mutex_lock(&h->zamok);
 	if (h->vydanych)
 		dev_info(core->dev,
@@ -1290,6 +1309,8 @@ static int skl_stop(struct amvdec_session *sess)
  * takže EOS sa dostal do stredu toku – snímky od 2. ďalej sa pokazili a niekedy sa EOS nepodaril poslať vôbec.
  * Program (KLÍČ) dáva EOS a EOB na koniec posledného buffra sám, v správnom poradí – ovládač ho preto nepridáva.
  * Ponechané z f34bd86: čas snímky dokončenej až po vypršaní sa do priemeru nezapočíta.
+ *
+ * Od 27. 11. sa pri príkaze STOP nevolá (koniec toku rieši skl_koniec_toku) – len pri vypnutí prúdu.
  */
 static void skl_drain(struct amvdec_session *sess)
 {
@@ -1318,6 +1339,56 @@ static void skl_drain(struct amvdec_session *sess)
 	mutex_unlock(&h->zamok);
 }
 
+/*
+ * Koniec toku po príkaze STOP (26. 11., karta 475fab2: 7/8, 5/8, 95/96 – posledná snímka nevyšla, pri 720×576
+ * nevyšli dve a spodok poslednej vydanej bol nulový). Príčina: meson-vdec pri STOP hneď nastavil should_stop
+ * a esparser_queue_all_src už nezapísal buffre, ktoré boli ešte v rade – KLÍČ posiela STOP hneď po zaradení
+ * posledného buffra, takže posledné snímky aj EOS programu do toku nikdy neprišli. Úprava v sklenik-hevc.patch:
+ * esparser zapíše všetky zaradené buffre a až potom zavolá túto funkciu (z toho istého vlákna, pod sess->lock –
+ * žiadny súbežný zápis ako vo f34bd86).
+ *
+ * Tu: EOS a výplň nulami do 4 KiB (ako EOS H.264 v meson-vdec – jadro dekodéra číta tok po blokoch, bez výplne by
+ * koniec posledného buffra ostal neprečítaný). EOS vydá všetky snímky (odpovedz_na_nal); poistka skl_dovrs, ak ho
+ * mikrokód v samostatnom hľadaní NAL neohlási.
+ */
+static const u8 skl_eos[SZ_4K] = { 0x00, 0x00, 0x00, 0x01, (NAL_EOS << 1), 0x01 };
+
+static void skl_koniec_toku(struct amvdec_session *sess)
+{
+	struct skl_hevc *h = sess->priv;
+	int ret;
+
+	if (!h)
+		return;
+	ret = esparser_queue_eos(sess->core, skl_eos, sizeof(skl_eos));
+	mutex_lock(&h->zamok);
+	h->koniec_zapisany = true;
+	h->koniec_hotovy = false;
+	h->koniec_od = ktime_get();
+	if (ret <= 0)
+		dev_info(jadro(h)->dev, "sklenik-hevc: EOS na konci toku sa nepodarilo zapísať (%d)\n", ret);
+	mod_delayed_work(system_wq, &h->dovrs, msecs_to_jiffies(SKL_KONIEC_MS));
+	mutex_unlock(&h->zamok);
+}
+
+/* poistka: SKL_KONIEC_MS po zápise EOS (alebo po poslednej začatej snímke) bez EOS – vydať, čo je */
+static void skl_dovrs(struct work_struct *w)
+{
+	struct skl_hevc *h = container_of(to_delayed_work(w), struct skl_hevc, dovrs);
+
+	mutex_lock(&h->zamok);
+	if (h->koniec_zapisany && !h->koniec_hotovy) {
+		dev_info(jadro(h)->dev,
+			 "sklenik-hevc: koniec toku – EOS neohlásený %lld ms po zápise, snímka %s\n",
+			 ktime_ms_delta(ktime_get(), h->koniec_od), h->aktualna ? "rozpracovaná" : "žiadna");
+		h->dekod_od = 0;	/* čas čakania nie je čas dekódovania */
+		dokonci_aktualnu(h);
+		vydavaj(h, true);
+		h->koniec_hotovy = true;
+	}
+	mutex_unlock(&h->zamok);
+}
+
 struct amvdec_codec_ops sklenik_hevc_ops = {
 	.start = skl_start,
 	.stop = skl_stop,
@@ -1326,4 +1397,5 @@ struct amvdec_codec_ops sklenik_hevc_ops = {
 	.num_pending_bufs = skl_cakajuce,
 	.resume = skl_resume,
 	.drain = skl_drain,
+	.sklenik_koniec_toku = skl_koniec_toku,
 };

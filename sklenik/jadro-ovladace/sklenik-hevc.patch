@@ -1,5 +1,5 @@
 diff --git a/drivers/staging/media/meson/vdec/Makefile b/drivers/staging/media/meson/vdec/Makefile
-index 6e726af84..7aaafd26b 100644
+index 6e726af..7aaafd2 100644
 --- a/drivers/staging/media/meson/vdec/Makefile
 +++ b/drivers/staging/media/meson/vdec/Makefile
 @@ -4,5 +4,6 @@
@@ -10,7 +10,7 @@ index 6e726af84..7aaafd26b 100644
  
  obj-$(CONFIG_VIDEO_MESON_VDEC) += meson-vdec.o
 diff --git a/drivers/staging/media/meson/vdec/esparser.c b/drivers/staging/media/meson/vdec/esparser.c
-index 4632346f0..e4d5b431d 100644
+index 4632346..1bb6571 100644
 --- a/drivers/staging/media/meson/vdec/esparser.c
 +++ b/drivers/staging/media/meson/vdec/esparser.c
 @@ -308,7 +308,8 @@ esparser_queue(struct amvdec_session *sess, struct vb2_v4l2_buffer *vbuf)
@@ -23,8 +23,87 @@ index 4632346f0..e4d5b431d 100644
  		if (codec_ops->num_pending_bufs)
  			num_dst_bufs = codec_ops->num_pending_bufs(sess);
  
+@@ -383,6 +384,18 @@ void esparser_queue_all_src(struct work_struct *work)
+ 		if (esparser_queue(sess, &buf->vb) < 0)
+ 			break;
+ 	}
++	/*
++	 * SKLENÍK (R174): po príkaze STOP sa najprv zapíšu všetky buffre zaradené pred ním (V4L2 dekodér so stavom),
++	 * až potom raz koniec toku – v tom istom vlákne, teda v poradí za dátami a nikdy súbežne s iným zápisom.
++	 */
++	if (sess->sklenik_stop && !sess->should_stop &&
++	    !v4l2_m2m_num_src_bufs_ready(sess->m2m_ctx)) {
++		struct amvdec_codec_ops *codec_ops = sess->fmt_out->codec_ops;
++
++		sess->should_stop = 1;
++		if (codec_ops->sklenik_koniec_toku)
++			codec_ops->sklenik_koniec_toku(sess);
++	}
+ 	mutex_unlock(&sess->lock);
+ }
+ 
+diff --git a/drivers/staging/media/meson/vdec/vdec.c b/drivers/staging/media/meson/vdec/vdec.c
+index 49df5c6..1fc6185 100644
+--- a/drivers/staging/media/meson/vdec/vdec.c
++++ b/drivers/staging/media/meson/vdec/vdec.c
+@@ -323,6 +323,7 @@ static int vdec_start_streaming(struct vb2_queue *q, unsigned int count)
+ 	}
+ 
+ 	sess->should_stop = 0;
++	sess->sklenik_stop = 0;
+ 	sess->keyframe_found = 0;
+ 	sess->last_offset = 0;
+ 	sess->wrap_count = 0;
+@@ -723,6 +724,7 @@ vdec_decoder_cmd(struct file *file, void *fh, struct v4l2_decoder_cmd *cmd)
+ 	if (cmd->cmd == V4L2_DEC_CMD_START) {
+ 		v4l2_m2m_clear_state(sess->m2m_ctx);
+ 		sess->should_stop = 0;
++		sess->sklenik_stop = 0;
+ 		return 0;
+ 	}
+ 
+@@ -732,6 +734,17 @@ vdec_decoder_cmd(struct file *file, void *fh, struct v4l2_decoder_cmd *cmd)
+ 
+ 	dev_dbg(dev, "Received V4L2_DEC_CMD_STOP\n");
+ 
++	if (codec_ops->sklenik_koniec_toku) {
++		/*
++		 * SKLENÍK (R174): pôvodne should_stop = 1 hneď – buffre ešte v rade sa už nezapísali do toku, posledné
++		 * snímky (aj EOS programu) dekodér nedostal. Zapíše ich esparser_queue_all_src, potom koniec toku.
++		 */
++		sess->sklenik_stop = 1;
++		v4l2_m2m_mark_stopped(sess->m2m_ctx);
++		schedule_work(&sess->esparser_queue_work);
++		return ret;
++	}
++
+ 	sess->should_stop = 1;
+ 
+ 	v4l2_m2m_mark_stopped(sess->m2m_ctx);
+diff --git a/drivers/staging/media/meson/vdec/vdec.h b/drivers/staging/media/meson/vdec/vdec.h
+index 7a5d8e8..bf453d2 100644
+--- a/drivers/staging/media/meson/vdec/vdec.h
++++ b/drivers/staging/media/meson/vdec/vdec.h
+@@ -138,6 +138,8 @@ struct amvdec_codec_ops {
+ 	void (*drain)(struct amvdec_session *sess);
+ 	void (*resume)(struct amvdec_session *sess);
+ 	const u8 * (*eos_sequence)(u32 *len);
++	/* SKLENÍK (R174): koniec toku po príkaze STOP – volá sa raz, keď sú zapísané všetky zaradené buffre */
++	void (*sklenik_koniec_toku)(struct amvdec_session *sess);
+ 	irqreturn_t (*isr)(struct amvdec_session *sess);
+ 	irqreturn_t (*threaded_isr)(struct amvdec_session *sess);
+ };
+@@ -255,6 +257,8 @@ struct amvdec_session {
+ 	unsigned int streamon_cap, streamon_out;
+ 	unsigned int sequence_cap, sequence_out;
+ 	unsigned int should_stop;
++	/* SKLENÍK (R174): STOP prijatý, zaradené buffre sa ešte zapisujú (kodek so sklenik_koniec_toku) */
++	unsigned int sklenik_stop;
+ 	unsigned int keyframe_found;
+ 	unsigned int num_dst_bufs;
+ 	unsigned int changed_format;
 diff --git a/drivers/staging/media/meson/vdec/vdec_platform.c b/drivers/staging/media/meson/vdec/vdec_platform.c
-index 66bb307db..7352e9f2a 100644
+index 66bb307..7352e9f 100644
 --- a/drivers/staging/media/meson/vdec/vdec_platform.c
 +++ b/drivers/staging/media/meson/vdec/vdec_platform.c
 @@ -12,6 +12,7 @@
