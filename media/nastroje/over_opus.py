@@ -432,6 +432,9 @@ def main():
             pokrytie.append((meno, re.search(r"REZIMY (.*)", r.stdout).group(1)))
         if not ok and silk48:
             diagnostika(x, y, kanalov, pp, 1500 if "_nb" in meno else 3000)
+            if isinstance(kodovanie, dict):  # pakety do logu (rozbor rozdielov kodéra na inom procesore)
+                import base64
+                print(f"  PAKETY_BASE64 {meno} " + base64.b64encode(open(cesta, "rb").read()).decode())
         stred = "" if kanalov == 1 else f", stred {snr_stred:.1f} dB"
         print(f"| {meno} | {len(pp)} | {konfig} | {stav} | {snr:.1f} dB{stred}{pasma} (oneskorenie {lag}) "
               f"| {'✅' if ok else '❌'}{dlzka} |")
