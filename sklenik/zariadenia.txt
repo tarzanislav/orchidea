@@ -1,9 +1,10 @@
 # Zoznam zariadení (HERBÁR, R254) – stále číslo a názov každej krabičky podľa MAC adresy siete LAN.
-# Riadok: číslo | MAC adresa | názov. Zberač meraní pomenuje podľa neho priečinky v MERANIA.
-# Nové zariadenie pridá zberač sám s ďalším číslom (názov = model) – názov potom môžete prepísať.
+# Riadok: číslo | MAC adresa | názov | sériové číslo (ak ho doska má). Zberač meraní pomenuje podľa neho priečinky
+# v MERANIA. Nové zariadenie pridá zberač sám s ďalším číslom (názov = model) – názov potom môžete prepísať.
+# R258: sériové čísla dosiek RPi z doterajších záznamov (RPi 3 B+: MAC = b8:27:eb + posledných 6 číslic sériového).
 1 | 00:1e:06:48:4d:60 | ODROID C4
 2 | 46:27:29:f7:03:ef | X96 Max Plus
-3 | b8:27:eb:a6:04:16 | RPi 3 B+ kovový chladič
-4 | b8:27:eb:6b:7c:76 | RPi 3 B+ plastová krabička
-5 | e4:5f:01:1d:aa:d5 | RPi 400
-6 | 2c:cf:67:40:c9:32 | RPi 5
+3 | b8:27:eb:a6:04:16 | RPi 3 B+ kovový chladič | 00000000d7a60416
+4 | b8:27:eb:6b:7c:76 | RPi 3 B+ plastová krabička | 00000000296b7c76
+5 | e4:5f:01:1d:aa:d5 | RPi 400 | 10000000992fa5af
+6 | 2c:cf:67:40:c9:32 | RPi 5 | 166191d6d9171f2f

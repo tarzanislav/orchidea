@@ -89,8 +89,13 @@ impl Sklad {
             let Some(vnutri) = meno.strip_suffix(')').and_then(|m| m.rsplit_once('(')).map(|(_, v)| v) else {
                 continue;
             };
-            let Some(mac) = crate::zoznam::mac(vnutri) else { continue };
-            let Some(zar) = polozky.iter().find(|p| p.mac == mac) else { continue };
+            // R254: MAC adresa; R258: aj sériové číslo (RPi 3 B+ 27. 11. – správy bez MAC, priečinok podľa čísla)
+            let zar = match (crate::zoznam::mac(vnutri), crate::zoznam::seriove(vnutri)) {
+                (Some(mac), _) => polozky.iter().find(|p| p.mac == mac),
+                (None, Some(s)) => polozky.iter().find(|p| p.seriove.as_deref() == Some(s.as_str())),
+                _ => None,
+            };
+            let Some(zar) = zar else { continue };
             let nove = self.koren.join(zar.priecinok());
             if z.path().is_dir() && z.path() != nove && !nove.exists() && fs::rename(z.path(), &nove).is_ok()
             {
@@ -119,6 +124,17 @@ impl Sklad {
                 self.premenuj_podla_zoznamu();
             }
             return Ok((cesta, nove.then_some(zar)));
+        }
+        // R258: bez MAC – podľa sériového čísla v zozname
+        if let Some(ser) = s.pole("id").and_then(crate::zoznam::seriove)
+            && let Some(zar) =
+                self.zoznam.polozky().into_iter().find(|p| p.seriove.as_deref() == Some(ser.as_str()))
+        {
+            let cesta = self.koren.join(zar.priecinok());
+            if !cesta.exists() {
+                self.premenuj_podla_zoznamu();
+            }
+            return Ok((cesta, None));
         }
         let kto =
             s.pole("meno").filter(|m| !m.is_empty() && *m != "–").or(s.pole("id")).unwrap_or("bez mena");
@@ -372,6 +388,56 @@ mod skusky {
             .s_obsahom(b"z\n".to_vec());
         let (mz, _) = sk.prijmi(&bez, t).unwrap();
         assert!(mz.parent().unwrap().ends_with("raspberry-pi-zero-2-w-rev-1-0 (00000000abcdef01)"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// R258: zoznam zo zberača R254 (bez sériových čísel) dostane sériové čísla zo základu bez zmeny názvov;
+    /// priečinok RPi podľa sériového čísla (beh 27. 11., správy bez MAC) sa premenuje na zariadenie zo zoznamu
+    /// a nová správa bez MAC ide tiež doň.
+    #[test]
+    fn r258_seriove_cisla() {
+        let d = docasny("seriove");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(
+            d.join(crate::zoznam::SUBOR),
+            "# môj zoznam\r\n1 | 00:1e:06:48:4d:60 | ODROID C4\r\n3 | b8:27:eb:a6:04:16 | RPi 3 B+ kovový chladič\r\n\
+             4 | b8:27:eb:6b:7c:76 | Moja plastová\r\n",
+        )
+        .unwrap();
+        let stary =
+            d.join("raspberry-pi-3-model-b-plus-rev-1-4 (00000000d7a60416)").join("2026-11-27 20-52 85092ea");
+        fs::create_dir_all(&stary).unwrap();
+        let sk = Sklad::novy(&d).unwrap();
+        let text = fs::read_to_string(d.join(crate::zoznam::SUBOR)).unwrap();
+        assert!(text.starts_with("# môj zoznam"), "{text}");
+        assert!(
+            text.contains("3 | b8:27:eb:a6:04:16 | RPi 3 B+ kovový chladič | 00000000d7a60416"),
+            "{text}"
+        );
+        assert!(
+            text.contains("4 | b8:27:eb:6b:7c:76 | Moja plastová | 00000000296b7c76"),
+            "vlastný názov: {text}"
+        );
+        assert!(text.contains("6 | 2c:cf:67:40:c9:32 | RPi 5 | 166191d6d9171f2f"), "{text}");
+        assert!(
+            d.join("03 RPi 3 B+ kovový chladič (b8-27-eb-a6-04-16)")
+                .join("2026-11-27 20-52 85092ea")
+                .is_dir()
+        );
+        // druhé otvorenie nič nemení (sériové čísla už sú)
+        let _ = Sklad::novy(&d).unwrap();
+        assert_eq!(fs::read_to_string(d.join(crate::zoznam::SUBOR)).unwrap(), text);
+        // správa bez MAC (karta 85092ea) – podľa sériového čísla
+        let bez_mac = Sprava::nova()
+            .s("zariadenie", "Raspberry Pi 3 Model B Plus Rev 1.3")
+            .s("id", "00000000296b7c76")
+            .s("mac", "")
+            .s("verzia", "85092ea")
+            .s("beh", "rpi3p-1")
+            .s("zaznam", "0")
+            .s_obsahom(b"z\n".to_vec());
+        let (m, _) = sk.prijmi(&bez_mac, (2026, 11, 27, 20, 56, 0)).unwrap();
+        assert!(m.parent().unwrap().ends_with("04 Moja plastová (b8-27-eb-6b-7c-76)"), "{}", m.display());
         let _ = fs::remove_dir_all(&d);
     }
 
