@@ -2050,10 +2050,20 @@ pub fn spusti() {
     let mut radice_stav: Option<bool> = None;
     // R239: Odroid C4 – jadro z hlbokého spánku nevstane: 24., 26. a 27. 11. zakaždým zamrzol do minúty po
     // zapnutí; 27. 11. detektor jadra: „Watchdog detected hard LOCKUP on cpu 3“ 22 s po zapnutí (firmvér BL31
-    // Odroidu jadro nezobudí). X96 (iný firmvér) zostáva pod poistkou.
+    // Odroidu jadro nezobudí).
+    // R262: X96 Max Plus (ten istý čip S905X3, iný firmvér) 27. 11. 21:18 rovnako: hlboký spánok zapnutý v 3:33,
+    // o 15 s „Watchdog detected hard LOCKUP on cpu 0“, strážny časovač reštartoval, poistka na karte spánok
+    // vypla. Spánok jadier je preto zakázaný na celom S905X3 (popis hardvéru amlogic,sm1).
+    let sm1 = fs::read("/proc/device-tree/compatible")
+        .is_ok_and(|c| c.split(|&b| b == 0).any(|x| x == b"amlogic,sm1"));
     let mut spanok_jadier = if model.contains("ODROID-C4") {
         SpanokJadier::Zakazany(
             "vypnutý na Odroid C4 – jadro z neho nevstane (3× zamrzol, jadro 3 neprebudené – hard LOCKUP; R239)"
+                .into(),
+        )
+    } else if sm1 {
+        SpanokJadier::Zakazany(
+            "vypnutý na S905X3 – jadro z neho nevstane (X96 27. 11.: hard LOCKUP na jadre 0 15 s po zapnutí; R262)"
                 .into(),
         )
     } else {
