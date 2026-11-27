@@ -1,0 +1,56 @@
+name: Médiá – text noriem pre tabuľky (ručne)
+
+# Ručne spúšťaný postup (prúd D): stiahne voľne dostupnú normu, overí odtlačok a vypíše **len** zoznam tabuliek
+# a zvolené strany s číselnými tabuľkami (údaje, ktoré idú do zdrojového kódu s odkazom na číslo tabuľky).
+# Celý dokument sa nevypisuje ani neukladá ako artefakt – repozitár je verejný a norma sa nešíri.
+
+on:
+  workflow_dispatch:
+    inputs:
+      norma:
+        description: "norma (etsi_ts_103466)"
+        required: true
+        default: etsi_ts_103466
+      strany:
+        description: "strany na výpis (napr. 20-27), prázdne = len zoznam tabuliek"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  text:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Nástroje
+        run: sudo apt-get install -y --no-install-recommends poppler-utils
+      - name: Stiahnutie a odtlačok
+        shell: bash
+        env:
+          NORMA: ${{ inputs.norma }}
+        run: |
+          case "$NORMA" in
+            etsi_ts_103466) u=https://www.etsi.org/deliver/etsi_TS/103400_103499/103466/01.02.01_60/ts_103466v010201p.pdf ;;
+            *) echo "neznáma norma"; exit 1 ;;
+          esac
+          curl -fsSL "$u" -o "$RUNNER_TEMP/norma.pdf"
+          sha256sum "$RUNNER_TEMP/norma.pdf"
+          pdfinfo "$RUNNER_TEMP/norma.pdf" | grep -E "Title|Pages|Producer"
+      - name: Zoznam tabuliek (číslo strany a nadpis)
+        shell: bash
+        run: |
+          n=$(pdfinfo "$RUNNER_TEMP/norma.pdf" | awk '/^Pages/{print $2}')
+          for p in $(seq 1 "$n"); do
+            pdftotext -f "$p" -l "$p" -layout "$RUNNER_TEMP/norma.pdf" - | grep -E "^\s*(Table|Figure) [0-9A-Z.]+:" | sed "s/^ */strana $p: /"
+          done
+      - name: Zvolené strany (len číselné tabuľky)
+        if: inputs.strany != ''
+        shell: bash
+        env:
+          STRANY: ${{ inputs.strany }}
+        run: |
+          [[ "$STRANY" =~ ^[0-9]+-[0-9]+$ ]] || { echo "strany v tvare od-do"; exit 1; }
+          od=${STRANY%-*}; do_=${STRANY#*-}
+          test "$((do_ - od))" -le 12 || { echo "najviac 13 strán naraz"; exit 1; }
+          pdftotext -f "$od" -l "$do_" -layout "$RUNNER_TEMP/norma.pdf" -
