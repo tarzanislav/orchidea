@@ -13,10 +13,13 @@ sequence“) – dva správne dekodéry sa líšia v šume ditheru. Preto:
 3. **Dither:** zložka ditheru (výstup pôvodného toku − výstup toku bez dithflag) má po kanáloch rovnakú
    efektívnu hodnotu ako u rozhodcu (0,8–1,25; náhodná zložka – efektívnu hodnotu určuje málo košov s najmenším
    exponentom) – overí mierku ±0,707 a dither po rozložení väzby (§7.3.4).
-4. **Nezávislosť kanálov:** v toku 2/0 s krátkymi blokmi len v jednom kanáli sa výstup kanála, ktorého bity sa
-   nezmenili, nesmie zmeniť (u nás bit po bite). Rozhodca túto vlastnosť pri prvom krátkom bloku toku 2/0 poruší
-   (zmení výstup druhého kanála – aj dekodér `ac3_fixed`); taký blok sa porovná s výstupom rozhodcu z pôvodného
-   toku a vypíše sa ako odchýlka rozhodcu.
+4. **Nezávislosť od histórie:** výstup bloku závisí len od bitov toho bloku a predošlého (prekrytie, §7.9.4).
+   Toky A (krátky blok len v bloku 300 kanála 1) a B (krátke bloky 100 a 300 kanála 1) majú bloky 299–300
+   rovnaké – náš výstup bloku 300 (a všetkých blokov od 102) je v oboch bit po bite rovnaký. Rozhodca túto vlastnosť
+   porušuje: blok, v ktorom majú kanály **prvýkrát v toku rôzne blksw**, dekóduje s chybným prekrytím (rovnako
+   `ac3_fixed`; meraním, kód FFmpeg sa nečíta) – ďalšie také bloky už správne. Preto sa do každého porovnávaného
+   toku s viac kanálmi pridá **zahrievací krátky blok** v bloku 0 kanála 0 (`--blksw-pridaj 0:0`): udalosť
+   rozhodcu nastane v bloku 0, kde je prekrytie nulové a chyba sa neprejaví; ďalej sa porovnáva všetko.
 5. **Kontajnery:** AC-3 v Matroske, MP4 a MPEG-TS cez `kontajner::otvor` a `DekoderZvuku` (`media_mpa
    --kontajner`) – dĺžka presne ako rozhodca a rovnaká presnosť.
 6. **Skúšobné súbory FATE** (voliteľne, adresár so súbormi `*.ac3` – len údaje, skutočné kodéry: prepnutie
@@ -125,6 +128,11 @@ def zakoduj(meno, f, rozlozenie, tok, arg):
     return cesta, n
 
 
+def zahrievaci(kanalov):
+    """Zahrievací krátky blok (bod 4 dokumentácie) – len pri viac kanáloch."""
+    return ["--blksw-pridaj", "0:0"] if kanalov >= 2 else []
+
+
 def stlpec(rms, mx):
     return f"{rms:.1e} / {mx:.1e}"
 
@@ -138,7 +146,7 @@ def varianty():
         povodny, n = zakoduj(meno, f, rozlozenie, tok, arg)
         bez = povodny[:-4] + ".bez.ac3"
         kratke = povodny[:-4] + ".kratke.ac3"
-        uprav(povodny, bez, "--dither", "0")
+        uprav(povodny, bez, "--dither", "0", *zahrievaci(n))
         uprav(povodny, kratke, "--dither", "0", "--blksw-kazdy", "4", "--blksw-spolu")
         vysl = {}
         for druh, cesta in (("povodny", povodny), ("bez", bez), ("kratke", kratke)):
@@ -151,8 +159,9 @@ def varianty():
         pomery = []
         dither_ok = True
         if vysl["povodny"][1].shape == vysl["bez"][1].shape == vysl["povodny"][0].shape:
-            d_nas = vysl["povodny"][1] - vysl["bez"][1]
-            d_ref = vysl["povodny"][0] - vysl["bez"][0]
+            # bez prvých 2 blokov (zahrievací krátky blok mení blok 0 a 1 kanála 0)
+            d_nas = (vysl["povodny"][1] - vysl["bez"][1])[512:]
+            d_ref = (vysl["povodny"][0] - vysl["bez"][0])[512:]
             for c in range(n):
                 r_ref = float(np.sqrt(np.mean(d_ref[:, c] ** 2)))
                 r_nas = float(np.sqrt(np.mean(d_nas[:, c] ** 2)))
@@ -184,42 +193,34 @@ def varianty():
 
 
 def nezavislost():
-    """Kanál s nezmenenými bitmi musí dať rovnaký výstup (tok 2/0, krátke bloky len v niektorých kanáloch)."""
-    meno, f, rozlozenie, tok, arg = "nezavislost_2_0", 44100, "stereo", "128k", []
-    povodny, n = zakoduj(meno, f, rozlozenie, tok, arg)
-    bez = povodny[:-4] + ".bez.ac3"
-    zvlast = povodny[:-4] + ".zvlast.ac3"
-    uprav(povodny, bez, "--dither", "0")
-    kratke = set(uprav(povodny, zvlast, "--dither", "0", "--blksw-kazdy", "5"))
-    ref_bez = ffmpeg_dekoduj(bez, bez + ".ff.f32")
-    ref_zv = ffmpeg_dekoduj(zvlast, zvlast + ".ff.f32")
-    _, nas_bez, _, _ = nas_dekoduj(bez, bez + ".nas.f32", n)
-    ok_zv, nas_zv, _, _ = nas_dekoduj(zvlast, zvlast + ".nas.f32", n)
-    blokov = len(nas_zv) // 256
-    nase_porusenia, odchylky_rozhodcu, ine = 0, [], []
-    for g in range(blokov):
-        for c in range(n):
-            s = slice(g * 256, (g + 1) * 256)
-            nezmeneny = (g, c) not in kratke and (g - 1, c) not in kratke
-            if nezmeneny and not np.array_equal(nas_zv[s, c], nas_bez[s, c]):
-                nase_porusenia += 1
-            rms, mx = presnost(nas_zv[s, c], ref_zv[s, c])
-            if mx > HRANICA_MAX:
-                # rozhodca zmenil kanál s nezmenenými bitmi: porovná sa s jeho výstupom z pôvodného toku
-                rms0, mx0 = presnost(nas_zv[s, c], ref_bez[s, c])
-                if nezmeneny and mx0 <= HRANICA_MAX:
-                    odchylky_rozhodcu.append((g, c))
-                else:
-                    ine.append((g, c, mx))
-    ok = ok_zv and nase_porusenia == 0 and not ine and len(odchylky_rozhodcu) <= 2
+    """Výstup bloku nezávisí od histórie toku (bod 4) – náš bit po bite, rozhodca s udalosťou prvých rôznych blksw."""
+    povodny, n = zakoduj("historia_2_0", 44100, "stereo", "128k", [])
+    a = povodny[:-4] + ".a.ac3"
+    b = povodny[:-4] + ".b.ac3"
+    a2 = povodny[:-4] + ".a2.ac3"
+    uprav(povodny, a, "--dither", "0", "--blksw-zoznam", "300:1")
+    uprav(povodny, b, "--dither", "0", "--blksw-zoznam", "100:1,300:1")
+    uprav(a, a2, "--blksw-pridaj", "0:0")
+    ref = {x: ffmpeg_dekoduj(x, x + ".ff.f32") for x in (a, b, a2)}
+    nas = {x: nas_dekoduj(x, x + ".nas.f32", n)[1] for x in (a, b, a2)}
+    blok = slice(300 * 256, 301 * 256)
+    nas_rovnaky = np.array_equal(nas[a][102 * 256:], nas[b][102 * 256:])
+    _, mx_ref_ab = presnost(ref[a][blok], ref[b][blok])
+    rms_b, mx_b = presnost(nas[b][blok], ref[b][blok])
+    rms_a2, mx_a2 = presnost(nas[a2], ref[a2])
+    ok = nas_rovnaky and mx_b <= HRANICA_MAX and rms_a2 < HRANICA_RMS and mx_a2 <= HRANICA_MAX
     if not ok:
-        CHYBY.append(f"nezávislosť kanálov: naše porušenia {nase_porusenia}, iné rozdiely {ine[:5]}")
-    print(f"\n| nezávislosť kanálov (2/0, krátke bloky v {len(kratke)} blokoch jedného kanála) | výsledok |")
-    print("|---|---|")
-    print(f"| náš výstup kanála s nezmenenými bitmi | {'bit po bite rovnaký' if nase_porusenia == 0 else f'{nase_porusenia} porušení'} "
-          f"| {'✅' if ok else '❌'} |")
-    print(f"| rozhodca zmenil kanál s nezmenenými bitmi (blok, kanál) | {odchylky_rozhodcu or 'nie'} – náš výstup tam "
-          f"sedí s rozhodcom z pôvodného toku | ✅ |")
+        CHYBY.append(f"nezávislosť od histórie: náš A = B {nas_rovnaky}, blok 300 v B {stlpec(rms_b, mx_b)}, "
+                     f"A so zahrievacím blokom {stlpec(rms_a2, mx_a2)}")
+    print("\n| nezávislosť od histórie (2/0; A: krátky blok 300:1, B: 100:1 a 300:1) | hodnota | výsledok |")
+    print("|---|---|---|")
+    print(f"| náš výstup A a B od bloku 102 | {'bit po bite rovnaký' if nas_rovnaky else 'líši sa'} | "
+          f"{'✅' if nas_rovnaky else '❌'} |")
+    print(f"| rozhodca: blok 300 v A a v B (rovnaké bity) | najväčší rozdiel {mx_ref_ab:.1e} – v A je to prvý blok s rôznymi "
+          f"blksw kanálov | {'odchýlka rozhodcu' if mx_ref_ab > HRANICA_MAX else 'bez odchýlky'} |")
+    print(f"| náš blok 300 proti rozhodcovi v B | {stlpec(rms_b, mx_b)} | {'✅' if mx_b <= HRANICA_MAX else '❌'} |")
+    print(f"| A so zahrievacím blokom 0:0 – celý tok | {stlpec(rms_a2, mx_a2)} | "
+          f"{'✅' if rms_a2 < HRANICA_RMS and mx_a2 <= HRANICA_MAX else '❌'} |")
 
 
 def kontajnery():
@@ -251,8 +252,9 @@ def fate():
     for s in subory:
         cesta = os.path.join(FATE, s)
         bez = os.path.join(PRAC, "fate_" + s[:-4] + ".bez.ac3")
+        kanalov = ffmpeg_dekoduj(cesta, bez + ".k.f32").shape[1]
         try:
-            uprav(cesta, bez, "--dither", "0")
+            uprav(cesta, bez, "--dither", "0", *zahrievaci(kanalov))
         except RuntimeError as e:
             CHYBY.append(f"FATE {s}: {e}")
             print(f"| {s} | – | – | – | {e} | ❌ |")

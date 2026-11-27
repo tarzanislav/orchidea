@@ -5,9 +5,11 @@
 //!   Na stdout `AC3 …` (pokrytie nástrojov), `ZVUK kanalov= frekvencia= vzoriek=` a `VYSLEDOK ramcov= chyb=`.
 //!   Prepínače pred súborom: `--bez-ditheru` zakáže dither, `--bez-dynrng` dynamický rozsah (§7.7.1 – voľba
 //!   poslucháča), `--bloky` vypíše `BLOK <n> …` (príznaky a parametre každého bloku) pred riadkom `AC3`.
-//! - `media_ac3 --uprav <vstup.ac3> <výstup.ac3> [--dither 0|1] [--blksw-kazdy N [--blksw-spolu]]` – prepíše bity
+//! - `media_ac3 --uprav <vstup.ac3> <výstup.ac3> [--dither 0|1] [--blksw-kazdy N [--blksw-spolu] |
+//!   --blksw-zoznam blok:kanál,… | --blksw-pridaj blok:kanál,…]` – prepíše bity
 //!   dithflag a blksw v rámcoch a prepočíta crc1 a crc2 (A/52 §7.10.1); na stdout `BLKSW <blok> <kanál>` pre každý
-//!   krátky blok (číslovanie blokov od začiatku toku). Zmena týchto bitov nemení dĺžku ani polohu
+//!   krátky blok (číslovanie blokov od začiatku toku). `--blksw-zoznam` nastaví krátke len uvedené bloky,
+//!   `--blksw-pridaj` ich pridá k pôvodným. Zmena týchto bitov nemení dĺžku ani polohu
 //!   ostatných polí, preto vznikne platný tok s inými nástrojmi – rozhodca ho dekóduje rovnako ako my.
 use orchidea_media::ac3::{DekoderAc3, Hlavicka, crc16};
 use std::io::Write;
@@ -117,11 +119,32 @@ fn uprav(a: &[String]) {
     let mut dither: Option<bool> = None;
     let mut blksw_kazdy = 0usize;
     let mut spolu = false;
+    let mut zoznam: Vec<(usize, usize)> = Vec::new();
+    let mut pridaj = false;
     let mut i = 2;
     while i < a.len() {
         match a[i].as_str() {
             "--dither" => dither = Some(a[i + 1] == "1"),
             "--blksw-kazdy" => blksw_kazdy = a[i + 1].parse().expect("číslo"),
+            "--blksw-pridaj" => {
+                pridaj = true;
+                zoznam = a[i + 1]
+                    .split(',')
+                    .map(|p| {
+                        let (b, k) = p.split_once(':').expect("blok:kanál");
+                        (b.parse().expect("blok"), k.parse().expect("kanál"))
+                    })
+                    .collect()
+            }
+            "--blksw-zoznam" => {
+                zoznam = a[i + 1]
+                    .split(',')
+                    .map(|p| {
+                        let (b, k) = p.split_once(':').expect("blok:kanál");
+                        (b.parse().expect("blok"), k.parse().expect("kanál"))
+                    })
+                    .collect()
+            }
             "--blksw-spolu" => {
                 spolu = true;
                 i -= 1;
@@ -138,7 +161,14 @@ fn uprav(a: &[String]) {
         for (blk, (blksw, dith)) in polohy.iter().enumerate() {
             let blok_celkom = r * 6 + blk;
             for (ch, &p) in blksw.iter().enumerate() {
-                if blksw_kazdy > 0 {
+                if !zoznam.is_empty() {
+                    let povodny = ramec[p >> 3] & (0x80 >> (p & 7)) != 0;
+                    let kratky = zoznam.contains(&(blok_celkom, ch)) || (pridaj && povodny);
+                    nastav_bit(ramec, p, kratky);
+                    if kratky {
+                        println!("BLKSW {blok_celkom} {ch}");
+                    }
+                } else if blksw_kazdy > 0 {
                     pocitadlo += 1;
                     // spolu: všetky kanály bloku rovnako; inak každý kanál zvlášť (posunutý vzor)
                     let kratky = if spolu {
