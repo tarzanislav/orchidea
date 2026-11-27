@@ -3432,9 +3432,17 @@ pub fn spusti() {
                 && ((!pamat_bezi && !meranie_bezi && (skuska || up >= 10.0)) || up >= 180.0)
                 && m.zacni(up as u64)
             {
-                hlas(
-                    "samomeranie: začiatok – záznamy v 0., 5., 10. a 30. minúte, krivka teploty každých 30 s",
-                );
+                // R252: minúty záznamov podľa skutočného riadenia (rýchla skúška 0. a 3., pokus 0., 5., 10., 30.)
+                let minuty: Vec<String> = m.milniky().iter().map(|x| format!("{x}.")).collect();
+                let posledna = minuty.len().saturating_sub(1);
+                let zoznam = match minuty.len() {
+                    0 => String::from("–"),
+                    1 => minuty[0].clone(),
+                    _ => format!("{} a {}", minuty[..posledna].join(", "), minuty[posledna]),
+                };
+                hlas(&format!(
+                    "samomeranie: začiatok – záznamy v {zoznam} minúte, krivka teploty každých 30 s"
+                ));
                 let u = regulator.uroven();
                 m.bod(teplota, u.vykon, u.takt_khz / 1000, vytazenie_teraz, okolie.stav().okolie);
             }
