@@ -147,10 +147,14 @@ jobs:
           }
           film film720 1280x720
           film film1080 1920x1080
-          # ťažší tok ako skutočný film: zrno (časový šum) a 8 Mb/s – viac koeficientov, CABAC a transformácií
-          ffmpeg $z -i "testsrc2=size=1920x1080:rate=24,noise=alls=10:allf=t+u" -frames:v 96 -c:v libx265 -preset fast \
-            -pix_fmt yuv420p -x265-params "log-level=error:hash=1:bitrate=8000:vbv-maxrate=10000:vbv-bufsize=10000" \
+          # ťažší tok ako skutočný film: zrno (časový šum) a 8 Mb/s – viac koeficientov, CABAC a transformácií.
+          # Rovnaký v každom behu (porovnateľné merania): pevné semienko šumu a x265 v jednom vlákne – riadenie toku
+          # (VBV) s viacerými vláknami x265 dáva pri každom behu iný tok.
+          ffmpeg $z -i "testsrc2=size=1920x1080:rate=24,noise=alls=10:allf=t+u:all_seed=12345" -frames:v 96 \
+            -c:v libx265 -preset fast -pix_fmt yuv420p \
+            -x265-params "log-level=error:hash=1:bitrate=8000:vbv-maxrate=10000:vbv-bufsize=10000:pools=1:frame-threads=1" \
             "$b/toky/film1080_tazky.hevc"
+          sha256sum "$b"/toky/film*.hevc | tee -a "$GITHUB_STEP_SUMMARY"
           for d in toky/norma/AMP_D* toky/norma/TILES_A* toky/norma/WPP_D_ericsson_MAIN_*; do
             if [ -d "$d" ]; then cp -r "$d" "$b/toky/"; fi
           done
@@ -228,10 +232,14 @@ jobs:
           }
           film film720 1280x720
           film film1080 1920x1080
-          # ťažší tok ako skutočný film: zrno (časový šum) a 8 Mb/s – viac koeficientov, CABAC a transformácií
-          ffmpeg $z -i "testsrc2=size=1920x1080:rate=24,noise=alls=10:allf=t+u" -frames:v 96 -c:v libx265 -preset fast \
-            -pix_fmt yuv420p -x265-params "log-level=error:hash=1:bitrate=8000:vbv-maxrate=10000:vbv-bufsize=10000" \
+          # ťažší tok ako skutočný film: zrno (časový šum) a 8 Mb/s – viac koeficientov, CABAC a transformácií.
+          # Rovnaký v každom behu (porovnateľné merania): pevné semienko šumu a x265 v jednom vlákne – riadenie toku
+          # (VBV) s viacerými vláknami x265 dáva pri každom behu iný tok.
+          ffmpeg $z -i "testsrc2=size=1920x1080:rate=24,noise=alls=10:allf=t+u:all_seed=12345" -frames:v 96 \
+            -c:v libx265 -preset fast -pix_fmt yuv420p \
+            -x265-params "log-level=error:hash=1:bitrate=8000:vbv-maxrate=10000:vbv-bufsize=10000:pools=1:frame-threads=1" \
             "$b/toky/film1080_tazky.hevc"
+          sha256sum "$b"/toky/film*.hevc | tee -a "$GITHUB_STEP_SUMMARY"
           for d in toky/norma/AMP_D* toky/norma/TILES_A* toky/norma/WPP_D_ericsson_MAIN_*; do
             if [ -d "$d" ]; then cp -r "$d" "$b/toky/"; fi
           done
