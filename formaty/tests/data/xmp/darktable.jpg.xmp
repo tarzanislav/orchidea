@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 4.4.0-Exiv2">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:exif="http://ns.adobe.com/exif/1.0/"
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:lr="http://ns.adobe.com/lightroom/1.0/"
+    xmlns:darktable="http://darktable.sf.net/"
+   exif:DateTimeOriginal="2024:05:10 10:00:00"
+   xmp:Rating="1"
+   xmpMM:DerivedFrom="foto.jpg"
+   darktable:import_timestamp="63852156000123456"
+   darktable:change_timestamp="63852156789000000"
+   darktable:export_timestamp="0"
+   darktable:print_timestamp="0"
+   darktable:xmp_version="5"
+   darktable:raw_params="0"
+   darktable:auto_presets_applied="1"
+   darktable:history_end="3"
+   darktable:iop_order_version="4">
+   <dc:subject>
+    <rdf:Bag>
+     <rdf:li>kvet</rdf:li>
+     <rdf:li>skleník</rdf:li>
+    </rdf:Bag>
+   </dc:subject>
+   <lr:hierarchicalSubject>
+    <rdf:Bag>
+     <rdf:li>darktable|format|jpg</rdf:li>
+     <rdf:li>kvet</rdf:li>
+     <rdf:li>skleník</rdf:li>
+    </rdf:Bag>
+   </lr:hierarchicalSubject>
+   <darktable:masks_history>
+    <rdf:Seq/>
+   </darktable:masks_history>
+   <darktable:history>
+    <rdf:Seq>
+     <rdf:li
+      darktable:num="0"
+      darktable:operation="colorin"
+      darktable:enabled="1"
+      darktable:modversion="7"
+      darktable:params="gz48eJzjZBgFo2AU0AsAAAiQAAE="
+      darktable:multi_name=""
+      darktable:multi_priority="0"
+      darktable:blendop_version="13"
+      darktable:blendop_params="gz11eJxjYIAAABAAAQ=="/>
+     <rdf:li
+      darktable:num="1"
+      darktable:operation="exposure"
+      darktable:enabled="1"
+      darktable:modversion="6"
+      darktable:params="0000000000000000cdcc4c3e00000000"
+      darktable:multi_name=""
+      darktable:multi_priority="0"
+      darktable:blendop_version="13"
+      darktable:blendop_params="gz11eJxjYIAAABAAAQ=="/>
+     <rdf:li
+      darktable:num="2"
+      darktable:operation="filmicrgb"
+      darktable:enabled="1"
+      darktable:modversion="7"
+      darktable:params="gz12eJxjYGBgMGBgYGBkYGBgAAAEhAAE"
+      darktable:multi_name="&lt;skúška &amp; test&gt;"
+      darktable:multi_priority="0"
+      darktable:blendop_version="13"
+      darktable:blendop_params="gz11eJxjYIAAABAAAQ=="/>
+    </rdf:Seq>
+   </darktable:history>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>

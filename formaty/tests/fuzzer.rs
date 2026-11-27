@@ -308,3 +308,36 @@ fn fuzzer_exif_iptc() {
         17,
     );
 }
+
+#[test]
+fn fuzzer_xmp() {
+    use orchidea_formaty::xmp;
+    let darktable =
+        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/xmp/darktable.jpg.xmp")).unwrap();
+    let novy =
+        xmp::novy(&xmp::Zmena { hodnotenie: Some(2), kluce: Some(vec!["a".into(), "b".into()]) }).unwrap();
+    let kompaktny = br#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:xap="http://ns.adobe.com/xap/1.0/" xap:Rating="3"/></rdf:RDF>"#.to_vec();
+    let zmeny = [
+        xmp::Zmena { hodnotenie: Some(5), kluce: None },
+        xmp::Zmena { hodnotenie: None, kluce: Some(vec!["kvet".into(), "nové & <slovo>".into()]) },
+        xmp::Zmena { hodnotenie: Some(-1), kluce: Some(vec![]) },
+    ];
+    fuzz(
+        "XMP",
+        &[darktable, novy, kompaktny],
+        |d| {
+            let _ = xmp::citaj(d);
+            for z in &zmeny {
+                // úprava buď odmietne, alebo dá súbor, ktorý presne obsahuje zmenu a druhá úprava ho nezmení
+                if let Ok(v) = xmp::uprav(d, z) {
+                    let u = xmp::citaj(&v).expect("upravený XMP sa musí dať prečítať");
+                    if let Some(h) = z.hodnotenie {
+                        assert_eq!(u.hodnotenie, Some(h));
+                    }
+                    assert_eq!(xmp::uprav(&v, z).expect("druhá úprava"), v, "úprava nie je ustálená");
+                }
+            }
+        },
+        0x584D50,
+    );
+}

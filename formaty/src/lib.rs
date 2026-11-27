@@ -13,6 +13,7 @@ pub mod png;
 pub mod polovicna;
 pub mod priestor;
 pub mod tiff;
+pub mod xmp;
 
 pub use obraz::{Cicp, Farba, Limity, Metadata, Model, Obraz, Popis, Vzorky};
 
