@@ -723,7 +723,18 @@ fn rychlost_siete(mbs: u32) -> String {
 #[cfg(target_pointer_width = "64")]
 const POISTKA_VIDEA: &str = "VIDEO-BEZI.TXT";
 
-fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex<Vec<String>>>) {
+/// R244: tepelný pokus (9 fáz po 15 min, 2 h 15 min) robí karta sama len vtedy, keď ho táto verzia potrebuje
+/// (zmena chladu, ovládačov obrazu alebo periférií) – inak **rýchla skúška**: video, zvuk, HEVC a záverečný záznam
+/// hneď po nich (3–15 min). Vlastník 27. 11. 2026: „na aký čas sa dá skrátiť to testovanie“. Funkčné skúšky
+/// dobehnú do ~2,5 min po štarte (Odroid C4 27. 11.: video 21–86 s, HEVC 91–134 s); pokus ich len predlžoval
+/// na 2 h 20 min. Zapína ho relácia A pre kartu, ktorá meria teplo; vlastník kedykoľvek riadkom `pokus=ano`.
+const TEPELNY_POKUS_KARTY: bool = false;
+
+fn spusti_skusku_videa(
+    skusat: bool,
+    spustaci: Option<String>,
+    riadky: Arc<Mutex<Vec<String>>>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let pridaj = |r: String| {
             hlas(&format!("video: {r}"));
@@ -863,7 +874,7 @@ fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex
             let _ = (skusat, spustaci);
             pridaj("dekodér videa: len s 64-bitovým jadrom".into());
         }
-    });
+    })
 }
 
 /// Popis odpojených radičov kariet (R178).
@@ -1734,7 +1745,9 @@ pub fn spusti() {
         }
     }
     // R122: samomeranie – len ako PID 1 (pripája kartu); vypne sa nastavením `meranie=nie` v SKLENIK.TXT
-    let mut merania = pid1.then(zaznam::Riadenie::default);
+    // R244: bez tepelného pokusu rýchla skúška (záznam pri štarte a po skúškach), inak 30-minútové samomeranie
+    let mut merania = pid1
+        .then(|| if TEPELNY_POKUS_KARTY { zaznam::Riadenie::default() } else { zaznam::Riadenie::rychla() });
     let predpona_merania = samomeranie::predpona(&model, "", zaznam::seriove_cislo().as_deref());
     let mut vytazenie_teraz: Option<f64> = None;
     let pismo = Pismo::stonka();
@@ -1827,6 +1840,10 @@ pub fn spusti() {
                 match (p, pokus_hotovy_tu) {
                     (Some(false), _) => "vypnutý (pokus=nie)".to_string(),
                     (Some(true), _) => "pri každom štarte (pokus=ano)".into(),
+                    (None, _) if !TEPELNY_POKUS_KARTY => "táto karta ho nerobí – rýchla skúška (R244): video, zvuk, \
+                                                          HEVC a záverečný záznam hneď po nich (3–15 min); pokus \
+                                                          zapne pokus=ano"
+                        .into(),
                     (None, true) => "na tomto zariadení s touto kartou už hotový – bežný režim".into(),
                     (None, false) => "prvý štart tejto karty na zariadení – urobí sa sám (2 h 15 min) aj so \
                                       skúškou videa, ak beží vlastný ovládač obrazu"
@@ -2115,6 +2132,8 @@ pub fn spusti() {
     // R223: meranie vlastného dekodéra HEVC (spolu s prvým pokusom na zariadení)
     let hevc_riadky: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let mut hevc_spustene = false;
+    // R244: vlákna skúšok (video, zvuk, HEVC) – záverečný záznam rýchlej skúšky počká, kým dobehnú
+    let mut skusky: Vec<std::thread::JoinHandle<()>> = Vec::new();
     // R226: skúšobný tón cez HDMI
     let zvuk_riadky: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let mut zvuk_spusteny = false;
@@ -2686,14 +2705,14 @@ pub fn spusti() {
                 // R199: pri prvom (automatickom) pokuse na zariadení aj skúška videa
                 || (tv && !pokus_hotovy_tu && nastavenie.as_ref().is_some_and(|(_, n)| n.pokus.is_none()));
             let spustaci = nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string());
-            spusti_skusku_videa(skusat, spustaci, video_riadky.clone());
+            skusky.push(spusti_skusku_videa(skusat, spustaci, video_riadky.clone()));
         }
         // R226: zvuk cez HDMI – krátky tón (1,5 s, −20 dBFS) pri každom štarte, keď je obraz hore; v zázname,
         // čo zvuková karta prijala. Vlastné vlákno – zápis čaká na zvukovú kartu.
         if pid1 && !skuska && !zvuk_spusteny && novinka(&nastavenie, "zvuk_hdmi") && hore >= 30.0 {
             zvuk_spusteny = true;
             let riadky = zvuk_riadky.clone();
-            let _ = std::thread::Builder::new().name("zvuk".into()).spawn(move || {
+            let vlakno = std::thread::Builder::new().name("zvuk".into()).spawn(move || {
                 let mut v = Vec::new();
                 let karty = std::fs::read_to_string("/proc/asound/cards").unwrap_or_default();
                 // riadky „N [id]: ovládač – meno“ (druhý riadok každej karty je len dlhé meno)
@@ -2747,6 +2766,9 @@ pub fn spusti() {
                     *r = v;
                 }
             });
+            if let Ok(h) = vlakno {
+                skusky.push(h);
+            }
         }
         // R223: meranie vlastného dekodéra HEVC – pri prvom pokuse na zariadení (alebo hevc=ano), po skúške videa
         if pid1
@@ -2764,7 +2786,12 @@ pub fn spusti() {
                 || (!pokus_hotovy_tu && n.is_some_and(|n| n.pokus.is_none()))
                 || n.and_then(|n| n.pokus) == Some(true);
             if merat {
-                crate::hevc_meranie::spusti(profil.strop, hevc_riadky.clone(), hlas, citanie_obrazu_mb_s);
+                skusky.push(crate::hevc_meranie::spusti(
+                    profil.strop,
+                    hevc_riadky.clone(),
+                    hlas,
+                    citanie_obrazu_mb_s,
+                ));
             }
         }
 
@@ -3297,7 +3324,11 @@ pub fn spusti() {
             && !pokus
             && !vypnute
             && merania.as_ref().is_some_and(|m| m.zaciatok_s().is_none())
-            && (nastavenie.as_ref().and_then(|(_, n)| n.pokus).unwrap_or(!pokus_hotovy_tu) || dlhy)
+            && (nastavenie
+                .as_ref()
+                .and_then(|(_, n)| n.pokus)
+                .unwrap_or(TEPELNY_POKUS_KARTY && !pokus_hotovy_tu)
+                || dlhy)
             && displej.as_ref().is_some_and(|d| d.je_kms())
         {
             merania = Some(zaznam::Riadenie::s_milnikmi(chlad::milniky_pokusu(pocet_faz)));
@@ -3310,13 +3341,20 @@ pub fn spusti() {
             && !pokus_bez_kms_ohlaseny
             && !vypnute
             && merania.as_ref().is_some_and(|m| m.zaciatok_s().is_some())
-            && nastavenie.as_ref().and_then(|(_, n)| n.pokus).unwrap_or(!pokus_hotovy_tu)
+            && nastavenie
+                .as_ref()
+                .and_then(|(_, n)| n.pokus)
+                .unwrap_or(TEPELNY_POKUS_KARTY && !pokus_hotovy_tu)
         {
             pokus_bez_kms_ohlaseny = true;
             hlas(
                 "tepelný pokus (R199): nespustený – vlastný ovládač obrazu nebeží (obraz od firmvéru); namiesto neho \
                  30-minútové samomeranie",
             );
+        }
+        // R244: rýchla skúška – záverečný záznam až po skúškach
+        if let Some(m) = merania.as_mut() {
+            m.skusky_bezia(skusky.iter().any(|h| !h.is_finished()));
         }
         let merania_teraz = merania.as_mut().filter(|_| !vypnute);
         if let Some(m) = merania_teraz {
@@ -3337,7 +3375,10 @@ pub fn spusti() {
             // 26. 11.: monitor sa ozval v 53. s, pokus sa už nespustil)
             let cakat_na_obraz = tv
                 && up < 180.0
-                && nastavenie.as_ref().and_then(|(_, n)| n.pokus).unwrap_or(!pokus_hotovy_tu)
+                && nastavenie
+                    .as_ref()
+                    .and_then(|(_, n)| n.pokus)
+                    .unwrap_or(TEPELNY_POKUS_KARTY && !pokus_hotovy_tu)
                 && !displej.as_ref().is_some_and(|d| d.je_kms())
                 && !vystupy_hdmi().is_empty();
             if !cakat_na_obraz

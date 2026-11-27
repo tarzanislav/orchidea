@@ -292,7 +292,7 @@ pub fn spusti(
     riadky: Arc<Mutex<Vec<String>>>,
     hlas: fn(&str),
     citanie_obrazu: fn() -> Option<u32>,
-) {
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let pridaj = |r: String| {
             hlas(&format!("HEVC (R223): {r}"));
@@ -424,7 +424,7 @@ pub fn spusti(
         }
         drop(takt);
         pridaj("meranie HEVC hotové".into());
-    });
+    })
 }
 
 fn vysledok_s_teplotou(b: &Beh) -> String {

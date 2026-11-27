@@ -821,9 +821,27 @@ pub struct Riadenie {
     nosic: Option<String>,
     chyba: Option<String>,
     dalsi_pokus: Option<Instant>,
+    /// R244: rýchla skúška – záverečný záznam čaká, kým dobehnú skúšky (najdlhšie `RYCHLA_NAJDLHSIE_MIN`).
+    drzat_koniec: bool,
+    skusky_bezia: bool,
 }
 
+/// R244: minúty záznamov rýchlej skúšky – pri štarte a záverečný (najskôr v 3. minúte, keď dobehnú skúšky).
+pub const RYCHLE_MILNIKY: [u32; 2] = [0, 3];
+/// R244: záverečný záznam rýchlej skúšky najneskôr v 15. minúte, aj keď niektorá skúška nedobehla.
+pub const RYCHLA_NAJDLHSIE_MIN: u64 = 15;
+
 impl Riadenie {
+    /// R244: rýchla skúška – záznam pri štarte a záverečný hneď, ako dobehnú skúšky videa, zvuku a HEVC.
+    pub fn rychla() -> Riadenie {
+        Riadenie { milniky: RYCHLE_MILNIKY.to_vec(), drzat_koniec: true, ..Riadenie::default() }
+    }
+
+    /// R244: bežia ešte skúšky? (hlavná slučka to nastaví v každom kroku)
+    pub fn skusky_bezia(&mut self, bezia: bool) {
+        self.skusky_bezia = bezia;
+    }
+
     /// Meranie s vlastnými minútami záznamov (R160 – tepelný pokus).
     pub fn s_milnikmi(milniky: Vec<u32>) -> Riadenie {
         Riadenie { milniky, ..Riadenie::default() }
@@ -892,7 +910,13 @@ impl Riadenie {
             return None;
         }
         if let Some(&m) = self.milniky().get(self.dalsi) {
-            return (z.elapsed() >= Duration::from_secs(m as u64 * 60)).then_some(Uloha::Zaznam(m));
+            let uplynulo = z.elapsed();
+            // R244: záverečný záznam rýchlej skúšky počká na skúšky (najdlhšie RYCHLA_NAJDLHSIE_MIN)
+            let cakat = self.drzat_koniec
+                && self.skusky_bezia
+                && self.dalsi + 1 == self.milniky().len()
+                && uplynulo < Duration::from_secs(RYCHLA_NAJDLHSIE_MIN * 60);
+            return (uplynulo >= Duration::from_secs(m as u64 * 60) && !cakat).then_some(Uloha::Zaznam(m));
         }
         (!self.fronta.is_empty() && self.dalsi_pokus.is_none_or(|t| Instant::now() >= t))
             .then_some(Uloha::Opakovanie)
@@ -1103,5 +1127,37 @@ mod testy_r221 {
         assert!(!je_chybny(d));
         assert_eq!(disk_oddielu("mmcblk0p1"), "mmcblk0");
         assert_eq!(disk_oddielu("sda1"), "sda");
+    }
+}
+
+#[cfg(test)]
+mod testy_r244 {
+    use super::*;
+
+    /// Rýchla skúška: záverečný záznam najskôr v 3. minúte, počká na skúšky, najneskôr v 15. minúte.
+    #[test]
+    fn r244_rychla_skuska_caka_na_skusky() {
+        let teraz = Instant::now();
+        let pred = |s: u64| teraz.checked_sub(Duration::from_secs(s));
+        let (Some(t1), Some(t4), Some(t16)) = (pred(60), pred(4 * 60), pred(16 * 60)) else {
+            return; // hodiny systému bežia kratšie ako 16 min – nedá sa nastaviť začiatok v minulosti
+        };
+        let mut r = Riadenie::rychla();
+        assert_eq!(r.milniky(), &RYCHLE_MILNIKY);
+        r.dalsi = 1; // záznam 0. minúty je hotový
+        r.zaciatok = Some((t1, 10));
+        assert!(r.na_rade().is_none(), "pred 3. minútou nie");
+        r.zaciatok = Some((t4, 10));
+        r.skusky_bezia(true);
+        assert!(r.na_rade().is_none(), "skúšky ešte bežia – čaká");
+        r.skusky_bezia(false);
+        assert!(matches!(r.na_rade(), Some(Uloha::Zaznam(3))), "skúšky dobehli – záverečný záznam");
+        r.zaciatok = Some((t16, 10));
+        r.skusky_bezia(true);
+        assert!(matches!(r.na_rade(), Some(Uloha::Zaznam(3))), "najneskôr v 15. minúte aj so skúškami");
+        // 30-minútové samomeranie a pokus na skúšky nečakajú
+        let mut d = Riadenie { dalsi: 3, zaciatok: Some((t16, 10)), ..Riadenie::default() };
+        d.skusky_bezia(true);
+        assert!(d.na_rade().is_none(), "30. minúta ešte nie je");
     }
 }
