@@ -725,7 +725,9 @@ pub fn stav_systemu() -> String {
             ),
         );
     }
-    // R130 (prvý krok – len meranie): napätia regulátorov dosky, základ pre budúcu skúšku podvoltovania
+    // R130 (prvý krok – len meranie): napätia regulátorov dosky, základ pre budúcu skúšku podvoltovania.
+    // R243: `microvolts` je napätie, ktoré ovládač regulátora nastavil (pri pevných regulátoroch hodnota z popisu
+    // hardvéru) – nie meranie. Odroid C4 27. 11. bežal z adaptéra 5 V (pod minimom 5,5 V) a riadok ukázal „12V 12.000 V“.
     let mut napatia: Vec<String> = fs::read_dir("/sys/class/regulator")
         .into_iter()
         .flatten()
@@ -738,7 +740,10 @@ pub fn stav_systemu() -> String {
         .collect();
     napatia.sort();
     if !napatia.is_empty() {
-        riadok(&mut t, format!("napätia regulátorov: {}", napatia.join(" · ")));
+        riadok(
+            &mut t,
+            format!("napätia regulátorov (nastavené ovládačom, nie merané): {}", napatia.join(" · ")),
+        );
     }
     // R193: skutočné takty a napätia grafického čipu Raspberry Pi zo schránky firmvéru
     if let Ok(s) = crate::vcio::Schranka::otvor() {
