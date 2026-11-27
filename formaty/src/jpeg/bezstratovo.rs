@@ -110,6 +110,72 @@ pub struct Vyrez {
     pub vyska: usize,
 }
 
+/// Mriežka, na ktorú sa zarovná začiatok bezstratového orezania, v súradniciach obrazu po transformácii `t`
+/// **bez** odstránenia neúplných MCU (tak, ako ho ukáže prehliadač pri bežnom otočení).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mriezka {
+    /// Rozmer MCU po transformácii (šírka, výška).
+    pub mcu: (usize, usize),
+    /// Neúplný okraj vľavo a hore, ktorý bezstratová transformácia odstráni (0 – 15 bodov): bod (x, y)
+    /// prehliadača je v bezstratovom výsledku bod (x − posun.0, y − posun.1).
+    pub posun: (usize, usize),
+}
+
+/// Mriežka bezstratového orezania – stačí hlavička súboru (po SOF), koeficienty sa nečítajú.
+pub fn mriezka(data: &[u8], t: Transformacia) -> Option<Mriezka> {
+    let (w, h, hmax, vmax) = hlavicka_sof(data)?;
+    let (mw, mh) = (8 * hmax, 8 * vmax);
+    let (vymen, zrk_x, zrk_y) = t.rozklad();
+    // zrkadlená pôvodná os: jej neúplné MCU na konci sa presunie na začiatok a odstráni sa
+    let (px, py) = (if zrk_x { w % mw } else { 0 }, if zrk_y { h % mh } else { 0 });
+    Some(if vymen {
+        Mriezka { mcu: (mh, mw), posun: (py, px) }
+    } else {
+        Mriezka { mcu: (mw, mh), posun: (px, py) }
+    })
+}
+
+/// (šírka, výška, najväčšie vodorovné a zvislé podvzorkovanie) z prvého SOF.
+fn hlavicka_sof(d: &[u8]) -> Option<(usize, usize, usize, usize)> {
+    if d.get(0..2) != Some(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut i = 2;
+    loop {
+        while d.get(i) == Some(&0xFF) && d.get(i + 1) == Some(&0xFF) {
+            i += 1;
+        }
+        if *d.get(i)? != 0xFF {
+            return None;
+        }
+        let m = *d.get(i + 1)?;
+        i += 2;
+        if m == 0x01 || (0xD0..=0xD8).contains(&m) {
+            continue;
+        }
+        if m == 0xD9 || m == 0xDA {
+            return None;
+        }
+        let dlzka = u16::from_be_bytes([*d.get(i)?, *d.get(i + 1)?]) as usize;
+        if matches!(m, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF) {
+            let s = d.get(i + 2..i + dlzka)?;
+            let (h, w, n) = (
+                u16::from_be_bytes([*s.get(1)?, *s.get(2)?]) as usize,
+                u16::from_be_bytes([*s.get(3)?, *s.get(4)?]) as usize,
+                *s.get(5)? as usize,
+            );
+            let (mut hmax, mut vmax) = (1, 1);
+            for c in 0..n {
+                let b = *s.get(6 + c * 3 + 1)?;
+                hmax = hmax.max((b >> 4) as usize);
+                vmax = vmax.max((b & 15) as usize);
+            }
+            return (w > 0 && h > 0).then_some((w, h, hmax, vmax));
+        }
+        i += dlzka;
+    }
+}
+
 /// Bezstratovo upraví JPEG: transformácia, potom voliteľné orezanie; `natocenie_1` nastaví v Exif natočenie 1.
 pub fn uprav(
     data: &[u8],
@@ -287,6 +353,23 @@ fn orez(k: Koeficienty, v: Vyrez) -> Vysledok<Koeficienty> {
 #[cfg(test)]
 mod skusky {
     use super::*;
+
+    #[test]
+    fn mriezka_orezania_podla_hlavicky() {
+        // SOF0: 100 × 75, Y 2×2, Cb Cr 1×1 (4:2:0) → MCU 16 × 16, neúplné 4 a 11 bodov
+        let mut d = vec![0xFF, 0xD8, 0xFF, 0xE0, 0, 4, 0, 0, 0xFF, 0xC0, 0, 17, 8, 0, 75, 0, 100, 3];
+        d.extend_from_slice(&[1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
+        d.extend_from_slice(&[0xFF, 0xD9]);
+        let m = |t| mriezka(&d, t).unwrap();
+        assert_eq!(m(Transformacia::Ziadna), Mriezka { mcu: (16, 16), posun: (0, 0) });
+        assert_eq!(m(Transformacia::ZrkadloVodorovne), Mriezka { mcu: (16, 16), posun: (4, 0) });
+        assert_eq!(m(Transformacia::Otoc180), Mriezka { mcu: (16, 16), posun: (4, 11) });
+        // otočenie vpravo: nové x = H − 1 − y – vľavo je pôvodný spodný neúplný okraj
+        assert_eq!(m(Transformacia::Otoc90), Mriezka { mcu: (16, 16), posun: (11, 0) });
+        assert_eq!(m(Transformacia::Otoc270), Mriezka { mcu: (16, 16), posun: (0, 4) });
+        assert!(mriezka(&d[..12], Transformacia::Ziadna).is_none());
+        assert!(mriezka(b"nie je JPEG", Transformacia::Ziadna).is_none());
+    }
 
     #[test]
     fn zlozenie_transformacii() {

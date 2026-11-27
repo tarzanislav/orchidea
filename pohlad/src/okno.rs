@@ -35,6 +35,8 @@ pub fn povel_znaku(c: char) -> Option<Povel> {
         '\u{13}' => Povel::Ulozit,
         '\u{f}' => Povel::Otvorit,
         '\u{b}' => Povel::PridajKluc,
+        // Enter mimo písania: potvrdiť orezanie
+        '\r' => Povel::OrezPotvrd,
         _ => return None,
     })
 }

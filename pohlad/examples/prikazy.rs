@@ -8,7 +8,7 @@
 //!   `NAJVIAC x PRIEMER x PSNR x SSIM x ROZDIELNYCH n`
 //! - `prikazy snimka <súbor|priečinok> <šírka> <výška> <výstup.png> [povely …]` – jadro okna bez okna: povely
 //!   `dalsi predosly prvy posledny priblizit oddialit 1:1 prisposobit oznac rezim pas udaje otoc otocvlavo zrkadlo
-//!   orezat jas kontrast gama zmensit spat znova ulozit prezentacia pauza tik tahaj:dx,dy
+//!   orezat orez-potvrd orez-zrus orez-pomer:4x3 jas kontrast gama zmensit spat znova ulozit prezentacia pauza tik tahaj:dx,dy
 //!   koliesko:k,x,y delic:x`; po každom sa počká na prácu na pozadí; riadky `VYKRESLENI n ZOBUDENI n POKOJ ok|…`
 //! - `prikazy xmp <fotka> citaj | hodnotenie <-1..5> | pridaj <slovo> | odober <slovo>` – hodnotenie a kľúčové
 //!   slová v súbore XMP vedľa fotky (`fotka.jpg.xmp`); vypíše `HODNOTENIE n` a riadky `KLUC slovo`
@@ -172,6 +172,18 @@ fn spusti(a: &[String]) -> Result<(), String> {
                     ("otocvlavo", _) => Vstup::Povel(Povel::OtocVlavo),
                     ("zrkadlo", _) => Vstup::Povel(Povel::Zrkadlo),
                     ("orezat", _) => Vstup::Povel(Povel::Orezat),
+                    ("orez-potvrd", _) => Vstup::Povel(Povel::OrezPotvrd),
+                    ("orez-zrus", _) => Vstup::Povel(Povel::OrezZrus),
+                    ("orez-pomer", t) => {
+                        use orchidea_pohlad::orezanie::Pomer;
+                        Vstup::Povel(Povel::OrezPomer(match t {
+                            "1x1" => Pomer::Stvorec,
+                            "4x3" => Pomer::P4x3,
+                            "3x2" => Pomer::P3x2,
+                            "16x9" => Pomer::P16x9,
+                            _ => Pomer::Volny,
+                        }))
+                    }
                     ("jas", _) => Vstup::Povel(Povel::JasViac),
                     ("kontrast", _) => Vstup::Povel(Povel::KontrastViac),
                     ("gama", _) => Vstup::Povel(Povel::GamaViac),

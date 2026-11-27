@@ -15,10 +15,11 @@
 
 use crate::herbar::{self, Herbar, Zaznam, ZmenaFotky};
 use crate::nahlady::{self, Polozka};
+use crate::orezanie::{Orezanie, Pomer, Uchop};
 use crate::panel::{self, PrvokMeta};
 use crate::porovnanie;
 use crate::upravy::{self, Historia, Uprava};
-use orchidea_formaty::jpeg::bezstratovo::Transformacia;
+use orchidea_formaty::jpeg::bezstratovo::{self, Mriezka, Transformacia};
 use orchidea_formaty::obraz::{Limity, Obraz, Vzorky};
 use orchidea_jadro::paralel;
 use orchidea_pismo::{Farba, Pismo, Platno};
@@ -54,6 +55,14 @@ pub enum Povel {
     Zrkadlo,
     /// Orezať na zobrazený výrez.
     Orezat,
+    /// Režim orezania: pomer strán (znova ten istý = na výšku / na šírku).
+    OrezPomer(Pomer),
+    /// Režim orezania: vymeniť na šírku / na výšku.
+    OrezOtocPomer,
+    /// Režim orezania: orezať na výber (Enter).
+    OrezPotvrd,
+    /// Režim orezania: zrušiť (Esc).
+    OrezZrus,
     JasViac,
     JasMenej,
     KontrastViac,
@@ -367,6 +376,10 @@ pub struct Prehliadac {
     pod_mysou: Option<&'static str>,
     /// Kliknutie začalo na paneli – ťahanie neposúva obraz.
     klik_v_paneli: bool,
+    /// Režim orezania výberom (tlačidlo Orezať, X).
+    orezanie: Option<Orezanie>,
+    /// Poloha kurzora pri ťahaní výberu (body okna).
+    orez_kurzor: (f32, f32),
     /// Súbor katalógu fotografií (Herbár).
     katalog_subor: Option<PathBuf>,
     herbar: Option<Herbar>,
@@ -579,6 +592,8 @@ impl Prehliadac {
             napoveda: false,
             pod_mysou: None,
             klik_v_paneli: false,
+            orezanie: None,
+            orez_kurzor: (0.0, 0.0),
             katalog_subor: None,
             herbar: None,
             katalog: false,
@@ -1070,7 +1085,13 @@ impl Prehliadac {
     }
 
     fn rozlozenie(&self) -> Vec<panel::Umiestnenie> {
-        let prvky = if self.katalog { panel::KATALOG } else { panel::PREHLIADAC };
+        let prvky = if self.katalog {
+            panel::KATALOG
+        } else if self.orezanie.is_some() {
+            panel::OREZANIE
+        } else {
+            panel::PREHLIADAC
+        };
         if self.panel_viditelny() { panel::rozloz(prvky, &self.pismo, self.sirka) } else { Vec::new() }
     }
 
@@ -1249,6 +1270,8 @@ impl Prehliadac {
             Povel::Rezim => self.oznaceny.is_some() && self.polozky.len() > 1,
             Povel::Prezentacia => !self.polozky.is_empty(),
             Povel::Napoveda => true,
+            Povel::OrezPomer(_) | Povel::OrezOtocPomer | Povel::OrezZrus => self.orezanie.is_some(),
+            Povel::OrezPotvrd => self.orezanie.as_ref().is_some_and(|o| !o.cely_obraz()),
             _ => obraz,
         }
     }
@@ -1263,7 +1286,10 @@ impl Prehliadac {
 
     /// Esc: zavrie nápovedu alebo prezentáciu; vráti `false`, ak nie je čo zavrieť (okno sa má zavrieť).
     pub fn esc(&mut self) -> bool {
-        if self.napoveda {
+        if self.orezanie.take().is_some() {
+            self.zmena = true;
+            true
+        } else if self.napoveda {
             self.napoveda = false;
             self.zmena = true;
             true
@@ -1351,6 +1377,142 @@ impl Prehliadac {
         ))
     }
 
+    /// Zapne režim orezania: výber = zobrazený výrez (ak je obraz priblížený), inak celý obraz.
+    fn zacni_orezanie(&mut self) {
+        let Some(s) = self.aktualna() else { return };
+        let vyrez = self.zobrazeny_vyrez(&s);
+        let mriezka = self.mriezka_bezstratovo();
+        self.orezanie = Some(Orezanie::novy(s.sirka, s.vyska, vyrez, mriezka));
+        self.sprava = None;
+        self.zmena = true;
+    }
+
+    /// Mriežka bezstratového orezania aktuálneho JPEG (len ak doterajšie úpravy sú geometrické a bez orezania).
+    fn mriezka_bezstratovo(&self) -> Option<Mriezka> {
+        use std::io::Read;
+        let t = match self.historie.get(&self.aktualny).map(|h| h.bezstratova()) {
+            None => Transformacia::Ziadna,
+            Some(Some((t, None))) => t,
+            _ => return None,
+        };
+        let cesta = &self.polozky.get(self.aktualny)?.cesta;
+        // stačí hlavička (Exif s natočením a SOF)
+        let mut d = Vec::new();
+        std::fs::File::open(cesta).ok()?.take(1 << 20).read_to_end(&mut d).ok()?;
+        if orchidea_formaty::rozpoznaj(&d) != Some(orchidea_formaty::Format::Jpeg) {
+            return None;
+        }
+        let n = orchidea_formaty::citaj_popis(&d, &Limity::default()).map_or(1, |p| p.metadata.natocenie);
+        bezstratovo::mriezka(&d, Transformacia::z_natocenia(n).potom(t))
+    }
+
+    /// Potvrdí orezanie (Enter, tlačidlo Orezať); výber celého obrazu nič neoreže.
+    fn potvrd_orezanie(&mut self) -> bool {
+        let Some(o) = self.orezanie.take() else { return false };
+        self.zmena = true;
+        if o.cely_obraz() {
+            return true;
+        }
+        let (x, y, sirka, vyska) = o.vysledok();
+        self.historie.entry(self.aktualny).or_default().pridaj(Uprava::Orez { x, y, sirka, vyska });
+        self.prisposob();
+        self.po_uprave();
+        true
+    }
+
+    /// Vstup v režime orezania; `None` = spracuje sa ako obvykle (panel, priblíženie …).
+    fn vstup_orezania(&mut self, v: &Vstup) -> Option<bool> {
+        let s = self.aktualna()?;
+        let z = self.mierka(&s);
+        let (w, h) = self.plocha();
+        let hore = self.hore() as f32;
+        let ox = w as f32 / 2.0 + self.posun.0 - s.sirka as f32 * z / 2.0;
+        let oy = h as f32 / 2.0 + self.posun.1 - s.vyska as f32 * z / 2.0;
+        let do_obrazu = |x: f32, y: f32| ((x - ox) / z, (y - hore - oy) / z);
+        // úchop 8 bodov obrazovky
+        let tolerancia = 8.0 / z;
+        let v_ploche = |y: f32| y >= hore && y < hore + h as f32;
+        match v {
+            Vstup::Povel(p) => match p {
+                Povel::Orezat | Povel::OrezPotvrd => Some(self.potvrd_orezanie()),
+                Povel::OrezZrus => {
+                    self.orezanie = None;
+                    self.zmena = true;
+                    Some(true)
+                }
+                Povel::OrezPomer(pomer) => {
+                    self.orezanie.as_mut()?.nastav_pomer(*pomer);
+                    self.zmena = true;
+                    Some(true)
+                }
+                Povel::OrezOtocPomer => {
+                    self.orezanie.as_mut()?.otoc_pomer();
+                    self.zmena = true;
+                    Some(true)
+                }
+                // Uložiť: najprv orezať na výber, potom uložiť
+                Povel::Ulozit => {
+                    self.potvrd_orezanie();
+                    None
+                }
+                Povel::Napoveda
+                | Povel::Panel
+                | Povel::Priblizit
+                | Povel::Oddialit
+                | Povel::Prisposobit
+                | Povel::Skutocna
+                | Povel::Udaje
+                | Povel::Pas => None,
+                // iný povel (ďalší obraz, otočenie …) orezanie zruší
+                _ => {
+                    self.orezanie = None;
+                    self.zmena = true;
+                    None
+                }
+            },
+            Vstup::Klik { x, y } if v_ploche(*y) && !self.napoveda => {
+                let (bx, by) = do_obrazu(*x, *y);
+                self.orez_kurzor = (*x, *y);
+                self.klik_v_paneli = false;
+                self.orezanie.as_mut()?.zacni(bx, by, tolerancia);
+                self.zmena = true;
+                Some(true)
+            }
+            Vstup::Klik { .. } => {
+                self.orezanie.as_mut()?.pusti();
+                None
+            }
+            Vstup::Tahaj { dx, dy } if self.orezanie.as_ref().is_some_and(Orezanie::taha) => {
+                self.orez_kurzor = (self.orez_kurzor.0 + dx, self.orez_kurzor.1 + dy);
+                let (bx, by) = do_obrazu(self.orez_kurzor.0, self.orez_kurzor.1);
+                let zmena = self.orezanie.as_mut()?.tahaj(bx, by);
+                self.zmena |= zmena;
+                Some(zmena)
+            }
+            Vstup::Mys { x, y } => {
+                // pohyb bez tlačidla = ťahanie skončilo; zvýrazní sa časť výberu pod myšou
+                let nove = if v_ploche(*y) {
+                    let (bx, by) = do_obrazu(*x, *y);
+                    self.orezanie.as_ref()?.uchop_na(bx, by, tolerancia)
+                } else {
+                    None
+                };
+                let o = self.orezanie.as_mut()?;
+                o.pusti();
+                if nove != o.pod_mysou {
+                    o.pod_mysou = nove;
+                    self.zmena = true;
+                }
+                None
+            }
+            Vstup::Otvor(_) => {
+                self.orezanie = None;
+                None
+            }
+            _ => None,
+        }
+    }
+
     /// Spracuje vstup; vráti, či treba prekresliť.
     pub fn vstup(&mut self, v: Vstup) -> bool {
         let pred = self.polozky.get(self.aktualny).map(|p| p.cesta.clone());
@@ -1377,6 +1539,11 @@ impl Prehliadac {
     }
 
     fn vstup_prehliadaca(&mut self, v: Vstup) -> bool {
+        if self.orezanie.is_some()
+            && let Some(r) = self.vstup_orezania(&v)
+        {
+            return r;
+        }
         let n = self.polozky.len();
         let povodny = self.aktualny;
         match v {
@@ -1522,14 +1689,10 @@ impl Prehliadac {
                         Povel::OtocVpravo => Uprava::Transformacia(Transformacia::Otoc90),
                         Povel::OtocVlavo => Uprava::Transformacia(Transformacia::Otoc270),
                         Povel::Zrkadlo => Uprava::Transformacia(Transformacia::ZrkadloVodorovne),
-                        Povel::Orezat => match self.zobrazeny_vyrez(&s) {
-                            Some((x, y, sirka, vyska)) => Uprava::Orez { x, y, sirka, vyska },
-                            None => {
-                                self.sprava = Some("orezanie: najprv priblížte výrez, ktorý má ostať".into());
-                                self.zmena = true;
-                                return true;
-                            }
-                        },
+                        Povel::Orezat => {
+                            self.zacni_orezanie();
+                            return true;
+                        }
                         Povel::JasViac => b(0.05, 1.0, 1.0),
                         Povel::JasMenej => b(-0.05, 1.0, 1.0),
                         Povel::KontrastViac => b(0.0, 1.1, 1.0),
@@ -1874,6 +2037,9 @@ impl Prehliadac {
             if rezim == Rezim::Deleny {
                 p.vypln(delic as i32, hore as i32, 1, h as i32, ZVYRAZNENIE);
             }
+            if let Some(o) = &self.orezanie {
+                self.kresli_orezanie(p, o, b, (ox, oy + hore as f32), z, (hore, h));
+            }
         } else if let Some(Err(e)) = self.snimky.get(&self.aktualny) {
             let t = format!("Obrázok sa nedá zobraziť: {e}");
             p.text(&self.pismo, &t, 16.0, (hore + h / 2) as f32, 15.0, 1.0, TEXT);
@@ -2088,12 +2254,94 @@ impl Prehliadac {
         }
     }
 
+    /// Výber orezania: stmavené okolie, rám, tretiny, úchopy a rozmer v bodoch.
+    fn kresli_orezanie(
+        &self,
+        p: &mut Platno,
+        o: &Orezanie,
+        s: &Snimka,
+        (ox, oy): (f32, f32),
+        z: f32,
+        (hore, h): (usize, usize),
+    ) {
+        let (x, y, w, vy) = o.vysledok();
+        let na_obrazovku = |bx: f32, by: f32| ((ox + bx * z).round() as i32, (oy + by * z).round() as i32);
+        let (ix0, iy0) = na_obrazovku(0.0, 0.0);
+        let (ix1, iy1) = na_obrazovku(s.sirka as f32, s.vyska as f32);
+        let (sx0, sy0) = na_obrazovku(x as f32, y as f32);
+        let (sx1, sy1) = na_obrazovku((x + w) as f32, (y + vy) as f32);
+        let (pw, ph) = (p.sirka as i32, p.vyska as i32);
+        let (r0, r1) = (iy0.max(hore as i32), iy1.min((hore + h) as i32).min(ph));
+        for r in r0.max(0)..r1 {
+            for c in ix0.max(0)..ix1.min(pw) {
+                if c < sx0 || c >= sx1 || r < sy0 || r >= sy1 {
+                    let i = r as usize * p.sirka + c as usize;
+                    p.body[i] = orchidea_pismo::zmiesaj(p.body[i], 0, 150);
+                }
+            }
+        }
+        // obdĺžnik zmiešaný s farbou, orezaný na plochu obrazu (nezasiahne panel ani riadky pod obrazom)
+        let dolu = ((hore + h) as i32).min(ph);
+        let ciara = |p: &mut Platno, x: i32, y: i32, cw: i32, ch: i32, f: Farba, a: u8| {
+            for r in y.max(hore as i32)..(y + ch).min(dolu) {
+                for c in x.max(0)..(x + cw).min(pw) {
+                    let i = r as usize * p.sirka + c as usize;
+                    p.body[i] = orchidea_pismo::zmiesaj(p.body[i], f, a);
+                }
+            }
+        };
+        // tretiny (pravidlo tretín) a rám
+        for k in 1..3 {
+            let tx = sx0 + (sx1 - sx0) * k / 3;
+            let ty = sy0 + (sy1 - sy0) * k / 3;
+            ciara(p, tx, sy0, 1, sy1 - sy0, 0xFFFFFF, 70);
+            ciara(p, sx0, ty, sx1 - sx0, 1, 0xFFFFFF, 70);
+        }
+        ciara(p, sx0, sy0, sx1 - sx0, 1, 0xFFFFFF, 255);
+        ciara(p, sx0, sy1 - 1, sx1 - sx0, 1, 0xFFFFFF, 255);
+        ciara(p, sx0, sy0, 1, sy1 - sy0, 0xFFFFFF, 255);
+        ciara(p, sx1 - 1, sy0, 1, sy1 - sy0, 0xFFFFFF, 255);
+        // úchopy v rohoch a v strede okrajov
+        let (cx, cy) = ((sx0 + sx1) / 2, (sy0 + sy1) / 2);
+        for (u, hx, hy) in [
+            (Uchop::LavyHorny, sx0, sy0),
+            (Uchop::PravyHorny, sx1, sy0),
+            (Uchop::LavyDolny, sx0, sy1),
+            (Uchop::PravyDolny, sx1, sy1),
+            (Uchop::Horny, cx, sy0),
+            (Uchop::Dolny, cx, sy1),
+            (Uchop::Lavy, sx0, cy),
+            (Uchop::Pravy, sx1, cy),
+        ] {
+            let f = if o.pod_mysou == Some(u) { ZVYRAZNENIE } else { 0xFFFFFF };
+            ciara(p, hx - 5, hy - 5, 10, 10, 0x101113, 255);
+            ciara(p, hx - 4, hy - 4, 8, 8, f, 255);
+        }
+        // rozmer v bodoch
+        let mut t = format!("{w} × {vy}");
+        if o.mriezka.is_some() {
+            t += " · bezstratovo";
+        }
+        let tw = self.pismo.sirka(&t, 13.0, 1.0) as i32 + 12;
+        let (lx, mut ly) = (sx0 + 6, sy0 + 8);
+        if sy1 - sy0 < 40 {
+            ly = sy1 + 8;
+        }
+        ly = ly.clamp(hore as i32 + 2, (dolu - 22).max(hore as i32 + 2));
+        ciara(p, lx, ly, tw, 20, 0x101113, 200);
+        p.text(&self.pismo, &t, (lx + 6) as f32, (ly + 15) as f32, 13.0, 1.0, 0xFFFFFF);
+    }
+
     fn kresli_panel(&self, p: &mut Platno) {
         if !self.panel_viditelny() {
             return;
         }
         let u = self.rozlozenie();
-        panel::kresli(p, &self.pismo, &u, self.pod_mysou, |pv| self.povel_aktivny(pv));
+        let zapnute = |pv: Povel| match (pv, &self.orezanie) {
+            (Povel::OrezPomer(x), Some(o)) => o.pomer == x,
+            _ => false,
+        };
+        panel::kresli(p, &self.pismo, &u, self.pod_mysou, |pv| self.povel_aktivny(pv), zapnute);
         if let Some(id) = self.pod_mysou {
             panel::kresli_tip(p, &self.pismo, &u, id);
         }
@@ -2134,6 +2382,16 @@ impl Prehliadac {
                 _ if self.rezim != Rezim::Jeden => t += " · počítam…",
                 _ => {}
             }
+        }
+        if let Some(o) = &self.orezanie {
+            let (_, _, w, h) = o.vysledok();
+            t = format!(
+                "Orezanie {w} × {h} · ťahajte rohy a okraje, vnútri posun · Enter orezať, Esc zrušiť"
+            );
+            if let Some(m) = o.mriezka {
+                t += &format!(" · JPEG bezstratovo (začiatok na mriežke {} × {})", m.mcu.0, m.mcu.1);
+            }
+            return t;
         }
         if let Some(h) = self.historie.get(&self.aktualny).filter(|h| !h.aktivne().is_empty()) {
             t += &format!(" · úprav: {} (Ctrl+Z späť, Ctrl+S uložiť)", h.aktivne().len());

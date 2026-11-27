@@ -241,6 +241,14 @@ pub fn uloz(zdroj: &Path, kroky: &[Uprava], limity: &Limity) -> Vysledok<Ulozene
     {
         let n = orchidea_formaty::citaj(&data, limity)?.metadata.natocenie;
         let t = Transformacia::z_natocenia(n).potom(t);
+        // výrez je v súradniciach prehliadača; bezstratový výsledok nemá neúplný okraj vľavo a hore
+        let posun = bezstratovo::mriezka(&data, t).map_or((0, 0), |m| m.posun);
+        let vyrez = vyrez.and_then(|v| {
+            let (x, y) = (v.x.saturating_sub(posun.0), v.y.saturating_sub(posun.1));
+            let sirka = v.sirka.saturating_sub(posun.0.saturating_sub(v.x));
+            let vyska = v.vyska.saturating_sub(posun.1.saturating_sub(v.y));
+            (sirka > 0 && vyska > 0).then_some(Vyrez { x, y, sirka, vyska })
+        });
         let d = bezstratovo::uprav(&data, t, vyrez, true, limity)?;
         let cesta = cesta_ulozenia(zdroj, "jpg");
         std::fs::write(&cesta, d).map_err(|e| Chyba::VstupVystup(e.to_string()))?;
@@ -286,6 +294,47 @@ mod skusky {
         assert!(!h.znova());
         assert_eq!(h.bezstratova(), None);
         assert!(h.spat() && h.spat() && !h.spat());
+    }
+
+    /// Otočený a orezaný JPEG s neúplným MCU: bezstratový výsledok ukazuje to isté miesto ako náhľad v prehliadači.
+    #[test]
+    fn bezstratove_orezanie_po_otoceni_sedi_s_nahladom() {
+        use orchidea_formaty::obraz::Model;
+        let (w, h) = (100usize, 75usize);
+        let mut b = Vec::with_capacity(w * h * 3);
+        for y in 0..h {
+            for x in 0..w {
+                b.extend_from_slice(&[
+                    (x * 255 / w) as u8,
+                    (y * 255 / h) as u8,
+                    ((x * 7 + y * 13) % 256) as u8,
+                ]);
+            }
+        }
+        let o = Obraz::novy(w, h, Model::Rgb, false, Vzorky::U8(b)).unwrap();
+        let j = jpeg::zapis(&o, &jpeg::NastavenieJpeg { kvalita: 98, ..Default::default() }).unwrap();
+        let cas =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let koren = if cfg!(target_family = "wasm") { PathBuf::from(".") } else { std::env::temp_dir() };
+        let p = koren.join(format!("upravy_orez_{cas}"));
+        std::fs::create_dir_all(&p).unwrap();
+        let zdroj = p.join("f.jpg");
+        std::fs::write(&zdroj, &j).unwrap();
+        let l = Limity::default();
+        // otočiť vpravo (75 × 100), orezať od bodu na mriežke (posun 11 + 16, 32)
+        let kroky = [
+            Uprava::Transformacia(Transformacia::Otoc90),
+            Uprava::Orez { x: 27, y: 32, sirka: 40, vyska: 50 },
+        ];
+        let u = uloz(&zdroj, &kroky, &l).unwrap();
+        assert!(u.bezstratovo);
+        let bez = orchidea_formaty::citaj(&std::fs::read(&u.cesta).unwrap(), &l).unwrap();
+        let nahlad = aplikuj_vsetky(&orchidea_formaty::citaj(&j, &l).unwrap(), &kroky).unwrap();
+        assert_eq!((bez.sirka, bez.vyska), (40, 50));
+        let (Vzorky::U8(a), Vzorky::U8(c)) = (&bez.vzorky, &nahlad.vzorky) else { panic!() };
+        let najviac = a.iter().zip(c).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap();
+        assert!(najviac <= 4, "bezstratový výrez sa líši od náhľadu o {najviac}");
+        let _ = std::fs::remove_dir_all(&p);
     }
 
     #[test]

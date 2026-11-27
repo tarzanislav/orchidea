@@ -61,6 +61,21 @@ jobs:
         run: cargo test --locked --workspace
       - name: Skúšky (optimalizovaný preklad)
         run: cargo test --locked --workspace --release
+      - name: Prehliadač a editor fotografií (Pohľad) pre Linux ARM64 – statický program (Raspberry Pi OS 64-bit, Wayland)
+        if: matrix.meno == 'Linux ARM64'
+        run: |
+          rustup target add aarch64-unknown-linux-musl
+          cargo build --locked --release --target aarch64-unknown-linux-musl -p orchidea-pohlad --bin pohlad --example prikazy
+          mkdir -p balik-arm64
+          cp target/aarch64-unknown-linux-musl/release/pohlad target/aarch64-unknown-linux-musl/release/examples/prikazy pohlad/NAVOD.txt balik-arm64/
+          file balik-arm64/pohlad || true
+          ./balik-arm64/prikazy herbar /tmp/skuska.txt pridaj . | tail -1
+      - uses: actions/upload-artifact@v4
+        if: matrix.meno == 'Linux ARM64'
+        with:
+          name: orchidea-pohlad-linux-arm64
+          path: balik-arm64/
+          retention-days: 30
       - name: Meranie výkonu
         shell: bash
         run: |
@@ -640,10 +655,14 @@ jobs:
             katalog.png
             xmp.png
             obrazovka.png
-      - name: Balík na vyskúšanie (pohlad, prikazy, návod)
+      - name: Balík na vyskúšanie (pohlad, prikazy, návod) – statický program, beží na každej distribúcii
         run: |
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --locked --release --target x86_64-unknown-linux-musl -p orchidea-pohlad --bin pohlad --example prikazy
           mkdir -p balik
-          cp target/release/pohlad target/release/examples/prikazy pohlad/NAVOD.txt balik/
+          cp target/x86_64-unknown-linux-musl/release/pohlad target/x86_64-unknown-linux-musl/release/examples/prikazy pohlad/NAVOD.txt balik/
+          file balik/pohlad || true
+          HOME="$HOME_POHLAD" timeout 60 balik/pohlad --samotest skusobne staticky.png dalsi
           ls -la balik
       - uses: actions/upload-artifact@v4
         with:

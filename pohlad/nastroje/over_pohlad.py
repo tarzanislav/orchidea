@@ -494,6 +494,24 @@ def upravy(rng):
     nase = ulozene("v_upravene.png")
     ok = nase is not None and nase.shape == (600, 800, 3) and np.array_equal(nase, velky[300:900, 400:1200])
     vysledok("úpravy: orezať na zobrazený výrez", ok, "800 × 600 zo stredu bit po bite" if ok else str(None if nase is None else nase.shape))
+    # orezanie výberom (postreh vlastníka 27. 11.): JPEG 800 × 600 v okne 800 × 600 (1:1, bez panelov) –
+    # ťahať pravý dolný roh, posunúť výber, pomer 4:3, orezať, uložiť; začiatok sa zarovná na mriežku 16 × 16
+    y, x = np.mgrid[0:600, 0:800]
+    g = np.stack([x * 255 // 800, y * 255 // 600, (x + y) % 256], -1).astype(np.uint8)
+    Image.fromarray(g).save(os.path.join(pr, "o.jpg"), quality=92)
+    snimka("o.jpg", "orezat", "klik:799,599", "tahaj:-200,-100", "klik:300,200", "tahaj:37,23", "orez-pomer:4x3",
+           "orez-potvrd", "ulozit")
+    nase = ulozene("o_upravene.jpg")
+    zdroj = np.asarray(Image.open(os.path.join(pr, "o.jpg"))).astype(int)
+    ok = nase is not None and nase.shape == (450, 600, 3)
+    priemer = float(np.abs(zdroj[48:498, 32:632] - nase).mean()) if ok else 99
+    vysledok("úpravy: orezanie výberom myšou (roh, posun, 4:3, JPEG)", ok and priemer < 0.05,
+             f"600 × 450 od (32, 48) – mriežka MCU, bezstratovo (priemer {priemer:.4f}/255)" if ok
+             else str(None if nase is None else nase.shape))
+    # Esc orezanie zruší – Ctrl+S uloží neorezaný obraz
+    snimka("o.jpg", "orezat", "klik:799,599", "tahaj:-200,-100", "esc", "ulozit")
+    nase = ulozene("o_upravene (2).jpg")
+    vysledok("úpravy: orezanie zrušené (Esc)", nase is not None and nase.shape == (600, 800, 3), "obraz ostal 800 × 600")
     # zmenšiť na polovicu (Lanczos v lineárnom svetle)
     snimka("p.png", "zmensit", "ulozit")
     nase = ulozene("p_upravene (2).png")

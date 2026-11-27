@@ -26,6 +26,7 @@ pub mod okno;
 pub mod okno_linux;
 #[cfg(windows)]
 pub mod okno_win;
+pub mod orezanie;
 pub mod panel;
 pub mod porovnanie;
 pub mod prehliadac;

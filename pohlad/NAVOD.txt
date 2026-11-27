@@ -10,7 +10,9 @@ Windows: inštalácia nie je potrebná. Rozbaľte ZIP do ľubovoľného priečin
 Windows SmartScreen môže pri prvom spustení upozorniť na neznámeho vydavateľa (program nie je podpísaný):
 „Ďalšie informácie“ → „Spustiť aj tak“.
 
-Linux (64-bit, x86-64): rozbaľte ZIP, v termináli v tom priečinku  chmod +x pohlad prikazy  a potom  ./pohlad
+Linux (64-bit: x86-64 = balík orchidea-pohlad-linux, ARM64 napríklad Raspberry Pi 4/5 s Raspberry Pi OS 64-bit
+  = balík orchidea-pohlad-linux-arm64; program je statický, beží na každej distribúcii): rozbaľte ZIP, v termináli
+  v tom priečinku  chmod +x pohlad prikazy  a potom  ./pohlad
   alebo  ./pohlad ~/Obrázky . Okno potrebuje prostredie Wayland (GNOME, KDE Plasma, Sway, Hyprland, weston …);
   v prostredí X11 sa zatiaľ nespustí (vypíše hlásenie). Nič ďalšie netreba – program nepoužíva knižnice okien
   (GTK, Qt, libwayland, libxkbcommon), všetko vrátane rozloženia klávesnice a mŕtvych klávesov (ˇ ´) je vlastné.
@@ -46,7 +48,10 @@ Prehliadanie
 
 Úpravy (originál sa nikdy neprepíše; Uložiť / Ctrl+S uloží vedľa ako „meno_upravene.jpg“)
   R / Shift+R    otočiť vpravo / vľavo          F  zrkadliť
-  X              orezať na práve zobrazený výrez (najprv priblížte)
+  X / Orezať     orezanie výberom: na obraze sa ukáže rámik – ťahajte jeho rohy a okraje, ťahaním vnútri ho posuniete,
+                 ťahaním mimo neho nakreslíte nový. Na paneli pomer strán (Voľný, 1:1, 4:3, 3:2, 16:9; znova kliknúť
+                 = na výšku). Enter alebo Orezať oreže, Esc zruší. Pri JPEG sa ľavý a horný okraj prichytí na mriežku
+                 bodov (16 × 16), aby sa dalo uložiť bezstratovo – rámik ukazuje presne to, čo sa uloží.
   J / Shift+J    jas +/-      K / Shift+K  kontrast +/-      G / Shift+G  gama +/-
   Z              zmenšiť na polovicu (kvalitné zmenšenie)
   Ctrl+Z / Ctrl+Y   späť / znova

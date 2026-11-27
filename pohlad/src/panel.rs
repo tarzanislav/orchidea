@@ -1,6 +1,7 @@
 //! Panel nástrojov (toolbar) a nápoveda klávesov – kreslí ich jadro na plátno, okno len odovzdá kliknutie
 //! a polohu myši. Chladne: pohyb myši prekreslí len vtedy, keď sa zmení tlačidlo pod kurzorom.
 
+use crate::orezanie::Pomer;
 use crate::prehliadac::Povel;
 use orchidea_pismo::{Farba, Pismo, Platno};
 
@@ -14,6 +15,8 @@ const SKUPINA: f32 = 6.0;
 pub const POZADIE: Farba = 0x26282B;
 const TLACIDLO: Farba = 0x34373B;
 const POD_MYSOU: Farba = 0x474C52;
+/// Zapnutá voľba (napríklad zvolený pomer strán orezania).
+const ZAPNUTE: Farba = 0x2F4F7E;
 const TEXT: Farba = 0xE2E2E2;
 const NEAKTIVNE: Farba = 0x74777B;
 const POPIS: Farba = 0x9A9DA1;
@@ -70,7 +73,7 @@ pub const PREHLIADAC: &[Prvok] = &[
         "orezat",
         "Orezať",
         "Orezať",
-        "Orezať na zobrazený výrez (X) – najprv priblížte časť, ktorá má ostať",
+        "Orezať výberom (X) – ťahajte rohy a okraje výberu, Enter oreže, Esc zruší",
         Povel::Orezat,
     ),
     Prvok::Medzera,
@@ -106,6 +109,40 @@ pub const PREHLIADAC: &[Prvok] = &[
     ),
     t("katalog", "Katalóg", "Kat.", "Katalóg fotografií (Herbár) – hľadanie vo fotkách (F3)", Povel::Katalog),
     t("napoveda", "?", "?", "Nápoveda klávesov (F1 alebo ?)", Povel::Napoveda),
+];
+
+/// Panel v režime orezania.
+pub const OREZANIE: &[Prvok] = &[
+    Prvok::Popis("Pomer strán"),
+    t("orez_volny", "Voľný", "Voľný", "Ľubovoľný pomer strán", Povel::OrezPomer(Pomer::Volny)),
+    t("orez_1x1", "1:1", "1:1", "Štvorec", Povel::OrezPomer(Pomer::Stvorec)),
+    t("orez_4x3", "4:3", "4:3", "4:3 – znova kliknúť = na výšku", Povel::OrezPomer(Pomer::P4x3)),
+    t(
+        "orez_3x2",
+        "3:2",
+        "3:2",
+        "3:2 ako fotoaparát – znova kliknúť = na výšku",
+        Povel::OrezPomer(Pomer::P3x2),
+    ),
+    t(
+        "orez_16x9",
+        "16:9",
+        "16:9",
+        "16:9 ako obrazovka – znova kliknúť = na výšku",
+        Povel::OrezPomer(Pomer::P16x9),
+    ),
+    t(
+        "orez_otoc",
+        "Na výšku / na šírku",
+        "Otočiť",
+        "Vymeniť pomer na výšku a na šírku",
+        Povel::OrezOtocPomer,
+    ),
+    Prvok::Medzera,
+    t("orez_potvrd", "Orezať", "Orezať", "Orezať na výber (Enter)", Povel::OrezPotvrd),
+    t("orez_zrus", "Zrušiť", "Zrušiť", "Zrušiť orezanie, obraz ostane (Esc)", Povel::OrezZrus),
+    Prvok::Medzera,
+    t("napoveda", "?", "?", "Nápoveda klávesov (F1)", Povel::Napoveda),
 ];
 
 /// Panel katalógu fotografií (Herbár).
@@ -229,6 +266,7 @@ pub fn kresli(
     u: &[Umiestnenie],
     pod_mysou: Option<&str>,
     aktivne: impl Fn(Povel) -> bool,
+    zapnute: impl Fn(Povel) -> bool,
 ) {
     p.vypln(0, 0, p.sirka as i32, VYSKA as i32, POZADIE);
     p.vypln(0, VYSKA as i32 - 1, p.sirka as i32, 1, 0x1A1B1D);
@@ -237,7 +275,13 @@ pub fn kresli(
         match u.prvok {
             Prvok::Tlacidlo(t) => {
                 let a = aktivne(t.povel);
-                let pozadie = if a && pod_mysou == Some(t.id) { POD_MYSOU } else { TLACIDLO };
+                let pozadie = if a && pod_mysou == Some(t.id) {
+                    POD_MYSOU
+                } else if zapnute(t.povel) {
+                    ZAPNUTE
+                } else {
+                    TLACIDLO
+                };
                 p.vypln(u.x as i32, 5, u.sirka as i32, VYSKA as i32 - 10, pozadie);
                 let tw = pismo.sirka(u.text, VELKOST, 1.0);
                 let farba = if a { TEXT } else { NEAKTIVNE };
@@ -279,7 +323,7 @@ pub const NAPOVEDA: &[(&str, &str)] = &[
     ("F5 alebo F11", "prezentácia na celú obrazovku (P pauza, Esc koniec)"),
     ("", "Úpravy (originál sa neprepíše)"),
     ("R  /  Shift+R", "otočiť vpravo  /  vľavo"),
-    ("F  /  X", "zrkadliť  /  orezať na zobrazený výrez"),
+    ("F  /  X", "zrkadliť  /  orezať výberom: ťahať rohy a okraje, vnútri posun, Enter orezať, Esc zrušiť"),
     ("J  K  G  (Shift = menej)", "jas, kontrast, gama"),
     ("Z", "zmenšiť na polovicu"),
     ("Ctrl+Z  /  Ctrl+Y", "späť  /  znova"),
