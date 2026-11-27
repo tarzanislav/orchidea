@@ -7,10 +7,12 @@ on:
       - "**.md"
   pull_request:
 
-# viac relácií posiela zmeny súbežne: novší beh na tej istej vetve zruší starší (obsahuje aj jeho zmeny)
+# viac relácií posiela zmeny súbežne: bežiaci beh dobehne (inak by sa ORCHIDEA Zapisovač pre Windows pri
+# štyroch reláciách takmer nikdy nedostavil – 27. 11. zrušené 4 behy za sebou); čakať smie len najnovší,
+# starší čakajúci ho nahradí (obsahuje aj jeho zmeny) – R250, rovnako ako karta (R228)
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
