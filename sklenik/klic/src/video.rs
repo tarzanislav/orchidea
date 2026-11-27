@@ -390,14 +390,31 @@ fn posun_dc(c: i32) -> i32 {
 /// inverzná transformácia) – dekodér hlavného jadra I_PCM nevie (0/8), tento tok ukáže, či vie aspoň toto.
 /// Vráti toky a čakané obrazy (bit po bite, overuje FFmpeg v CI).
 pub fn h264_dc(sirka: usize, vyska: usize, pocet: usize) -> (Vec<Vec<u8>>, Vec<Obraz>) {
+    h264_dc_z(sirka, vyska, &(0..pocet).collect::<Vec<_>>(), false)
+}
+
+/// R249 (návrh B, 27. 11.): tok Intra 16×16 DC so snímkami s obsahom `obsah[i]` (rovnaké číslo = rovnaký obraz)
+/// a voliteľne so SPS a PPS v samostatnej jednotke pred prvou snímkou. Rozlíši, či je na SM1 zlá vždy prvá
+/// dekódovaná snímka, prvá po SPS, alebo prvá v buffri spolu so SPS a PPS.
+pub fn h264_dc_z(
+    sirka: usize,
+    vyska: usize,
+    obsah: &[usize],
+    sps_zvlast: bool,
+) -> (Vec<Vec<u8>>, Vec<Obraz>) {
     assert!(sirka.is_multiple_of(16) && vyska.is_multiple_of(16));
     let (sps, pps) = h264_sps_pps(sirka, vyska);
     let (sx, sy) = (sirka / 16, vyska / 16);
     let mut toky = Vec::new();
     let mut cakane = Vec::new();
-    for n in 0..pocet {
+    if sps_zvlast {
+        let mut au = nal(&[0x67], &sps.data);
+        au.extend(nal(&[0x68], &pps.data));
+        toky.push(au);
+    }
+    for (poradie, &n) in obsah.iter().enumerate() {
         let mut au = Vec::new();
-        if n == 0 {
+        if poradie == 0 && !sps_zvlast {
             au.extend(nal(&[0x67], &sps.data));
             au.extend(nal(&[0x68], &pps.data));
         }
@@ -406,7 +423,7 @@ pub fn h264_dc(sirka: usize, vyska: usize, pocet: usize) -> (Vec<Vec<u8>>, Vec<O
         rez.ue(7); // slice_type I
         rez.ue(0); // pic_parameter_set_id
         rez.u(4, 0); // frame_num
-        rez.ue((n % 2) as u64); // idr_pic_id
+        rez.ue((poradie % 2) as u64); // idr_pic_id – po sebe idúce IDR sa líšia (norma 7.4.3)
         rez.u(1, 0); // no_output_of_prior_pics_flag
         rez.u(1, 0); // long_term_reference_flag
         rez.se(0); // slice_qp_delta – QP 26
@@ -958,6 +975,20 @@ mod testy {
             yuv.extend_from_slice(&o.cr);
         }
         std::fs::write(format!("{dir}/dc.yuv"), yuv).unwrap();
+        // R249: SPS+PPS zvlášť a prvá snímka dvakrát
+        for (meno, obsah, zvlast) in
+            [("dc_sps_zvlast", vec![0, 1, 2], true), ("dc_prva_dvakrat", vec![0, 0, 1, 2], false)]
+        {
+            let (toky, cakane) = h264_dc_z(320, 240, &obsah, zvlast);
+            std::fs::write(format!("{dir}/{meno}.h264"), toky.concat()).unwrap();
+            let mut yuv = Vec::new();
+            for o in &cakane {
+                yuv.extend_from_slice(&o.y);
+                yuv.extend_from_slice(&o.cb);
+                yuv.extend_from_slice(&o.cr);
+            }
+            std::fs::write(format!("{dir}/{meno}.yuv"), yuv).unwrap();
+        }
         // R177: skupiny po 4 snímkach – IDR s PCM a tri P-snímky s preskočenými jednotkami, 25 snímok/s
         let obrazy: Vec<Obraz> = (0..10).map(|n| vzor(320, 240, n)).collect();
         let (toky, cakane) = hevc_gop(&obrazy, 4, Some(25));
