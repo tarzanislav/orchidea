@@ -9,8 +9,12 @@
 //! - systémová konštanta zisku: CD uvádza 64, [S] 210 – platí 210 (výstup ±1,0);
 //! - normovanie M/S: CD uvádza (M ± S)/2, vzorec v [S] chýba – platí (M ± S)/√2.
 //!
-//! **Odvodené (text nehovorí):** intenzitná poloha posledného pásma (dlhé 21, krátke 12 – bez škálovacieho faktora)
-//! sa preberá z predošlého pásma (20, 11).
+//! - hranica intenzity v zmiešanom bloku: dlhá časť je intenzitná len vtedy, ak je celá krátka časť pravého
+//!   kanála nulová – iné pravidlo dá na toku ISO `he_mode` rozdiel 402 LSB, toto ≤ 1 LSB.
+//!
+//! **Odvodené (text nehovorí, tok ISO `he_mode` varianty nerozlišuje):** intenzitná poloha posledného pásma
+//! (dlhé 21, krátke 12 – bez škálovacieho faktora) sa preberá z predošlého pásma (20, 11); hranica podľa
+//! posledného nenulového pásma ([S]) a podľa „nulovej časti“ big_values·2 + count1·4 (CD) dávajú to isté.
 
 use super::tabulky;
 use super::{Granula, Skalovacie};

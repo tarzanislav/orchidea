@@ -5,6 +5,8 @@
 //! (matica `N[i][k] = cos((16 + i)(2k + 1)π/64)`); [S] §4.3.12 (postup redukcie aliasu, inverzia frekvencie, kroky
 //! syntézy), [S] tabuľka 60 (c[i]) a okno D[i] ([S] príloha I = 11172-3 tabuľka 3-B.3).
 //!
+//! **Rozpor rozhodnutý meraním:** redukcia aliasu pri zmiešanom bloku (pozri `alias`).
+//!
 //! **Čo text neobsahuje a je odvodené** (vzorce a obrázky v [S] sa do PDF nepreniesli, CD nemá prílohy):
 //! - koeficienty motýlika aliasu `cs = 1/√(1 + c²)`, `ca = c/√(1 + c²)` – jediná dvojica, pri ktorej je motýlik
 //!   otočením (cs² + ca² = 1) s pomerom ca/cs = c;
@@ -124,15 +126,15 @@ pub(crate) struct Blok {
     pub zmiesany: bool,
 }
 
-/// Redukcia aliasu ([S] §4.3.12.1): motýliky na hranici susedných podpásiem (len dlhé bloky; pri zmiešanom
-/// bloku MPEG-1 len hranica podpásiem 0 a 1).
+/// Redukcia aliasu ([S] §4.3.12.1): motýliky na hraniciach susedných podpásiem dlhých blokov.
+///
+/// **Rozpor rozhodnutý meraním (zmiešaný blok):** pseudokód [S] dáva pri zmiešanom bloku MPEG-1 jednu hranicu
+/// (podpásma 0 a 1). Referenčný výstup skúšobného toku ISO/IEC 11172-4 `he_mode` (jediný so zmiešanými blokmi)
+/// zodpovedá **zmiešanému bloku bez redukcie aliasu**: s motýlikom na hranici 0/1 je rozdiel 11 LSB (RMS 4,3·10⁻⁵),
+/// bez neho ≤ 1 LSB (RMS 2,6·10⁻⁷, zaokrúhlenie referencie); pri viac hraniciach 240 LSB.
 pub(crate) fn alias(xr: &mut [f32; 576], blok: Blok) {
     let t = tabulky();
-    let pocet = match (blok.typ == 2, blok.zmiesany) {
-        (false, _) => 32,
-        (true, false) => 0,
-        (true, true) => 2,
-    };
+    let pocet = if blok.typ == 2 { 0 } else { 32 };
     for sb in 1..pocet {
         for i in 0..8 {
             let (a, b) = (18 * sb - 1 - i, 18 * sb + i);
@@ -231,6 +233,24 @@ mod skusky {
             assert!((cs * cs + ca * ca - 1.0).abs() < 1e-6);
             assert!((ca / cs - tabulky::ALIAS_C[i]).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn alias_len_pri_dlhych_blokoch() {
+        // zmiešaný aj krátky blok ostane bez motýlikov (rozhodnuté meraním na toku ISO he_mode), dlhý sa zmení
+        let mut xr = [0f32; 576];
+        for (i, v) in xr.iter_mut().enumerate() {
+            *v = (i % 7) as f32 - 3.0;
+        }
+        for blok in [Blok { typ: 2, zmiesany: true }, Blok { typ: 2, zmiesany: false }] {
+            let mut x = xr;
+            alias(&mut x, blok);
+            assert_eq!(x, xr);
+        }
+        let mut x = xr;
+        alias(&mut x, Blok { typ: 0, zmiesany: false });
+        assert_ne!(x[17], xr[17]);
+        assert_eq!(x[0..10], xr[0..10]);
     }
 
     #[test]
