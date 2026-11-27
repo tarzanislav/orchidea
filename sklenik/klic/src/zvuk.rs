@@ -336,11 +336,21 @@ pub fn skuska_tonu(zariadenie: &str) -> Result<String, String> {
     v.map(pridaj).map_err(pridaj)
 }
 
+/// R261: najdlhší čas skúšky tónu (1,5 s tónu + buffer + rezerva). RPi 5 27. 11. bez rozpoznaného monitora: zvuková
+/// karta HDMI dáta nebrala a blokujúci zápis čakal donekonečna – rýchla skúška tak čakala na záverečný záznam až
+/// 15 min (R244). Teraz neblokujúci zápis s termínom: zariadenie, ktoré dáta neberie, skončí chybou.
+const NAJDLHSIE_TONU: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// R261: chyba „skúsiť znova“ (EAGAIN) pri neblokujúcom zápise.
+fn je_skus_znova(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(11)
+}
+
 fn skuska_tonu_vnutro(zariadenie: &str) -> Result<String, String> {
-    // blokujúci režim: zápis čaká, kým zvuková karta vezme dáta (zariadenie nikto iný nepoužíva)
+    // R261: neblokujúci režim s termínom – zvuková karta, ktorá dáta neberie (HDMI bez monitora), skúšku nezasekne
     let f = OpenOptions::new()
         .write(true)
-        .custom_flags(0o2000000) // O_CLOEXEC
+        .custom_flags(0o2000000 | 0o4000) // O_CLOEXEC | O_NONBLOCK
         .open(format!("/dev/snd/{zariadenie}"))
         .map_err(|e| format!("{zariadenie} sa nedá otvoriť ({e})"))?;
     let fd = f.as_raw_fd();
@@ -414,7 +424,21 @@ fn skuska_tonu_vnutro(zariadenie: &str) -> Result<String, String> {
             buf: zvysok.as_mut_ptr() as *mut std::ffi::c_void,
             ramcov: (ramcov - zapisanych).min(kus) as std::ffi::c_ulong,
         };
+        if start.elapsed() > NAJDLHSIE_TONU {
+            return Err(format!(
+                "{nastavenie} · zariadenie neberie dáta – po {} s zapísaných len {zapisanych} z {ramcov} rámcov \
+                 (monitor bez zvuku alebo nerozpoznaný?; stav prúdu: {})",
+                NAJDLHSIE_TONU.as_secs(),
+                stav_prudu(zariadenie)
+            ));
+        }
         match sys::ioctl_struct(fd, WRITEI, &mut x) {
+            Err(e) if je_skus_znova(&e) => {
+                // buffer plný – počkať asi štvrtinu periódy
+                std::thread::sleep(std::time::Duration::from_micros(
+                    (u64::from(perioda.max(64)) * 250_000 / u64::from(TAKT)).max(1000),
+                ));
+            }
             Ok(()) if x.vysledok > 0 => {
                 zapisanych += x.vysledok as usize;
                 let mut d: std::ffi::c_long = 0;
@@ -450,7 +474,15 @@ fn skuska_tonu_vnutro(zariadenie: &str) -> Result<String, String> {
             }
         }
     }
+    // R261: dohranie bez blokovania – oneskorenie v zariadení klesá k nule (najdlhšie do termínu)
     let _ = sys::ioctl_raz(fd, DRAIN, &mut nic);
+    loop {
+        let mut d: std::ffi::c_long = 0;
+        if sys::ioctl_raz(fd, DELAY, &mut d).is_err() || d <= 0 || start.elapsed() > NAJDLHSIE_TONU {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let takt = namerany_takt(&body)
         .map_or("takt nezmeraný".into(), |(t, n)| format!("nameraný takt {t:.0} Hz ({n} bodov)"));
     let prve = prve_podtecenie
