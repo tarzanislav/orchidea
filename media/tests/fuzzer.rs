@@ -567,3 +567,26 @@ fn opus_viac_prudov() {
         }
     }
 }
+
+/// Rozbor vrstvy III MPEG-1 (L8): platná hlavička + náhodné vedľajšie informácie a hlavné údaje (zásobník bitov,
+/// škálovacie faktory, Huffman) – nikdy pád ani zacyklenie.
+#[test]
+fn mpa_vrstva3() {
+    use orchidea_media::mpa::DekoderMpa;
+    let mut n = nahoda(17);
+    let mut d = DekoderMpa::novy();
+    for i in 0..pocet_pokusov() / 20 {
+        // hlavička: MPEG-1, vrstva III, bez CRC / s CRC, toky 32–320 kb/s, 44,1/48/32 kHz, všetky režimy
+        let tok = 1 + (n.dalsie() % 14) as u8;
+        let f = (n.dalsie() % 3) as u8;
+        let rezim = (n.dalsie() % 4) as u8;
+        let mut p = vec![
+            0xFF,
+            0xFA | (i % 2) as u8,
+            (tok << 4) | (f << 2),
+            (rezim << 6) | ((n.dalsie() % 4) as u8) << 4,
+        ];
+        p.extend(bajty(&mut n, 1500));
+        let _ = d.rozober_ramec(&p);
+    }
+}

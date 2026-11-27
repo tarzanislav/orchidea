@@ -52,6 +52,12 @@ jobs:
         run: |
           echo "### Médiá – dekodér Opus proti libopus" >> "$GITHUB_STEP_SUMMARY"
           python3 media/nastroje/over_opus.py target/release/examples/media_opus "$RUNNER_TEMP/opus" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: MPEG audio (L8) – rozbor vrstvy III, spotreba part2_3_length v každej granule (LAME, Shine)
+        shell: bash
+        run: |
+          cargo build --release -p orchidea-media --example media_mpa
+          echo "### Médiá – MPEG audio vrstva III (rozbor bitového toku)" >> "$GITHUB_STEP_SUMMARY"
+          python3 media/nastroje/over_mpa.py target/release/examples/media_mpa "$RUNNER_TEMP/mpa" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Pakety Opus pri neúspechu (na rozbor)
         if: failure()
         uses: actions/upload-artifact@v4
