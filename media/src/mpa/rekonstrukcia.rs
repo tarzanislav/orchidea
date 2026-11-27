@@ -68,11 +68,11 @@ pub(crate) fn kvantizacia(
         if v < 0 { -a } else { a }
     };
     let kratke_bloky = g.prepinanie && g.typ_bloku == 2;
-    // dlhá časť: celé spektrum, pri zmiešanom bloku pásma 0–7 (čiary 0–35)
+    // dlhá časť: celé spektrum, pri zmiešanom bloku pásma 0–7 (MPEG-1) alebo 0–5 (LSF) – vždy do 3·s[3]
     let dlhych_pasiem = if !kratke_bloky {
         22
     } else if g.zmiesany {
-        8
+        dlhych_zmiesaneho(index_f)
     } else {
         0
     };
@@ -99,6 +99,11 @@ pub(crate) fn kvantizacia(
     }
 }
 
+/// Dlhých pásiem zmiešaného bloku: 8 pri MPEG-1, 6 pri MPEG-2 LSF a 2.5 ([S] tabuľka 5, ID = 0).
+fn dlhych_zmiesaneho(index_f: usize) -> usize {
+    if index_f < 3 { 8 } else { 6 }
+}
+
 /// Úseky čiar granuly ako (pásmo, okno, začiatok, koniec) v poradí bitového toku; dlhé pásma majú okno `None`.
 fn useky(g: &Granula, index_f: usize) -> Vec<(usize, Option<usize>, usize, usize)> {
     let dlhe = &tabulky::PASMA_DLHE[index_f];
@@ -108,7 +113,7 @@ fn useky(g: &Granula, index_f: usize) -> Vec<(usize, Option<usize>, usize, usize
     let dlhych = if !kratke_bloky {
         22
     } else if g.zmiesany {
-        8
+        dlhych_zmiesaneho(index_f)
     } else {
         0
     };
@@ -139,6 +144,7 @@ pub(crate) fn stereo(
     index_f: usize,
     ms: bool,
     intenzita: bool,
+    lsf: bool,
 ) -> usize {
     let useky = useky(g, index_f);
     // intenzitné úseky: nad posledným pásmom pravého kanála, ktoré nie je celé nulové; pri krátkych blokoch
@@ -173,11 +179,38 @@ pub(crate) fn stereo(
     for (i, &(sfb, w, a, b)) in useky.iter().enumerate() {
         if intenzitny[i] {
             // posledné pásmo nemá škálovací faktor – poloha z predošlého pásma
-            let poloha = match w {
-                None => sf_p.l[sfb.min(20)],
-                Some(w) => sf_p.s[sfb.min(11)][w],
+            let (poloha, slen) = match w {
+                None => (sf_p.l[sfb.min(20)], sf_p.slen_l[sfb.min(20)]),
+                Some(w) => (sf_p.s[sfb.min(11)][w], sf_p.slen_s[sfb.min(11)]),
             };
-            if poloha != 7 {
+            // LSF ([S] §4.3.11.2, ID = 0): kl, kr z intensity_scale – (is_pos + 1)/2 alebo is_pos/2 krokov
+            // 2^(−1/4) či 2^(−1/2) (zmerané proti FFmpeg pri oboch intensity_scale a všetkých rozsahoch
+            // int_scalefac_compress). Neplatná je najväčšia poloha 2^slen − 1. Pri slen 0 text nejednoznačný
+            // (0 bitov) – **rozhodnuté meraním**: poloha 0 je platná (kl = kr = 1). FFmpeg berie ako neplatné
+            // len polohy ≥ 16 (zmerané po jednej polohe pri slen 5) – v rozpore s textom, ponechaný text
+            // a rozhodca najväčšie polohy neoveruje.
+            if lsf {
+                if slen > 0 && poloha as u32 == (1u32 << slen) - 1 {
+                    // neplatná poloha – ako pásmo bez intenzity (M/S alebo L/R)
+                } else {
+                    let x = if sf_p.intensity_scale { 1.0 } else { 2.0 };
+                    let (kl, kr) = if poloha == 0 {
+                        (1.0, 1.0)
+                    } else if poloha % 2 == 1 {
+                        (exp(-((poloha as f64 + 1.0) / (4.0 * x)) * LN_2), 1.0)
+                    } else {
+                        (1.0, exp(-(poloha as f64 / (4.0 * x)) * LN_2))
+                    };
+                    let (kl, kr) = (kl as f32, kr as f32);
+                    for j in a..b {
+                        let v = l[j];
+                        l[j] = v * kl;
+                        p[j] = v * kr;
+                    }
+                    intenzitnych += 1;
+                    continue;
+                }
+            } else if poloha != 7 {
                 // is_ratio = tan(is_pos·π/12): kl = r/(1 + r), kr = 1/(1 + r) – zapísané cez sin a cos, aby
                 // poloha 6 (r = ∞) dala presne kl = 1, kr = 0
                 let uhol = poloha as f64 * PI / 12.0;

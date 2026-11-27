@@ -177,7 +177,7 @@ pub struct Granula {
     pub count1_tabulka: bool,
 }
 
-/// Vedľajšie informácie rámca MPEG-1 (tabuľka 4).
+/// Vedľajšie informácie rámca (tabuľka 4) – MPEG-1 (2 granuly) aj MPEG-2 LSF / 2.5 (ID = 0, 1 granula).
 #[derive(Clone, Debug, Default)]
 pub struct VedlajsieInfo {
     pub main_data_begin: usize,
@@ -185,21 +185,31 @@ pub struct VedlajsieInfo {
     pub granuly: [[Granula; 2]; 2],
 }
 
-fn vedlajsie_info(b: &mut Bity, nch: usize) -> VedlajsieInfo {
-    let mut v = VedlajsieInfo { main_data_begin: b.citaj(9) as usize, ..VedlajsieInfo::default() };
-    b.citaj(if nch == 1 { 5 } else { 3 }); // private_bits
-    for ch in 0..nch {
-        for s in 0..4 {
-            v.scfsi[ch][s] = b.bit() == 1;
+fn vedlajsie_info(b: &mut Bity, nch: usize, lsf: bool) -> VedlajsieInfo {
+    let mut v = VedlajsieInfo {
+        main_data_begin: b.citaj(if lsf { 8 } else { 9 }) as usize,
+        ..VedlajsieInfo::default()
+    };
+    b.citaj(match (lsf, nch) {
+        (false, 1) => 5,
+        (false, _) => 3,
+        (true, 1) => 1,
+        (true, _) => 2,
+    }); // private_bits
+    if !lsf {
+        for ch in 0..nch {
+            for s in 0..4 {
+                v.scfsi[ch][s] = b.bit() == 1;
+            }
         }
     }
-    for gr in 0..2 {
+    for gr in 0..if lsf { 1 } else { 2 } {
         for ch in 0..nch {
             let g = &mut v.granuly[gr][ch];
             g.part2_3 = b.citaj(12);
             g.big_values = b.citaj(9);
             g.global_gain = b.citaj(8);
-            g.scalefac_compress = b.citaj(4);
+            g.scalefac_compress = b.citaj(if lsf { 9 } else { 4 });
             g.prepinanie = b.bit() == 1;
             if g.prepinanie {
                 g.typ_bloku = b.citaj(2) as u8;
@@ -220,7 +230,10 @@ fn vedlajsie_info(b: &mut Bity, nch: usize) -> VedlajsieInfo {
                 g.region0 = b.citaj(4);
                 g.region1 = b.citaj(3);
             }
-            g.preflag = b.bit() == 1;
+            // LSF: preflag sa neprenáša – určí ho scalefac_compress (skalovacie_lsf)
+            if !lsf {
+                g.preflag = b.bit() == 1;
+            }
             g.scalefac_scale = b.bit() == 1;
             g.count1_tabulka = b.bit() == 1;
         }
@@ -228,11 +241,95 @@ fn vedlajsie_info(b: &mut Bity, nch: usize) -> VedlajsieInfo {
     v
 }
 
-/// Škálovacie faktory granuly (dlhé `l[sfb]`, krátke `s[sfb][okno]`).
+/// Škálovacie faktory granuly (dlhé `l[sfb]`, krátke `s[sfb][okno]`) a počet bitov každého pásma (najväčšia
+/// poloha intenzity LSF je 2^slen − 1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Skalovacie {
     pub l: [u8; 22],
     pub s: [[u8; 3]; 13],
+    pub slen_l: [u8; 22],
+    pub slen_s: [u8; 13],
+    /// LSF: intensity_scale (scalefac_compress mod 2 pravého kanála pri intenzite)
+    pub intensity_scale: bool,
+}
+
+/// Rozdelenie škálovacích faktorov LSF ([S] §4.2.4): (slen1–4, nr_of_sfb [dlhé, krátke, zmiešané][1–4], preflag).
+/// Pri pravom kanáli intenzity (`kanal_intenzity`) sa delí int_scalefac_compress = scalefac_compress / 2.
+fn rozdelenie_lsf(sc: u32, kanal_intenzity: bool) -> ([u32; 4], [[u32; 4]; 3], bool) {
+    if !kanal_intenzity {
+        if sc < 400 {
+            (
+                [(sc >> 4) / 5, (sc >> 4) % 5, (sc % 16) >> 2, sc % 4],
+                [[6, 5, 5, 5], [9, 9, 9, 9], [6, 9, 9, 9]],
+                false,
+            )
+        } else if sc < 500 {
+            let x = sc - 400;
+            ([(x >> 2) / 5, (x >> 2) % 5, x % 4, 0], [[6, 5, 7, 3], [9, 9, 12, 6], [6, 9, 12, 6]], false)
+        } else {
+            let x = sc - 500;
+            ([x / 3, x % 3, 0, 0], [[11, 10, 0, 0], [18, 18, 0, 0], [15, 18, 0, 0]], true)
+        }
+    } else {
+        let i = sc >> 1;
+        if i < 180 {
+            ([i / 36, (i % 36) / 6, (i % 36) % 6, 0], [[7, 7, 7, 0], [12, 12, 12, 0], [6, 15, 12, 0]], false)
+        } else if i < 244 {
+            let x = i - 180;
+            ([(x % 64) >> 4, (x % 16) >> 2, x % 4, 0], [[6, 6, 6, 3], [12, 9, 9, 6], [6, 12, 9, 6]], false)
+        } else {
+            let x = i - 244;
+            ([x / 3, x % 3, 0, 0], [[8, 8, 5, 0], [15, 12, 9, 0], [6, 18, 9, 0]], false)
+        }
+    }
+}
+
+/// Škálovacie faktory MPEG-2 LSF / 2.5 ([S] §4.2.4, scalefac_compress pri ID = 0): štyri časti s počtami pásiem
+/// `nr_of_sfb1..4` a bitmi `slen1..4`; pravý kanál pri intenzite (mode_extension 01 alebo 11) iná tabuľka.
+/// Vráti faktory a preflag.
+fn skalovacie_lsf(b: &mut Bity, g: &Granula, kanal_intenzity: bool) -> (Skalovacie, bool) {
+    let sc = g.scalefac_compress;
+    let kratke = g.prepinanie && g.typ_bloku == 2;
+    let typ = if !kratke {
+        0
+    } else if g.zmiesany {
+        2
+    } else {
+        1
+    };
+    let mut sf = Skalovacie { intensity_scale: kanal_intenzity && sc & 1 == 1, ..Skalovacie::default() };
+    let (slen, nr, preflag) = rozdelenie_lsf(sc, kanal_intenzity);
+    // poradie prenosu: dlhé pásma 0–20, krátke pásmo po pásme a okno po okne, zmiešané 6 dlhých + krátke 3–11
+    let mut miesta: Vec<(usize, Option<usize>)> = Vec::with_capacity(36);
+    match typ {
+        0 => miesta.extend((0..21).map(|sfb| (sfb, None))),
+        1 => miesta.extend((0..12).flat_map(|sfb| (0..3).map(move |w| (sfb, Some(w))))),
+        _ => {
+            miesta.extend((0..6).map(|sfb| (sfb, None)));
+            miesta.extend((3..12).flat_map(|sfb| (0..3).map(move |w| (sfb, Some(w)))));
+        }
+    }
+    let mut k = 0;
+    for cast in 0..4 {
+        for _ in 0..nr[typ][cast] {
+            let Some(&(sfb, w)) = miesta.get(k) else { break };
+            let n = slen[cast];
+            // slen 0 pri nenulovom počte pásiem: faktor 0 (poloha intenzity 0) – [S] §4.2.4
+            let v = b.citaj(n) as u8;
+            match w {
+                None => {
+                    sf.l[sfb] = v;
+                    sf.slen_l[sfb] = n as u8;
+                }
+                Some(w) => {
+                    sf.s[sfb][w] = v;
+                    sf.slen_s[sfb] = n as u8;
+                }
+            }
+            k += 1;
+        }
+    }
+    (sf, preflag)
 }
 
 /// Škálovacie faktory MPEG-1 (tabuľka 5; dĺžky slen1/slen2 podľa tabuľky 16 a [S] 4.2.4 – slen1 pre pásma 0–10
@@ -364,6 +461,11 @@ fn huffman(
     // hranice oblastí region0/1/2 (v čiarach): pri krátkych blokoch sa pásma počítajú 3× (po oknách)
     let (r1, r2) = if g.prepinanie && g.typ_bloku == 2 && !g.zmiesany {
         (kratke[((g.region0 + 1) / 3) as usize] as usize * 3, 576)
+    } else if g.prepinanie && g.typ_bloku == 2 && index_f >= 3 {
+        // zmiešaný blok LSF – poznámka [S] k region0_count: dlhé pásma 0–5 a pásmo 3 prvých dvoch krátkych okien
+        // (pri 24 kHz čiara 48). FFmpeg končí oblasť 0 s dlhou časťou (36 čiar, pri 8 kHz 72 – zmerané na
+        // syntetických tokoch); text je jednoznačný, ponechaný, rozhodca túto hranicu neoveruje
+        (dlhe[6] as usize + 2 * (kratke[4] - kratke[3]) as usize, 576)
     } else if g.prepinanie {
         (dlhe[(g.region0 + 1) as usize] as usize, 576)
     } else {
@@ -521,11 +623,15 @@ impl DekoderMpa {
         self.rozober_ramec(ramec)?;
         let h = self.hlavicka.ok_or_else(|| Chyba::PoskodeneData("MPEG audio: hlavička".into()))?;
         let nch = h.kanalov();
-        let mut von = vec![vec![0f32; 1152]; nch];
-        for gr in 0..2 {
+        let ngr = if h.verzia == 1 { 2 } else { 1 };
+        let mut von = vec![vec![0f32; 576 * ngr]; nch];
+        for gr in 0..ngr {
             let mut xr = [[0f32; 576]; 2];
-            let mut bloky = [synteza::Blok { typ: 0, zmiesany: false }; 2];
-            if self.posledne.len() == 2 * nch {
+            let mut bloky = [synteza::Blok { typ: 0, zmiesany: false, dlhych: 2, sb_amount: 0 }; 2];
+            // koniec dlhej časti zmiešaného bloku: dlhé pásma 0–7 (MPEG-1), 0–5 (LSF) – v čiarach / 18 podpásiem
+            let dlhych =
+                (tabulky::PASMA_DLHE[h.index_frekvencie][if h.verzia == 1 { 8 } else { 6 }] / 18) as u8;
+            if self.posledne.len() == ngr * nch {
                 for ch in 0..nch {
                     let r = &self.posledne[gr * nch + ch];
                     rekonstrukcia::kvantizacia(
@@ -538,6 +644,8 @@ impl DekoderMpa {
                     bloky[ch] = synteza::Blok {
                         typ: if r.granula.prepinanie { r.granula.typ_bloku } else { 0 },
                         zmiesany: r.granula.prepinanie && r.granula.zmiesany,
+                        dlhych,
+                        sb_amount: if h.verzia == 1 { 0 } else { dlhych },
                     };
                 }
                 let (ms, intenzita) =
@@ -558,6 +666,7 @@ impl DekoderMpa {
                             h.index_frekvencie,
                             ms,
                             intenzita,
+                            h.verzia != 1,
                         ) as u64;
                     }
                 }
@@ -586,17 +695,24 @@ impl DekoderMpa {
     pub fn rozober_ramec(&mut self, ramec: &[u8]) -> Vysledok<()> {
         let h =
             Hlavicka::z_bajtov(ramec).ok_or_else(|| Chyba::PoskodeneData("MPEG audio: hlavička".into()))?;
-        if h.vrstva != 3 || h.verzia != 1 {
-            return Err(Chyba::MimoRozsahu("MPEG audio: zatiaľ len vrstva III MPEG-1".into()));
+        if h.vrstva != 3 {
+            return Err(Chyba::MimoRozsahu("MPEG audio: rozbor granúl len pri vrstve III".into()));
         }
         let nch = h.kanalov();
+        let lsf = h.verzia != 1;
         self.hlavicka = Some(h);
         let zac_vi = 4 + if h.crc { 2 } else { 0 };
-        let dlzka_vi = if nch == 1 { 17 } else { 32 };
+        let dlzka_vi = match (lsf, nch) {
+            (false, 1) => 17,
+            (false, _) => 32,
+            (true, 1) => 9,
+            (true, _) => 17,
+        };
         let telo = ramec
             .get(zac_vi..zac_vi + dlzka_vi)
             .ok_or_else(|| Chyba::PoskodeneData("MPEG audio: krátky".into()))?;
-        let vi = vedlajsie_info(&mut Bity::nove(telo), nch);
+        let vi = vedlajsie_info(&mut Bity::nove(telo), nch, lsf);
+        let ngr = if lsf { 1 } else { 2 };
         // zásobník bitov: hlavné údaje začínajú main_data_begin bajtov pred koncom doterajších hlavných údajov
         let main = ramec.get(zac_vi + dlzka_vi..h.dlzka.min(ramec.len())).unwrap_or_default();
         let st = &mut self.statistika;
@@ -619,13 +735,20 @@ impl DekoderMpa {
             st.ms += (h.rozsirenie & 2 != 0) as u64;
             st.intenzita += (h.rozsirenie & 1 != 0) as u64;
         }
-        let mut vysl = Vec::with_capacity(2 * nch);
-        for gr in 0..2 {
+        let mut vysl = Vec::with_capacity(ngr * nch);
+        for gr in 0..ngr {
             for ch in 0..nch {
-                let g = vi.granuly[gr][ch];
+                let mut g = vi.granuly[gr][ch];
                 let koniec = b.poloha + g.part2_3 as usize;
                 let pred = self.skalovacie[ch];
-                let sf = skalovacie(&mut b, &g, &vi.scfsi[ch], gr, &pred);
+                let sf = if lsf {
+                    let intenzita = h.rezim == 1 && h.rozsirenie & 1 != 0 && ch == 1;
+                    let (sf, preflag) = skalovacie_lsf(&mut b, &g, intenzita);
+                    g.preflag = preflag;
+                    sf
+                } else {
+                    skalovacie(&mut b, &g, &vi.scfsi[ch], gr, &pred)
+                };
                 self.skalovacie[ch] = sf;
                 let mut is = [0i32; 576];
                 st.granul += 1;
@@ -670,6 +793,21 @@ impl DekoderMpa {
 #[cfg(test)]
 mod skusky {
     use super::*;
+
+    #[test]
+    fn rozdelenie_lsf_pokryje_vsetky_pasma() {
+        // každý scalefac_compress: 21 dlhých pásiem, 12 × 3 krátkych, 6 dlhých + 9 × 3 krátkych pri zmiešanom
+        for sc in 0..512 {
+            for intenzita in [false, true] {
+                let (slen, nr, preflag) = rozdelenie_lsf(sc, intenzita);
+                assert_eq!(nr.map(|r| r.iter().sum::<u32>()), [21, 36, 33], "sc {sc}");
+                assert!(slen.iter().all(|&n| n <= if intenzita { 5 } else { 4 }));
+                assert_eq!(preflag, !intenzita && sc >= 500);
+                // part s nulovým počtom pásiem nemá bity
+                assert!((0..4).all(|i| nr[0][i] > 0 || slen[i] == 0));
+            }
+        }
+    }
 
     #[test]
     fn huffmanove_stromy_su_uplne() {

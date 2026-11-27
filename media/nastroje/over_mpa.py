@@ -15,7 +15,11 @@
    syntaxe CD 11172-3 2.4.1.5 s náhodným rozdelením bitov, mierkami a kódmi – kodér vrstvy I nie je) – plná
    presnosť 11172-4 proti FFmpeg. Demuxer FFmpeg niekedy zahodí prvé rámce ako „junk“ – pripustí sa posun o presne
    toľko celých rámcov, o koľko je rozhodca kratší, a porovná sa po nábehu banky filtrov (1 rámec).
-5. **Skúšobné toky ISO** (voliteľne, adresár s pármi `<meno>.bit` + `<meno>.pcm`): referenčný výstup 16 bitov;
+5. **Vrstva III MPEG-2 LSF a 2.5** (ID = 0, 1 granula): LAME pri 22,05/24/16/11,025/12/8 kHz (CBR, VBR, mono,
+   M/S) a toky vytvorené priamo podľa syntaxe [S] (`tok_lsf3`) – všetky rozsahy scalefac_compress a preflag,
+   krátke, zmiešané a štart/stop bloky, intenzitné stereo LSF s M/S aj bez neho (LAME ich nepoužíva) – plná
+   presnosť 11172-4 proti FFmpeg a spotreba bitov presne na konci part2_3_length.
+6. **Skúšobné toky ISO** (voliteľne, adresár s pármi `<meno>.bit` + `<meno>.pcm`): referenčný výstup 16 bitov;
    náš výstup zaokrúhlený na 16 bitov sa smie líšiť najviac o 1 LSB (≤ 2^-15 < 2^-14) a RMS rozdielu pred
    zaokrúhlením je v hraniciach zaokrúhlenia referencie. Formát PCM (LE/BE) sa zistí z menšej chyby, posun musí
    byť 0 (alebo o rámce bez dostatku zásobníka bitov na začiatku, ktoré referenčný dekodér nevydá); referencia
@@ -52,6 +56,16 @@ VARIANTY = [
     ("shine_128", "libshine", 44100, 2, ["-b:a", "128k"]),
     ("shine_64_mono", "libshine", 32000, 1, ["-b:a", "64k"]),
     ("shine_256", "libshine", 48000, 2, ["-b:a", "256k"]),
+    # MPEG-2 LSF (22,05/24/16 kHz) a MPEG-2.5 (11,025/12/8 kHz) – 1 granula v rámci
+    ("lame_lsf_22k", "libmp3lame", 22050, 2, ["-b:a", "64k"]),
+    ("lame_lsf_24k_160", "libmp3lame", 24000, 2, ["-b:a", "160k"]),
+    ("lame_lsf_16k_mono", "libmp3lame", 16000, 1, ["-b:a", "32k"]),
+    ("lame_lsf_22k_v4", "libmp3lame", 22050, 2, ["-q:a", "4"]),
+    ("lame_lsf_16k_ms", "libmp3lame", 16000, 2, ["-b:a", "48k"] + MS),
+    ("lame_25_11k_mono", "libmp3lame", 11025, 1, ["-b:a", "16k"]),
+    ("lame_25_12k", "libmp3lame", 12000, 2, ["-b:a", "32k"]),
+    ("lame_25_8k_mono", "libmp3lame", 8000, 1, ["-b:a", "8k"]),
+    ("lame_25_8k_v6", "libmp3lame", 8000, 2, ["-q:a", "6"]),
 ]
 
 
@@ -104,6 +118,8 @@ BEZMEDZEROVO = [
     ("vbr_v2", 44100, 2, ["-q:a", "2"]),
     ("mono_32k", 32000, 1, ["-b:a", "32k"]),
     ("cbr_48k", 48000, 2, ["-b:a", "192k"]),
+    ("lsf_vbr_22k", 22050, 2, ["-q:a", "5"]),
+    ("lsf25_8k_mono", 8000, 1, ["-b:a", "16k"]),
 ]
 
 
@@ -213,13 +229,159 @@ def tok_vrstvy1(cesta, rezim, ramcov=200, semienko=1):
             f.write(z.bajty(1344))
 
 
+def _tabulky_pasiem():
+    """Začiatky pásiem (PASMA_DLHE, PASMA_KRATKE) z vygenerovaného media/src/mpa/tabulky.rs."""
+    t = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "mpa", "tabulky.rs"),
+             encoding="utf-8").read()
+
+    def pole(meno):
+        m = re.search(meno + r": \[\[u\d+; \d+\]; 9\] = \[(.*?)\];", t, re.S)
+        return [list(map(int, re.findall(r"\d+", r))) for r in re.findall(r"\[([^\[\]]*)\]", m.group(1))]
+
+    return pole("PASMA_DLHE"), pole("PASMA_KRATKE")
+
+
+def lsf_slen(sc, intenzita):
+    """(slen1–4, nr_of_sfb [dlhé, krátke, zmiešané][1–4], preflag) – [S] §4.2.4, scalefac_compress pri ID = 0;
+    `intenzita` = pravý kanál pri mode_extension 01/11 (intensity_scale = sc mod 2, int_scalefac_compress = sc/2)."""
+    if not intenzita:
+        if sc < 400:
+            return [(sc >> 4) // 5, (sc >> 4) % 5, (sc % 16) >> 2, sc % 4], [[6, 5, 5, 5], [9, 9, 9, 9], [6, 9, 9, 9]], 0
+        if sc < 500:
+            x = sc - 400
+            return [(x >> 2) // 5, (x >> 2) % 5, x % 4, 0], [[6, 5, 7, 3], [9, 9, 12, 6], [6, 9, 12, 6]], 0
+        x = sc - 500
+        return [x // 3, x % 3, 0, 0], [[11, 10, 0, 0], [18, 18, 0, 0], [15, 18, 0, 0]], 1
+    i = sc >> 1
+    if i < 180:
+        return [i // 36, (i % 36) // 6, (i % 36) % 6, 0], [[7, 7, 7, 0], [12, 12, 12, 0], [6, 15, 12, 0]], 0
+    if i < 244:
+        x = i - 180
+        return [(x % 64) >> 4, (x % 16) >> 2, x % 4, 0], [[6, 6, 6, 3], [12, 9, 9, 6], [6, 12, 9, 6]], 0
+    x = i - 244
+    return [x // 3, x % 3, 0, 0], [[8, 8, 5, 0], [15, 12, 9, 0], [6, 18, 9, 0]], 0
+
+
+# Huffmanova tabuľka 1 ([S] tabuľka 27): (|x|, |y|) → (kód, dĺžka)
+HUFF1 = {(0, 0): (1, 1), (0, 1): (1, 3), (1, 0): (1, 2), (1, 1): (0, 3)}
+
+
+def tok_lsf3(cesta, f, druh, nch=2, ramcov=150, semienko=1):
+    """Rámce vrstvy III MPEG-2 LSF / 2.5 podľa syntaxe [S] (ID = 0): 160 kb/s, bez CRC a zásobníka bitov,
+    1 granula. Typy blokov v povolených postupnostiach (dlhé → štart → krátke/zmiešané → stop → dlhé; zmiešaný len
+    vedľa zmiešaného, štartu a stopu), všetky tri rozsahy scalefac_compress (aj preflag), subblock_gain,
+    scalefac_scale; big_values s Huffmanovou tabuľkou 0 alebo 1 v každej oblasti, count1 tabuľkou B.
+    `druh`: "skalovacie" (L/R), "intenzita" (mode_extension 01), "intenzita_ms" (11) – pravý kanál nenulový len
+    v dolnej časti spektra, všetky tri rozsahy int_scalefac_compress, oba intensity_scale.
+
+    Vynechané sú len prípady, kde sa FFmpeg odchyľuje od jednoznačného textu [S] (rozhodca ich nemôže overiť):
+    nepovolené postupnosti okien (FFmpeg pri krátkom bloku predpokladá nulové okraje predošlého okna), zmiešaný
+    blok pri 8 kHz (FFmpeg berie dlhé len podpásma 0–1), rôzne tabuľky oblastí 0 a 1 zmiešaného bloku (FFmpeg
+    končí oblasť 0 s dlhou časťou) a najväčšie polohy intenzity 2^slen − 1 a polohy ≥ 16 (FFmpeg: neplatné ≥ 16)."""
+    verzia, sf_idx, index_f = {24000: (2, 1, 4), 16000: (2, 2, 5), 12000: (0, 1, 7), 8000: (0, 2, 8)}[f]
+    dlhe, kratke = (t[index_f] for t in _tabulky_pasiem())
+    dlzka = 72 * 160000 // f
+    ext = {"skalovacie": 0, "intenzita": 1, "intenzita_ms": 3}[druh]
+    rezim = 3 if nch == 1 else (1 if ext else 0)
+    g = np.random.default_rng(semienko)
+    nasledujuce = {(0, False): [(0, False), (1, False)], (3, False): [(0, False), (1, False)],
+                   (1, False): [(2, False), (2, True), (3, False)], (2, False): [(2, False), (3, False)],
+                   (2, True): [(2, True), (3, False)]}
+    blok = (0, False)
+    with open(cesta, "wb") as subor:
+        for _ in range(ramcov):
+            moznosti = [m for m in nasledujuce[blok] if not (m[1] and f == 8000)]
+            blok = moznosti[int(g.integers(0, len(moznosti)))]
+            typ, zmiesany = blok
+            prepinanie = typ != 0
+            kanaly = []
+            for ch in range(nch):
+                intenz = ext & 1 and ch == 1
+                z = Zapisovac()
+                if intenz:
+                    i = int(g.choice([g.integers(0, 180), g.integers(180, 244), g.integers(244, 256)]))
+                    sc = 2 * i + int(g.integers(0, 2))
+                else:
+                    sc = int(g.choice([g.integers(0, 400), g.integers(400, 500), g.integers(500, 512)]))
+                slen, nr, _ = lsf_slen(sc, intenz)
+                t = 0 if typ != 2 else (2 if zmiesany else 1)
+                for cast in range(4):
+                    for _ in range(nr[t][cast]):
+                        n = slen[cast]
+                        horna = min(2 ** n - 2, 15) if intenz and n else 2 ** n - 1
+                        z.pis(int(g.integers(0, horna + 1)), n)
+                # oblasti big_values v poradí bitového toku
+                if not prepinanie:
+                    r0, r1 = int(g.integers(0, 16)), int(g.integers(0, 8))
+                    hranice = [dlhe[min(r0 + 1, 22)], dlhe[min(r0 + r1 + 2, 22)], 576]
+                    tabulky = [int(x) for x in g.integers(0, 2, 3)]
+                else:
+                    r0 = r1 = 0
+                    hranice = [3 * kratke[3] if typ == 2 and not zmiesany else dlhe[8], 576]
+                    tabulky = [int(x) for x in g.integers(0, 2, 2)]
+                    if zmiesany:
+                        tabulky[1] = tabulky[0]
+                if intenz:
+                    tabulky = [1] * len(tabulky)
+                    bv = int(g.integers(0, 24)) if g.random() < 0.7 else 0
+                    stvoric = int(g.integers(0, 30)) if g.random() < 0.7 else 0
+                else:
+                    bv = int(g.integers(0, min(288, hranice[0] // 2 + 30) + 1))
+                    stvoric = int(g.integers(0, (576 - 2 * bv) // 4 + 1))
+                hodnoty = [int(v) for v in g.choice([-1, 0, 0, 1], 2 * bv + 4 * stvoric)]
+                if intenz and hodnoty:
+                    hodnoty[-1] = 1  # koniec nenulovej časti pravého kanála = začiatok intenzity
+                for i in range(bv):
+                    oblast = next(k for k, h in enumerate(hranice) if 2 * i < h)
+                    if tabulky[oblast] == 0:  # tabuľka 0: dvojica núl bez bitov
+                        continue
+                    x, y = hodnoty[2 * i], hodnoty[2 * i + 1]
+                    kod, n = HUFF1[(abs(x), abs(y))]
+                    z.pis(kod, n)
+                    for v in (x, y):
+                        if v:
+                            z.pis(int(v < 0), 1)
+                for i in range(stvoric):
+                    q = hodnoty[2 * bv + 4 * i:2 * bv + 4 * i + 4]
+                    z.pis(15 - (8 * abs(q[0]) + 4 * abs(q[1]) + 2 * abs(q[2]) + abs(q[3])), 4)
+                    for v in q:
+                        if v:
+                            z.pis(int(v < 0), 1)
+                kanaly.append(dict(bity=z.bity, bv=bv, gain=int(g.integers(160, 186)), sc=sc, tabulky=tabulky,
+                                   r=(r0, r1), sbg=[int(x) for x in g.integers(0, 8, 3)],
+                                   scale=int(g.integers(0, 2))))
+            z = Zapisovac()
+            z.pis(0x7FF, 11); z.pis(verzia, 2); z.pis(1, 2); z.pis(1, 1)  # sync, ID (10 MPEG-2, 00 2.5), III
+            z.pis(14, 4); z.pis(sf_idx, 2); z.pis(0, 1); z.pis(0, 1)      # 160 kb/s, frekvencia
+            z.pis(rezim, 2); z.pis(ext, 2); z.pis(0, 4)
+            z.pis(0, 8); z.pis(0, 1 if nch == 1 else 2)                     # main_data_begin, private_bits
+            for k in kanaly:
+                assert len(k["bity"]) < 4096
+                z.pis(len(k["bity"]), 12); z.pis(k["bv"], 9); z.pis(k["gain"], 8); z.pis(k["sc"], 9)
+                z.pis(int(prepinanie), 1)
+                if prepinanie:
+                    z.pis(typ, 2); z.pis(int(zmiesany), 1)
+                    for tb in k["tabulky"]:
+                        z.pis(tb, 5)
+                    for x in k["sbg"]:
+                        z.pis(x, 3)
+                else:
+                    for tb in k["tabulky"]:
+                        z.pis(tb, 5)
+                    z.pis(k["r"][0], 4); z.pis(k["r"][1], 3)
+                z.pis(k["scale"], 1); z.pis(1, 1)  # scalefac_scale, count1table_select = tabuľka B
+            for k in kanaly:
+                z.bity.extend(k["bity"])
+            subor.write(z.bajty(dlzka))
+
+
 def porovnaj_s_rozhodcom(nas, ref, k):
     """(RMS, najväčší, posun v rámcoch po k kanáloch): posun len o rámce, ktoré rozhodca na začiatku vynechal."""
     if len(nas) == len(ref):
         rms, mx, _ = presnost(nas, ref)
         return rms, mx, 0
     rozdiel = len(nas) - len(ref)
-    for ramec in (1152, 384):
+    for ramec in (1152, 576, 384):
         if rozdiel > 0 and rozdiel % (ramec * k) == 0 and rozdiel // (ramec * k) <= 2:
             a = nas[rozdiel:]
             rms, mx, _ = presnost(a[ramec * k:], ref[ramec * k:])
@@ -324,12 +486,51 @@ def skusobne_toky(program, adresar, prac):
     return chyb
 
 
+# (meno, frekvencia, druh, kanálov)
+LSF_TOKY = [
+    ("lsf_skalovacie_24k", 24000, "skalovacie", 2),
+    ("lsf_skalovacie_16k_mono", 16000, "skalovacie", 1),
+    ("lsf25_skalovacie_8k", 8000, "skalovacie", 2),
+    ("lsf_intenzita_16k", 16000, "intenzita", 2),
+    ("lsf25_intenzita_12k", 12000, "intenzita", 2),
+    ("lsf_intenzita_ms_24k", 24000, "intenzita_ms", 2),
+    ("lsf25_intenzita_ms_8k", 8000, "intenzita_ms", 2),
+]
+
+
+def lsf(program, adresar):
+    print("\n| vrstva III LSF / 2.5 (syntax [S]) | granúl | presne na konci part2_3_length | rámcov vynechal "
+          "rozhodca | RMS rozdielu | najväčší | pokrytie | výsledok |")
+    print("|---|---|---|---|---|---|---|---|")
+    chyb = 0
+    for i, (meno, f, druh, k) in enumerate(LSF_TOKY):
+        cesta = os.path.join(adresar, meno + ".mp3")
+        tok_lsf3(cesta, f, druh, k, semienko=40 + i)
+        ref_cesta, nas_cesta = cesta + ".ff.f32", cesta + ".nas.f32"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-c:a", "mp3float", "-f", "mp3", "-i", cesta, "-f", "f32le",
+                        ref_cesta], check=True, stderr=subprocess.DEVNULL)
+        kod, m = dekoduj(program, cesta, nas_cesta)
+        nas = np.fromfile(nas_cesta, dtype="<f4").astype(np.float64)
+        ref = np.fromfile(ref_cesta, dtype="<f4").astype(np.float64)
+        rms, mx, vynechal = porovnaj_s_rozhodcom(nas, ref, k)
+        spotreba = m.get("granul", 0) > 0 and m.get("presne") == m.get("granul") and m.get("chyba_skalovacich") == 0
+        ok = kod == 0 and m.get("chyb", 1) == 0 and spotreba and vynechal is not None and rms < HRANICA_RMS \
+            and mx <= HRANICA_MAX
+        chyb += not ok
+        pokrytie = ", ".join(f"{x} {m[x]}" for x in ("kratke", "zmiesane", "start_stop", "preflag", "ms",
+                                                     "intenzitne_pasma") if m.get(x))
+        print(f"| {meno} | {m.get('granul')} | {m.get('presne')}/{m.get('granul')} | {vynechal} | {rms:.2e} | "
+              f"{mx:.2e} | {pokrytie} | {'✅' if ok else '❌'} |")
+    return chyb
+
+
 def main():
     program, adresar = sys.argv[1], sys.argv[2]
     os.makedirs(adresar, exist_ok=True)
     chyb = varianty(program, adresar)
     chyb += bezmedzerovo(program, adresar)
     chyb += vrstvy12(program, adresar)
+    chyb += lsf(program, adresar)
     if len(sys.argv) > 3:
         chyb += skusobne_toky(program, sys.argv[3], adresar)
     sys.exit(1 if chyb else 0)

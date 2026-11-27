@@ -576,12 +576,12 @@ fn mpa_vrstvy() {
     let mut n = nahoda(17);
     let mut d = DekoderMpa::novy();
     for i in 0..pocet_pokusov() / 20 {
-        // hlavička: MPEG-1, vrstva III, bez CRC / s CRC, toky 32–320 kb/s, 44,1/48/32 kHz, všetky režimy
+        // hlavička: bez CRC / s CRC, všetky toky, frekvencie a režimy
         let tok = 1 + (n.dalsie() % 14) as u8;
         let f = (n.dalsie() % 3) as u8;
         let rezim = (n.dalsie() % 4) as u8;
-        // vrstvy I, II, III (MPEG-1) aj vrstvy I, II MPEG-2 LSF
-        let vrstva = [0xFAu8, 0xFC, 0xFE, 0xF4, 0xF6][(n.dalsie() % 5) as usize];
+        // vrstvy I, II, III (MPEG-1), vrstvy I, II, III MPEG-2 LSF a vrstva III MPEG-2.5
+        let vrstva = [0xFAu8, 0xFC, 0xFE, 0xF2, 0xF4, 0xF6, 0xE2][(n.dalsie() % 7) as usize];
         let mut p = vec![
             0xFF,
             vrstva | (i % 2) as u8,
@@ -593,7 +593,7 @@ fn mpa_vrstvy() {
         // výstup vždy konečný (aj pri nezmyselných ziskoch a polohách intenzity)
         if let Ok(pcm) = d.dekoduj_ramec(&p) {
             assert!(
-                pcm.iter().all(|k| (k.len() == 1152 || k.len() == 384) && k.iter().all(|v| v.is_finite()))
+                pcm.iter().all(|k| [1152, 576, 384].contains(&k.len()) && k.iter().all(|v| v.is_finite()))
             );
         }
         if i % 97 == 0 {

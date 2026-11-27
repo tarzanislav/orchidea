@@ -124,17 +124,33 @@ pub(crate) struct Blok {
     /// block_type 0–3 (0 aj bez prepínania okien)
     pub typ: u8,
     pub zmiesany: bool,
+    /// dlhých podpásiem zmiešaného bloku (koniec dlhej časti / 18: 2, pri MPEG 2.5 8 kHz 4)
+    pub dlhych: u8,
+    /// `sb_amount` redukcie aliasu pri zmiešanom bloku ([S] §4.3.12.1): 0 pri MPEG-1 (rozhodnuté meraním),
+    /// pri LSF a 2.5 počet dlhých podpásiem
+    pub sb_amount: u8,
 }
 
 /// Redukcia aliasu ([S] §4.3.12.1): motýliky na hraniciach susedných podpásiem dlhých blokov.
 ///
-/// **Rozpor rozhodnutý meraním (zmiešaný blok):** pseudokód [S] dáva pri zmiešanom bloku MPEG-1 jednu hranicu
-/// (podpásma 0 a 1). Referenčný výstup skúšobného toku ISO/IEC 11172-4 `he_mode` (jediný so zmiešanými blokmi)
-/// zodpovedá **zmiešanému bloku bez redukcie aliasu**: s motýlikom na hranici 0/1 je rozdiel 11 LSB (RMS 4,3·10⁻⁵),
-/// bez neho ≤ 1 LSB (RMS 2,6·10⁻⁷, zaokrúhlenie referencie); pri viac hraniciach 240 LSB.
+/// **Rozpor rozhodnutý meraním (zmiešaný blok MPEG-1):** pseudokód [S] dáva pri zmiešanom bloku `sb_amount = 2`
+/// (hranica podpásiem 0 a 1). Referenčný výstup skúšobného toku ISO/IEC 11172-4 `he_mode` (jediný so zmiešanými
+/// blokmi) zodpovedá **zmiešanému bloku bez redukcie aliasu**: s motýlikom na hranici 0/1 je rozdiel 11 LSB
+/// (RMS 4,4·10⁻⁵), bez neho ≤ 1 LSB (RMS 8,9·10⁻⁶ – zaokrúhlenie referencie); pri viac hraniciach 240 LSB.
+/// FFmpeg (`mp3float`) motýlik 0/1 robí (syntetické toky so zmiešanými blokmi: zhoda len s ním) – pri MPEG-1
+/// rozhoduje normatívna referencia 11172-4.
+///
+/// **LSF a 2.5 (ID = 0):** text [S] (`sb_amount = 2`, pri MPEG-2.5 8 kHz 4) a FFmpeg sa zhodujú pri 24 až
+/// 11,025 kHz; referenčné toky 13818-4 nie sú k dispozícii. Pri 8 kHz FFmpeg berie ako dlhé len podpásma 0–1 a čiary
+/// 36–71 (kódované ako dlhé pásma 0–5, nepreradené) pošle do krátkej IMDCT – to nie je výklad textu, ponechaný je
+/// text (`sb_amount = 4`, dlhé podpásma 0–3), neoverené.
 pub(crate) fn alias(xr: &mut [f32; 576], blok: Blok) {
     let t = tabulky();
-    let pocet = if blok.typ == 2 { 0 } else { 32 };
+    let pocet = match (blok.typ, blok.zmiesany) {
+        (2, false) => 0,
+        (2, true) => blok.sb_amount as usize,
+        _ => 32,
+    };
     for sb in 1..pocet {
         for i in 0..8 {
             let (a, b) = (18 * sb - 1 - i, 18 * sb + i);
@@ -157,8 +173,8 @@ impl StavSyntezy {
         for sb in 0..32 {
             let x = &xr[18 * sb..18 * sb + 18];
             let mut y = [0f32; 36];
-            // [S] tabuľka 19: pri zmiešanom bloku majú dolné dve podpásma vždy normálne okno
-            let typ = if blok.zmiesany && sb < 2 { 0 } else { blok.typ };
+            // [S] tabuľka 19: pri zmiešanom bloku majú dolné (dlhé) podpásma vždy normálne okno
+            let typ = if blok.zmiesany && sb < blok.dlhych as usize { 0 } else { blok.typ };
             if typ == 2 {
                 // tri krátke bloky – každý zvlášť IMDCT n = 12, okno, spojenie s posunom 6 (CD 2.4.3.4 d)
                 for w in 0..3 {
@@ -237,20 +253,29 @@ mod skusky {
 
     #[test]
     fn alias_len_pri_dlhych_blokoch() {
-        // zmiešaný aj krátky blok ostane bez motýlikov (rozhodnuté meraním na toku ISO he_mode), dlhý sa zmení
+        // zmiešaný blok MPEG-1 aj krátky blok ostane bez motýlikov (rozhodnuté meraním na toku ISO he_mode)
         let mut xr = [0f32; 576];
         for (i, v) in xr.iter_mut().enumerate() {
             *v = (i % 7) as f32 - 3.0;
         }
-        for blok in [Blok { typ: 2, zmiesany: true }, Blok { typ: 2, zmiesany: false }] {
+        for blok in [
+            Blok { typ: 2, zmiesany: true, dlhych: 2, sb_amount: 0 },
+            Blok { typ: 2, zmiesany: false, dlhych: 2, sb_amount: 0 },
+        ] {
             let mut x = xr;
             alias(&mut x, blok);
             assert_eq!(x, xr);
         }
         let mut x = xr;
-        alias(&mut x, Blok { typ: 0, zmiesany: false });
+        alias(&mut x, Blok { typ: 0, zmiesany: false, dlhych: 2, sb_amount: 0 });
         assert_ne!(x[17], xr[17]);
         assert_eq!(x[0..10], xr[0..10]);
+        // zmiešaný blok LSF: len hranica podpásiem 0/1 (čiary 10–25)
+        let mut x = xr;
+        alias(&mut x, Blok { typ: 2, zmiesany: true, dlhych: 2, sb_amount: 2 });
+        assert_eq!(x[..10], xr[..10]);
+        assert_ne!(x[10..26], xr[10..26]);
+        assert_eq!(x[26..], xr[26..]);
     }
 
     #[test]
@@ -290,7 +315,7 @@ mod skusky {
         let mut stav = StavSyntezy::default();
         let mut xr = [0f32; 576];
         let mut von = [[0f32; 32]; 18];
-        let blok = Blok { typ: 0, zmiesany: false };
+        let blok = Blok { typ: 0, zmiesany: false, dlhych: 2, sb_amount: 0 };
         for k in 0..18 {
             xr[k] = a[k] as f32;
         }
