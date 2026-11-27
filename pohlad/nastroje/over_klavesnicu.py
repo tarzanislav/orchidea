@@ -22,6 +22,8 @@ def main():
     x.xkb_state_key_get_syms.restype = ctypes.c_int
     x.xkb_state_key_get_syms.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.POINTER(ctypes.c_uint32))]
     x.xkb_state_unref.argtypes = [ctypes.c_void_p]
+    x.xkb_keysym_to_upper.restype = ctypes.c_uint32
+    x.xkb_keysym_to_upper.argtypes = [ctypes.c_uint32]
     ctx = x.xkb_context_new(0)
     spolu = zle_spolu = 0
     for r in rozlozenia:
@@ -62,6 +64,9 @@ def main():
             # libxkbcommon 1.6: Caps Lock pri µ a ß dá neplatný symbol (0x39c, 0x1e9e bez 0x01000000) – bez znaku
             if (st | zam) & 2 and sym in (0xb5, 0xdf) and ich_z is None:
                 ich_z = nas_z
+            # novšia libxkbcommon (1.8+) dá pri Caps Lock už veľký symbol – znak je rovnaký
+            if (st | zam) & 2 and nas_z == ich_z and ich_sym == x.xkb_keysym_to_upper(sym):
+                ich_sym = sym
             n += 1
             if sym != ich_sym or nas_z != ich_z:
                 zle.append((kod, st, zam, sk, hex(sym), hex(ich_sym), nas_z, ich_z))

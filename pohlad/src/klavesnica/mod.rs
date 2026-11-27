@@ -1107,8 +1107,11 @@ impl Klavesnica {
             && c.is_lowercase()
         {
             let mut v = c.to_uppercase();
-            if let (Some(x), None) = (v.next(), v.next()) {
-                z = Some(x);
+            match (v.next(), v.next()) {
+                (Some(x), None) => z = Some(x),
+                // ß nemá jedno veľké písmeno (SS) – Caps Lock dá ẞ ako libxkbcommon
+                _ if c == 'ß' => z = Some('ẞ'),
+                _ => {}
             }
         }
         if volne & CTRL != 0 {
