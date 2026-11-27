@@ -13,7 +13,8 @@
 4. **Skúšobné toky ISO** (voliteľne, adresár s pármi `<meno>.bit` + `<meno>.pcm`): referenčný výstup 16 bitov;
    náš výstup zaokrúhlený na 16 bitov sa smie líšiť najviac o 1 LSB (≤ 2^-15 < 2^-14) a RMS rozdielu pred
    zaokrúhlením je v hraniciach zaokrúhlenia referencie. Formát PCM (LE/BE) sa zistí z menšej chyby, posun musí
-   byť 0; referencia smie byť na konci kratšia najviac o 2 rámce.
+   byť 0 (alebo o rámce bez dostatku zásobníka bitov na začiatku, ktoré referenčný dekodér nevydá); referencia
+   smie byť na konci kratšia najviac o 2 rámce; náš výstup sa pred porovnaním oreže na 16-bitový rozsah.
 
 Použitie: `over_mpa.py <media_mpa> <adresár> [adresár so skúšobnými tokmi]`
 """
@@ -145,9 +146,12 @@ def skusobne_toky(program, adresar, prac):
     for meno in mena:
         nas_cesta = os.path.join(prac, meno + ".nas.f32")
         kod, m = dekoduj(program, os.path.join(adresar, meno + ".bit"), nas_cesta)
-        nas = np.fromfile(nas_cesta, dtype="<f4").astype(np.float64)
+        # referencia je 16-bitová, teda orezaná na plný rozsah – náš výstup sa oreže rovnako
+        nas = np.clip(np.fromfile(nas_cesta, dtype="<f4").astype(np.float64), -1.0, 32767 / 32768)
         surove = open(os.path.join(adresar, meno + ".pcm"), "rb").read()
         k = max(m.get("kanalov", 1), 1)
+        # rámce na začiatku bez dostatku zásobníka bitov referenčný dekodér nevydá (my ticho)
+        pripustny_posun = m.get("nedostatok_zasobnika", 0) * 1152 * k
         najlepsi = None
         for fmt in ("<i2", ">i2"):
             ref = np.frombuffer(surove[: len(surove) // 2 * 2], dtype=fmt).astype(np.float64) / 32768.0
@@ -173,8 +177,9 @@ def skusobne_toky(program, adresar, prac):
         lsb = int(np.abs(np.clip(np.round(a * 32768.0), -32768, 32767) - np.round(b * 32768.0)).max())
         kratsia = len(nas) - n_ref
         # RMS proti 16-bitovej referencii = zaokrúhlenie referencie (≈ 2^-15/√12) + naša chyba
-        ok = (kod == 0 and m.get("chyb", 1) == 0 and posun == 0 and 0 <= kratsia <= 2 * 1152 * k and lsb <= 1
-              and rms < HRANICA_RMS * 1.1)
+        kratsia -= posun
+        ok = (kod == 0 and m.get("chyb", 1) == 0 and posun in (0, pripustny_posun) and 0 <= kratsia <= 2 * 1152 * k
+              and lsb <= 1 and rms < HRANICA_RMS * 1.1)
         chyb += not ok
         print(f"| {meno} | {k} / {m.get('frekvencia', 0) / 1000:g} | {len(nas)} ({n_ref}) | "
               f"{'LE' if fmt == '<i2' else 'BE'} | {posun} | {rms:.2e} | {lsb} | {m.get('intenzitne_pasma', 0)} | "

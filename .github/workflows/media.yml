@@ -74,8 +74,8 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          for f in he_mode si_huff sin1k0db he_free; do
-            echo "=== $f.bit"; base64 -w 0 "$RUNNER_TEMP/mp3-iso/$f.bit"; echo; echo "=== koniec $f"
+          for f in he_mode.bit he_mode.pcm si_huff.pcm; do
+            echo "=== $f"; base64 -w 0 "$RUNNER_TEMP/mp3-iso/$f"; echo; echo "=== koniec $f"
           done
       - name: Pakety Opus pri neúspechu (na rozbor)
         if: failure()
