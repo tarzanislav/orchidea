@@ -79,9 +79,11 @@ fn main() {
                 "3" => Zamer::AbsolutnyKolorimetricky,
                 _ => Zamer::RelativnyKolorimetricky,
             };
-            let p = Prevod::novy(&priestor(&a[1]), &priestor(&a[2]), zamer).expect("prevod");
+            // voľby za počtom kanálov: „presne“ (po bodoch bez mriežky), „bpc“ (kompenzácia čierneho bodu)
+            let volby = orchidea_farba::Volby { kompenzacia_ciernej: a[5..].iter().any(|x| x == "bpc") };
+            let p = Prevod::s_volbami(&priestor(&a[1]), &priestor(&a[2]), zamer, volby).expect("prevod");
             let k: usize = a[4].parse().unwrap();
-            let o = if a.get(5).map(String::as_str) == Some("presne") {
+            let o = if a[5..].iter().any(|x| x == "presne") {
                 // presne po bodoch (bez mriežky), zaokrúhlené na 8 bitov
                 let mut o = Vec::new();
                 let mut b = vec![0.0; p.vystupov()];

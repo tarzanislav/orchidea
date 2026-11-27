@@ -113,6 +113,7 @@ def icc():
         print("bez priečinka s profilmi ICC – preskočené")
         return
     BEZ_OPTIMALIZACIE = 0x0100  # cmsFLAGS_NOOPTIMIZE: rozhodca počíta celý reťazec po bodoch
+    BPC = 0x2000  # cmsFLAGS_BLACKPOINTCOMPENSATION – kompenzácia čierneho bodu (ISO 18619)
     mriezka = np.stack(np.meshgrid(*[np.linspace(0, 255, 18).round()] * 3, indexing="ij"), -1).reshape(-1, 3)
     rgb = mriezka.astype(np.uint8)
     srgb = ImageCms.createProfile("sRGB")
@@ -126,8 +127,8 @@ def icc():
         t.transform.apply(vez(obr), vez(o))
         return np.frombuffer(o.tobytes(), dtype=np.uint8).reshape(-1, k_von).astype(int)
 
-    def nase(z, c, zamer, k, vstup, k_von, presne=False):
-        a = ["icc", z, c, str(zamer), str(k)] + (["presne"] if presne else [])
+    def nase(z, c, zamer, k, vstup, k_von, presne=False, bpc=False):
+        a = ["icc", z, c, str(zamer), str(k)] + (["presne"] if presne else []) + (["bpc"] if bpc else [])
         return np.frombuffer(spusti(a, vstup.tobytes()), dtype=np.uint8).reshape(-1, k_von).astype(int)
 
     cesty = sorted({c for p in PROFILY for c in glob.glob(os.path.join(p, "**", "*.ic[cm]"), recursive=True)})
@@ -167,6 +168,11 @@ def icc():
                 porovnaj(f"ICC {meno} → sRGB, zámer {zamer}", n, i, 2)
                 porovnaj(f"ICC {meno} → sRGB, zámer {zamer}, presne", nase(cesta, "srgb", zamer, k, vstup, 3, True),
                          lcms(profil, srgb, rezim, "RGB", zamer, vstup, 3, BEZ_OPTIMALIZACIE), 2)
+            # kompenzácia čierneho bodu (relatívny kolorimetrický zámer), po bodoch aj cez mriežku
+            for presne in (True, False):
+                porovnaj(f"ICC {meno} → sRGB, čierny bod{', presne' if presne else ''}",
+                         nase(cesta, "srgb", 1, k, vstup, 3, presne, bpc=True),
+                         lcms(profil, srgb, rezim, "RGB", 1, vstup, 3, BPC | BEZ_OPTIMALIZACIE), 2)
             if priestor not in ("RGB", "CMYK"):
                 continue
             kc = 3 if priestor == "RGB" else 4
@@ -176,9 +182,9 @@ def icc():
             except Exception:
                 print(f"PRESKOČENÉ sRGB → {meno}: profil nemá spätný smer (ani rozhodca ho nevie použiť ako cieľ)")
                 continue
-            for presne in (False, True):
-                n = nase("srgb", cesta, 1, 3, rgb, kc, presne)
-                i = lcms(srgb, profil, "RGB", rezim, 1, rgb, kc, BEZ_OPTIMALIZACIE if presne else 0)
+            for presne, bpc in ((False, False), (True, False), (True, True)):
+                n = nase("srgb", cesta, 1, 3, rgb, kc, presne, bpc)
+                i = lcms(srgb, profil, "RGB", rezim, 1, rgb, kc, (BEZ_OPTIMALIZACIE if presne else 0) | (BPC if bpc else 0))
                 if not presne:
                     # pri málo bodoch počíta farba presne aj bez voľby (mriežka by bola zbytočná) – uzná sa zhoda
                     # s optimalizovaným aj presným výsledkom rozhodcu
@@ -191,7 +197,8 @@ def icc():
                     spat_i = lcms(profil, srgb, "RGB", "RGB", 1, i.astype(np.uint8), 3)
                     rozdiel = np.minimum(np.abs(n - i).max(1), np.abs(spat_n - spat_i).max(1))
                     n, i = rozdiel, np.zeros_like(rozdiel)
-                porovnaj(f"ICC sRGB → {meno}, zámer 1{', presne' if presne else ''}", n, i, 2)
+                popis = (", presne" if presne else "") + (", čierny bod" if bpc else "")
+                porovnaj(f"ICC sRGB → {meno}, zámer 1{popis}", n, i, 2)
         except RuntimeError as e:
             print(f"ZLYHALO   {os.path.basename(cesta)}: {e}")
             zlyhania.append(os.path.basename(cesta))

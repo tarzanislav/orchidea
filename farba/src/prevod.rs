@@ -166,6 +166,32 @@ impl Strana {
         })
     }
 
+    /// Čierny bod strany v XYZ D50 (neutrálny, relatívny kolorimetrický zámer), podľa postupu Adobe pre
+    /// kompenzáciu čierneho bodu:
+    /// - zdroj RGB a sivá: najtmavšia farba zariadenia (0),
+    /// - cieľ s tabuľkami a CMYK aj ako zdroj: cesta tam a späť Lab(0, 0, 0) → zariadenie → Lab – najtmavšia farba,
+    ///   ktorú profil naozaj vie (pri CMYK nie je nutne 100 % všetkých farieb – limit nánosu),
+    /// - XYZ a Lab: nulová čierna.
+    fn cierny_bod(&self, ako_ciel: bool) -> V3 {
+        let rel = Zamer::RelativnyKolorimetricky;
+        match self {
+            Strana::Linearna { .. } => {
+                let nula = vec![0.0; self.kanalov()];
+                neutralny(self.do_xyz(&nula, rel))
+            }
+            Strana::Icc(p) => {
+                let cmyk = p.priestor == icc::PriestorZariadenia::Cmyk;
+                if (ako_ciel || cmyk) && p.ma_z_pcs(rel) && p.ma_do_pcs(rel) {
+                    let zariadenie = p.z_pcs(icc::lab_na_xyz([0.0, 0.0, 0.0]), rel);
+                    return neutralny(p.do_pcs(&zariadenie, rel));
+                }
+                let vstup: Vec<f64> = if cmyk { vec![1.0; 4] } else { vec![0.0; p.kanalov()] };
+                if p.ma_do_pcs(rel) { neutralny(p.do_pcs(&vstup, rel)) } else { [0.0; 3] }
+            }
+            Strana::Xyz | Strana::Lab => [0.0; 3],
+        }
+    }
+
     fn siva(prenos: Prenos) -> Strana {
         let w = primarne::ICC_D50;
         Strana::Linearna {
@@ -255,6 +281,23 @@ pub struct Prevod {
     pomer: Option<V3>,
     /// Lineárne zdroja → lineárne cieľa (obe strany lineárne modely).
     matica: Option<M3>,
+    /// Kompenzácia čierneho bodu: x' = x · mierka + posun (v XYZ D50, po zložkách).
+    kompenzacia: Option<(V3, V3)>,
+}
+
+/// Voľby prevodu.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Volby {
+    /// Kompenzácia čierneho bodu (ISO 18619): čierna zdroja sa zobrazí na čiernu cieľa, biela ostane – tiene sa
+    /// nezlejú a neostanú sivé. Len pri relatívnom kolorimetrickom zámere (percepčný zámer mapuje čiernu sám
+    /// tabuľkami profilu; absolútny ju zachováva zámerne).
+    pub kompenzacia_ciernej: bool,
+}
+
+/// Bod v XYZ → neutrálny bod s rovnakým L* (a* = b* = 0) – čierny bod sa berie ako neutrálny.
+fn neutralny(x: V3) -> V3 {
+    let lab = icc::xyz_na_lab(x);
+    icc::lab_na_xyz([lab[0].clamp(0.0, 50.0), 0.0, 0.0])
 }
 
 /// Mriežka pre celé čísla (prevod zariadenie → zariadenie).
@@ -278,7 +321,45 @@ impl Prevod {
             }
             _ => None,
         };
-        Ok(Prevod { zdroj: z, ciel: c, zamer, pomer, matica })
+        Ok(Prevod { zdroj: z, ciel: c, zamer, pomer, matica, kompenzacia: None })
+    }
+
+    /// Zostaví prevod s voľbami (napríklad s kompenzáciou čierneho bodu).
+    pub fn s_volbami(zdroj: &Priestor, ciel: &Priestor, zamer: Zamer, volby: Volby) -> Vysledok<Prevod> {
+        let mut p = Prevod::novy(zdroj, ciel, zamer)?;
+        if volby.kompenzacia_ciernej && zamer == Zamer::RelativnyKolorimetricky {
+            let bz = p.zdroj.cierny_bod(false);
+            let bc = p.ciel.cierny_bod(true);
+            // postup Adobe (ISO 18619): po zložkách XYZ medzi čiernym bodom a bielou D50
+            let w = primarne::ICC_D50;
+            let mut mierka = [1.0; 3];
+            let mut posun = [0.0; 3];
+            for i in 0..3 {
+                let t = (w[i] - bc[i]) / (w[i] - bz[i]);
+                mierka[i] = t;
+                posun[i] = bc[i] - bz[i] * t;
+            }
+            if (0..3).any(|i| (mierka[i] - 1.0).abs() > 1e-9 || posun[i].abs() > 1e-9)
+                && mierka.iter().all(|m| m.is_finite() && *m > 0.0)
+            {
+                p.kompenzacia = Some((mierka, posun));
+                // cesta len cez maticu nevie posun – prevod pôjde cez XYZ
+                p.matica = None;
+            }
+        }
+        Ok(p)
+    }
+
+    /// XYZ (D50) zo vstupu zdroja vrátane pomeru bielych a kompenzácie čierneho bodu.
+    fn do_xyz(&self, vstup: &[f64]) -> V3 {
+        let mut x = self.zdroj.do_xyz(vstup, self.zamer);
+        if let Some(p) = self.pomer {
+            x = [x[0] * p[0], x[1] * p[1], x[2] * p[2]];
+        }
+        if let Some((m, o)) = self.kompenzacia {
+            x = [x[0] * m[0] + o[0], x[1] * m[1] + o[1], x[2] * m[2] + o[2]];
+        }
+        x
     }
 
     /// Počet vstupných farebných kanálov.
@@ -306,10 +387,7 @@ impl Prevod {
             }
             return;
         }
-        let mut x = self.zdroj.do_xyz(vstup, self.zamer);
-        if let Some(p) = self.pomer {
-            x = [x[0] * p[0], x[1] * p[1], x[2] * p[2]];
-        }
+        let x = self.do_xyz(vstup);
         self.ciel.z_xyz(x, self.zamer, von);
     }
 
@@ -480,10 +558,7 @@ impl Prevod {
             }
             match &self.ciel {
                 Strana::Linearna { z_xyz, .. } => {
-                    let mut x = self.zdroj.do_xyz(&a, self.zamer);
-                    if let Some(p) = self.pomer {
-                        x = [x[0] * p[0], x[1] * p[1], x[2] * p[2]];
-                    }
+                    let x = self.do_xyz(&a);
                     let l = matica::aplikuj(z_xyz, x);
                     o.copy_from_slice(&l[..nc]);
                 }
