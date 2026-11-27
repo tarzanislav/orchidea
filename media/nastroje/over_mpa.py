@@ -24,6 +24,8 @@
    zaokrúhlením je v hraniciach zaokrúhlenia referencie. Formát PCM (LE/BE) sa zistí z menšej chyby, posun musí
    byť 0 (alebo o rámce bez dostatku zásobníka bitov na začiatku, ktoré referenčný dekodér nevydá); referencia
    smie byť na konci kratšia najviac o 2 rámce; náš výstup sa pred porovnaním oreže na 16-bitový rozsah.
+   Tok `he_mode` (mono → dva kanály → stereo → mono) sa prečíta aj cez kontajner a `DekoderZvuku`: výstup ostáva
+   v počte kanálov stopy (rámce stereo zmiešané) a porovná sa s referenciou zmiešanou rovnako (≤ 1 LSB).
 
 Použitie: `over_mpa.py <media_mpa> <adresár> [adresár so skúšobnými tokmi]`
 """
@@ -483,7 +485,52 @@ def skusobne_toky(program, adresar, prac):
     if not mena:
         print("| (žiadne toky) | | | | | | | | ❌ |")
         chyb += 1
+    if "he_mode" in mena:
+        chyb += zmena_kanalov(program, adresar, prac)
     return chyb
+
+
+def kanaly_ramcov(cesta):
+    """Počet kanálov každého rámca MPEG-1 vrstvy III (režim 3 = mono) – len hlavičky."""
+    d = open(cesta, "rb").read()
+    toky, frekvencie = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320], [44100, 48000, 32000]
+    i, kanaly = 0, []
+    while i + 4 <= len(d):
+        b, f = d[i + 2] >> 4, (d[i + 2] >> 2) & 3
+        if d[i] == 0xFF and d[i + 1] & 0xE0 == 0xE0 and 0 < b < 15 and f < 3:
+            kanaly.append(1 if d[i + 3] >> 6 == 3 else 2)
+            i += 144 * toky[b] * 1000 // frekvencie[f] + ((d[i + 2] >> 1) & 1)
+        else:
+            i += 1
+    return kanaly
+
+
+def zmena_kanalov(program, adresar, prac):
+    """he_mode (mono → dva kanály → stereo → mono) cez kontajner a DekoderZvuku: výstup v počte kanálov stopy
+    (mono), rámce stereo zmiešané (L + R)/2 – porovnanie s referenciou zmiešanou rovnako."""
+    nas_cesta = os.path.join(prac, "he_mode.kontajner.f32")
+    r = subprocess.run([program, "--kontajner", os.path.join(adresar, "he_mode.bit"), nas_cesta],
+                       capture_output=True, text=True)
+    m = dict((a, int(b)) for a, b in re.findall(r"(\w+)=(\d+)", r.stdout))
+    surove = open(os.path.join(adresar, "he_mode.pcm"), "rb").read()
+    ref = np.frombuffer(surove[: len(surove) // 2 * 2], dtype="<i2").astype(np.float64) / 32768.0
+    mono, p = [], 0
+    for k in kanaly_ramcov(os.path.join(adresar, "he_mode.bit")):
+        r_ = ref[p:p + 1152 * k]
+        p += 1152 * k
+        if len(r_) < 1152 * k:
+            break  # referencia nemá posledný rámec
+        mono.append(r_ if k == 1 else r_.reshape(-1, 2).mean(axis=1))
+    mono = np.concatenate(mono)
+    nas = np.clip(np.fromfile(nas_cesta, dtype="<f4").astype(np.float64), -1.0, 32767 / 32768)
+    n = min(len(nas), len(mono))
+    rms, mx, _ = presnost(nas[:n], mono[:n])
+    ok = (r.returncode == 0 and m.get("chyb", 1) == 0 and m.get("paketov", 0) == len(kanaly_ramcov(
+        os.path.join(adresar, "he_mode.bit"))) and 0 <= len(nas) - len(mono) <= 1152 and mx * 32768 <= 1
+        and rms < HRANICA_RMS * 1.1)
+    print(f"\n| zmena počtu kanálov (he_mode cez kontajner) | rámcov {m.get('paketov')} | vzoriek {len(nas)} "
+          f"(ref. mono {len(mono)}) | najväčší {mx * 32768:.2f} LSB | RMS {rms:.2e} | {'✅' if ok else '❌'} |")
+    return int(not ok)
 
 
 # (meno, frekvencia, druh, kanálov)
