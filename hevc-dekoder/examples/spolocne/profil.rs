@@ -7,6 +7,9 @@
 //! dekódovanie mien bolo zbytočne veľa kódu. Profiluje sa len volajúce vlákno – meria sa s `--vlakna 1`.
 //! Inde (iný systém či procesor, jadro bez udalostí) [`Profil::spusti`] vráti dôvod a meranie ide ďalej bez profilu.
 
+// Mimo Linuxu na aarch64 a x86-64 sa profil nespustí (vráti dôvod) – pomocné časti tam ostanú nepoužité.
+#![cfg_attr(not(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86_64"))), allow(dead_code))]
+
 use std::collections::HashMap;
 
 /// Vzorky za sekundu (1 kHz: pri 15 s behu ≈ 15 000 vzoriek, chyba podielu < 1 %).
