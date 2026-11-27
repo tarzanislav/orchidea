@@ -324,7 +324,8 @@ mod skusky {
             "ok"
         );
         assert!(zber::posli(adresa, &[6; 32], &[4; 12], &sprava("x", "cudzí\n"), t).is_err(), "cudzí kľúč");
-        let m = d.join("hardkernel-odroid-c4 (odroid-tv)").join("2026-11-27 17-06 abc1234");
+        // bez MAC adresy: priečinok podľa modelu a mena; meno zo Zapisovača je aj poznámka k meraniu (R254)
+        let m = d.join("hardkernel-odroid-c4 (odroid-tv)").join("2026-11-27 17-06 abc1234 – odroid-tv");
         assert_eq!(std::fs::read_to_string(m.join("01-Hardkernel-ODROID-C4-SD.txt")).unwrap(), "z0\nz3\n");
         assert!(m.join("HOTOVE.txt").exists());
         let _ = std::fs::remove_dir_all(&d);
