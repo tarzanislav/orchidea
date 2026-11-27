@@ -10,7 +10,12 @@
 3. **Bezmedzerovo** (čítačka `.mp3` s Xing/Info a značkou LAME, MP3 v MP4, Matroske a MPEG-TS cez
    `kontajner::otvor` a `DekoderZvuku`): dĺžka výstupu presne ako bezmedzerové dekódovanie rozhodcu (pri .mp3
    presne dĺžka originálu) a rovnaká presnosť.
-4. **Skúšobné toky ISO** (voliteľne, adresár s pármi `<meno>.bit` + `<meno>.pcm`): referenčný výstup 16 bitov;
+4. **Vrstva II** (MP2 – kodéry `mp2` FFmpeg a twolame; 48/44,1/32 kHz pri nízkych aj vysokých tokoch, mono,
+   stereo, spojené stereo, dva kanály, MPEG-2 LSF 24/22,05/16 kHz) a **vrstva I** (toky vytvorené priamo podľa
+   syntaxe CD 11172-3 2.4.1.5 s náhodným rozdelením bitov, mierkami a kódmi – kodér vrstvy I nie je) – plná
+   presnosť 11172-4 proti FFmpeg. Demuxer FFmpeg niekedy zahodí prvé rámce ako „junk“ – pripustí sa posun o presne
+   toľko celých rámcov, o koľko je rozhodca kratší, a porovná sa po nábehu banky filtrov (1 rámec).
+5. **Skúšobné toky ISO** (voliteľne, adresár s pármi `<meno>.bit` + `<meno>.pcm`): referenčný výstup 16 bitov;
    náš výstup zaokrúhlený na 16 bitov sa smie líšiť najviac o 1 LSB (≤ 2^-15 < 2^-14) a RMS rozdielu pred
    zaokrúhlením je v hraniciach zaokrúhlenia referencie. Formát PCM (LE/BE) sa zistí z menšej chyby, posun musí
    byť 0 (alebo o rámce bez dostatku zásobníka bitov na začiatku, ktoré referenčný dekodér nevydá); referencia
@@ -134,6 +139,135 @@ def bezmedzerovo(program, adresar):
     return chyb
 
 
+# (meno, kodér, frekvencia, kanálov, argumenty)
+VRSTVA2 = [
+    ("mp2_48k_192", "mp2", 48000, 2, ["-b:a", "192k"]),
+    ("mp2_48k_mono_48", "mp2", 48000, 1, ["-b:a", "48k"]),
+    ("mp2_48k_64", "mp2", 48000, 2, ["-b:a", "64k"]),
+    ("mp2_44k_160", "mp2", 44100, 2, ["-b:a", "160k"]),
+    ("mp2_44k_192", "mp2", 44100, 2, ["-b:a", "192k"]),
+    ("mp2_44k_256", "mp2", 44100, 2, ["-b:a", "256k"]),
+    ("mp2_44k_96", "mp2", 44100, 2, ["-b:a", "96k"]),
+    ("mp2_32k_192", "mp2", 32000, 2, ["-b:a", "192k"]),
+    ("mp2_32k_mono_48", "mp2", 32000, 1, ["-b:a", "48k"]),
+    ("mp2_32k_64", "mp2", 32000, 2, ["-b:a", "64k"]),
+    ("mp2_lsf_24k", "mp2", 24000, 2, ["-b:a", "96k"]),
+    ("mp2_lsf_22k_mono", "mp2", 22050, 1, ["-b:a", "32k"]),
+    ("mp2_lsf_16k", "mp2", 16000, 2, ["-b:a", "64k"]),
+    ("twolame_js_48k", "libtwolame", 48000, 2, ["-b:a", "128k", "-mode", "joint_stereo"]),
+    ("twolame_js_44k", "libtwolame", 44100, 2, ["-b:a", "96k", "-mode", "joint_stereo"]),
+    ("twolame_js_32k", "libtwolame", 32000, 2, ["-b:a", "64k", "-mode", "joint_stereo"]),
+    ("twolame_dual_48k", "libtwolame", 48000, 2, ["-b:a", "192k", "-mode", "dual_channel"]),
+    ("twolame_224_44k", "libtwolame", 44100, 2, ["-b:a", "224k"]),
+]
+
+
+class Zapisovac:
+    def __init__(self):
+        self.bity = []
+
+    def pis(self, hodnota, n):
+        self.bity.extend((hodnota >> (n - 1 - i)) & 1 for i in range(n))
+
+    def bajty(self, dlzka):
+        b = self.bity + [0] * (dlzka * 8 - len(self.bity))
+        assert len(b) == dlzka * 8, "rámec pretiekol"
+        return bytes(int("".join(map(str, b[i:i + 8])), 2) for i in range(0, len(b), 8))
+
+
+def tok_vrstvy1(cesta, rezim, ramcov=200, semienko=1):
+    """Rámce vrstvy I podľa syntaxe CD 11172-3 2.4.1.5: MPEG-1, 48 kHz, 448 kb/s (1344 B), bez CRC; náhodné
+    rozdelenie bitov (0–8), mierky 18–62 (≤ 2^-5 – súčet 22 pásiem ostane v rozsahu ±1) a kódy vzoriek (bez kódu
+    zo samých jednotiek). `rezim` 0 stereo,
+    1 spojené (rozšírenie podľa čísla rámca – všetky hranice 4, 8, 12, 16), 3 mono."""
+    g = np.random.default_rng(semienko)
+    nch = 1 if rezim == 3 else 2
+    with open(cesta, "wb") as f:
+        for r in range(ramcov):
+            ext = r % 4
+            hranica = 4 * (ext + 1) if rezim == 1 else 32
+            z = Zapisovac()
+            z.pis(0xFFF, 12); z.pis(1, 1); z.pis(3, 2); z.pis(1, 1)  # sync, MPEG-1, vrstva I, bez CRC
+            z.pis(14, 4); z.pis(1, 2); z.pis(0, 1); z.pis(0, 1)      # 448 kb/s, 48 kHz, bez výplne
+            z.pis(rezim, 2); z.pis(ext, 2); z.pis(0, 4)
+            # pásma do 22 (vyššie ticho), menej bitov – rámec sa zmestí
+            alok = np.zeros((2, 32), dtype=int)
+            for sb in range(22):
+                for ch in range(nch if sb < hranica else 1):
+                    alok[ch, sb] = g.integers(0, 9) if g.random() < 0.8 else 0
+                if sb >= hranica:
+                    alok[1, sb] = alok[0, sb]
+            for sb in range(32):
+                for ch in range(nch if sb < hranica else 1):
+                    z.pis(int(alok[ch, sb]), 4)
+            for sb in range(32):
+                for ch in range(nch):
+                    if alok[ch, sb]:
+                        z.pis(int(g.integers(18, 63)), 6)
+            for _ in range(12):
+                for sb in range(32):
+                    for ch in range(nch if sb < hranica else 1):
+                        nb = int(alok[ch, sb]) + 1 if alok[ch, sb] else 0
+                        if nb:
+                            z.pis(int(g.integers(0, 2 ** nb - 1)), nb)
+            f.write(z.bajty(1344))
+
+
+def porovnaj_s_rozhodcom(nas, ref, k):
+    """(RMS, najväčší, posun v rámcoch po k kanáloch): posun len o rámce, ktoré rozhodca na začiatku vynechal."""
+    if len(nas) == len(ref):
+        rms, mx, _ = presnost(nas, ref)
+        return rms, mx, 0
+    rozdiel = len(nas) - len(ref)
+    for ramec in (1152, 384):
+        if rozdiel > 0 and rozdiel % (ramec * k) == 0 and rozdiel // (ramec * k) <= 2:
+            a = nas[rozdiel:]
+            rms, mx, _ = presnost(a[ramec * k:], ref[ramec * k:])
+            return rms, mx, rozdiel // (ramec * k)
+    return math.inf, math.inf, None
+
+
+def vrstvy12(program, adresar):
+    print("\n| vrstva I/II | kanálov / kHz | vzoriek | rámcov vynechal rozhodca | RMS rozdielu | najväčší | výsledok |")
+    print("|---|---|---|---|---|---|---|")
+    chyb = 0
+    subory = []
+    for meno, koder, f, k, arg in VRSTVA2:
+        cesta = os.path.join(adresar, meno + ".mp2")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"{HUDBA}:s={f}:d=6", "-ac", str(k),
+                        "-ar", str(f), "-c:a", koder] + arg + [cesta], check=True)
+        subory.append((meno, cesta, k, f, "mp2float"))
+    # MP2 ako vo vysielaní DVB (MPEG-TS) a v Matroske – cez kontajner::otvor a DekoderZvuku
+    for kont in ("ts", "mkv"):
+        cesta = os.path.join(adresar, f"mp2_48k_192.{kont}")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", os.path.join(adresar, "mp2_48k_192.mp2"), "-c", "copy",
+                        cesta], check=True)
+        subory.append((f"mp2_v_{kont}", cesta, 2, 48000, "mp2float"))
+    for meno, rezim in (("l1_stereo", 0), ("l1_spojene", 1), ("l1_mono", 3)):
+        cesta = os.path.join(adresar, meno + ".mp1")
+        tok_vrstvy1(cesta, rezim, semienko=rezim + 7)
+        subory.append((meno, cesta, 1 if rezim == 3 else 2, 48000, "mp1float"))
+    for meno, cesta, k, f, dek in subory:
+        ref_cesta, nas_cesta = cesta + ".ff.f32", cesta + ".nas.f32"
+        # vrstva I: formát sa nerozpozná z prípony – demuxer MPEG audio výslovne
+        vstup = ["-f", "mp3"] if dek == "mp1float" else []
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-c:a", dek] + vstup + ["-i", cesta, "-f", "f32le", ref_cesta],
+                       check=True, stderr=subprocess.DEVNULL)
+        if meno.startswith("mp2_v_"):
+            r = subprocess.run([program, "--kontajner", cesta, nas_cesta], capture_output=True, text=True)
+            kod, m = r.returncode, dict((a, int(b)) for a, b in re.findall(r"(\w+)=(\d+)", r.stdout))
+        else:
+            kod, m = dekoduj(program, cesta, nas_cesta)
+        nas = np.fromfile(nas_cesta, dtype="<f4").astype(np.float64)
+        ref = np.fromfile(ref_cesta, dtype="<f4").astype(np.float64)
+        rms, mx, vynechal = porovnaj_s_rozhodcom(nas, ref, k)
+        ok = kod == 0 and m.get("chyb", 1) == 0 and vynechal is not None and rms < HRANICA_RMS and mx <= HRANICA_MAX
+        chyb += not ok
+        print(f"| {meno} | {k} / {f / 1000:g} | {len(nas) // k} | {vynechal} | {rms:.2e} | {mx:.2e} | "
+              f"{'✅' if ok else '❌'} |")
+    return chyb
+
+
 def skusobne_toky(program, adresar, prac):
     """Referenčné PCM 16 bitov; referenčný dekodér nevydá posledné 1–2 rámce (nevidí za nimi ďalšiu hlavičku),
     preto sa porovná dĺžka referencie a zarovnanie sa overí hľadaním posunu (musí vyjsť 0)."""
@@ -195,6 +329,7 @@ def main():
     os.makedirs(adresar, exist_ok=True)
     chyb = varianty(program, adresar)
     chyb += bezmedzerovo(program, adresar)
+    chyb += vrstvy12(program, adresar)
     if len(sys.argv) > 3:
         chyb += skusobne_toky(program, sys.argv[3], adresar)
     sys.exit(1 if chyb else 0)

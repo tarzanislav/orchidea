@@ -571,7 +571,7 @@ fn opus_viac_prudov() {
 /// Rozbor vrstvy III MPEG-1 (L8): platná hlavička + náhodné vedľajšie informácie a hlavné údaje (zásobník bitov,
 /// škálovacie faktory, Huffman) – nikdy pád ani zacyklenie.
 #[test]
-fn mpa_vrstva3() {
+fn mpa_vrstvy() {
     use orchidea_media::mpa::DekoderMpa;
     let mut n = nahoda(17);
     let mut d = DekoderMpa::novy();
@@ -580,9 +580,11 @@ fn mpa_vrstva3() {
         let tok = 1 + (n.dalsie() % 14) as u8;
         let f = (n.dalsie() % 3) as u8;
         let rezim = (n.dalsie() % 4) as u8;
+        // vrstvy I, II, III (MPEG-1) aj vrstvy I, II MPEG-2 LSF
+        let vrstva = [0xFAu8, 0xFC, 0xFE, 0xF4, 0xF6][(n.dalsie() % 5) as usize];
         let mut p = vec![
             0xFF,
-            0xFA | (i % 2) as u8,
+            vrstva | (i % 2) as u8,
             (tok << 4) | (f << 2),
             (rezim << 6) | ((n.dalsie() % 4) as u8) << 4,
         ];
@@ -590,7 +592,9 @@ fn mpa_vrstva3() {
         // celé dekódovanie: rozbor, spätná kvantizácia, stereo, preradenie, banka filtrov – žiadny pád,
         // výstup vždy konečný (aj pri nezmyselných ziskoch a polohách intenzity)
         if let Ok(pcm) = d.dekoduj_ramec(&p) {
-            assert!(pcm.iter().all(|k| k.len() == 1152 && k.iter().all(|v| v.is_finite())));
+            assert!(
+                pcm.iter().all(|k| (k.len() == 1152 || k.len() == 384) && k.iter().all(|v| v.is_finite()))
+            );
         }
         if i % 97 == 0 {
             d.reset();

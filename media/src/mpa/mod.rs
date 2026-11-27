@@ -8,6 +8,8 @@
 //! Časť 2: rekonštrukcia (`rekonstrukcia` – spätná kvantizácia, stereo, preradenie) a hybridná banka filtrov
 //! (`synteza` – alias, IMDCT, okná, prekrytie, polyfázová syntéza s oknom D[i]). Dôkaz: presnosť podľa
 //! ISO/IEC 11172-4 proti nezávislému rozhodcovi.
+//!
+//! Vrstvy I a II (MPEG-1 aj MPEG-2 LSF): `vrstva12` – tabuľky ETSI TS 103 466 (`tabulky_l2`).
 
 #![allow(clippy::needless_range_loop)]
 
@@ -16,6 +18,9 @@ mod rekonstrukcia;
 mod synteza;
 #[allow(clippy::unreadable_literal, clippy::excessive_precision)]
 mod tabulky;
+#[allow(clippy::unreadable_literal, clippy::excessive_precision)]
+mod tabulky_l2;
+mod vrstva12;
 
 use orchidea_jadro::{Chyba, Vysledok};
 use std::sync::OnceLock;
@@ -499,9 +504,20 @@ impl DekoderMpa {
         self.hlavicka
     }
 
-    /// Dekóduje rámec vrstvy III MPEG-1: 1152 vzoriek na kanál v rozsahu ±1,0 (`[kanál][vzorka]`).
+    /// Dekóduje rámec: vrstva III MPEG-1 (1152 vzoriek na kanál), vrstva II (1152) a I (384) MPEG-1 aj MPEG-2
+    /// LSF; rozsah ±1,0, `[kanál][vzorka]`.
     /// Pri nedostatku zásobníka bitov (začiatok toku po posune) dá ticho a banka filtrov pokračuje.
     pub fn dekoduj_ramec(&mut self, ramec: &[u8]) -> Vysledok<Vec<Vec<f32>>> {
+        let h =
+            Hlavicka::z_bajtov(ramec).ok_or_else(|| Chyba::PoskodeneData("MPEG audio: hlavička".into()))?;
+        if h.vrstva != 3 {
+            // vrstvy I a II: rámce sú nezávislé (bez zásobníka bitov), banka filtrov pokračuje
+            self.hlavicka = Some(h);
+            self.statistika.ramcov += 1;
+            let mut von = vec![Vec::new(); h.kanalov()];
+            vrstva12::dekoduj(&h, &ramec[..h.dlzka.min(ramec.len())], &mut self.synteza, &mut von)?;
+            return Ok(von);
+        }
         self.rozober_ramec(ramec)?;
         let h = self.hlavicka.ok_or_else(|| Chyba::PoskodeneData("MPEG audio: hlavička".into()))?;
         let nch = h.kanalov();
