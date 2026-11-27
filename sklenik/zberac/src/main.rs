@@ -220,6 +220,19 @@ mod skusky {
     use std::net::{Ipv6Addr, SocketAddr};
     use std::time::Duration;
 
+    /// Dočasný priečinok skúšky – vo WebAssembly (WASI) v pracovnom priečinku (temp_dir a process::id tam nie sú).
+    fn docasny(meno: &str) -> std::path::PathBuf {
+        let zaklad =
+            if cfg!(target_family = "wasm") { std::path::PathBuf::from(".") } else { std::env::temp_dir() };
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let d = zaklad.join(format!("orchidea-{meno}-{n}"));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
     #[test]
     fn utc_datum() {
         let c = utc();
@@ -230,8 +243,7 @@ mod skusky {
     /// Cudzí kľúč zberač odmietne.
     #[test]
     fn hladanie_prenos_a_ulozenie_cez_slucku() {
-        let d = std::env::temp_dir().join(format!("orchidea-zberac-skuska-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = docasny("zberac-skuska");
         let kluc = [5u8; 32];
         let z = Arc::new(siet::Zberac {
             sklad: sklad::Sklad::novy(&d).unwrap(),

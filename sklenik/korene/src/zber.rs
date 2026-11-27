@@ -303,6 +303,19 @@ mod skusky {
 
     const K: [u8; 32] = [7; 32];
 
+    /// Dočasný priečinok skúšky – vo WebAssembly (WASI) v pracovnom priečinku (temp_dir a process::id tam nie sú).
+    fn docasny(meno: &str) -> std::path::PathBuf {
+        let zaklad =
+            if cfg!(target_family = "wasm") { std::path::PathBuf::from(".") } else { std::env::temp_dir() };
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let d = zaklad.join(format!("orchidea-{meno}-{n}"));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
     #[test]
     fn ramec_tam_a_spat() {
         let s = Sprava::nova()
@@ -347,8 +360,7 @@ mod skusky {
         let k: [u8; 32] = core::array::from_fn(|i| i as u8 * 7);
         assert_eq!(kluc_z_textu(&kluc_do_textu(&k)), Some(k));
         assert_eq!(kluc_z_textu("abc"), None);
-        let d = std::env::temp_dir().join(format!("orchidea-zber-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+        let d = docasny("zber");
         nastav_priecinok(&d);
         assert_eq!(nacitaj_kluc(), None);
         assert_eq!(uloz_kluc_ak_chyba(&k).unwrap(), k);

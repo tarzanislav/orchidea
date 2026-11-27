@@ -161,9 +161,16 @@ impl Sklad {
 mod skusky {
     use super::*;
 
-    fn docasny(meno: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("orchidea-sklad-{meno}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
+    /// Dočasný priečinok skúšky – vo WebAssembly (WASI) v pracovnom priečinku (temp_dir a process::id tam nie sú).
+    fn docasny(meno: &str) -> std::path::PathBuf {
+        let zaklad =
+            if cfg!(target_family = "wasm") { std::path::PathBuf::from(".") } else { std::env::temp_dir() };
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let d = zaklad.join(format!("orchidea-{meno}-{n}"));
+        let _ = std::fs::remove_dir_all(&d);
         d
     }
 
