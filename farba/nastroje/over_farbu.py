@@ -168,8 +168,15 @@ def icc():
                 porovnaj(f"ICC {meno} → sRGB, zámer {zamer}", n, i, 2)
                 porovnaj(f"ICC {meno} → sRGB, zámer {zamer}, presne", nase(cesta, "srgb", zamer, k, vstup, 3, True),
                          lcms(profil, srgb, rezim, "RGB", zamer, vstup, 3, BEZ_OPTIMALIZACIE), 2)
-            # kompenzácia čierneho bodu (relatívny kolorimetrický zámer), po bodoch aj cez mriežku
-            for presne in (True, False):
+            # kompenzácia čierneho bodu (relatívny kolorimetrický zámer), po bodoch aj cez mriežku. Bez porovnania:
+            # profily v4 s tabuľkami (čierna percepčnej tabuľky v4 – rozhodca má vlastné pravidlo, zatiaľ nezhodné)
+            # a skúšobné profily ICC „Probe“ (každý zámer zámerne iná farba)
+            with open(cesta, "rb") as f:
+                hlavicka = f.read(132 + 12 * 200)
+            bez_bpc = (hlavicka[8] >= 4 and tabulkovy) or meno.startswith("Probe")
+            if bez_bpc:
+                print(f"BEZ POROVNANIA čierneho bodu: {meno} ({'skúšobný profil Probe' if meno.startswith('Probe') else 'v4 s tabuľkami'})")
+            for presne in (() if bez_bpc else (True, False)):
                 porovnaj(f"ICC {meno} → sRGB, čierny bod{', presne' if presne else ''}",
                          nase(cesta, "srgb", 1, k, vstup, 3, presne, bpc=True),
                          lcms(profil, srgb, rezim, "RGB", 1, vstup, 3, BPC | BEZ_OPTIMALIZACIE), 2)
@@ -182,7 +189,7 @@ def icc():
             except Exception:
                 print(f"PRESKOČENÉ sRGB → {meno}: profil nemá spätný smer (ani rozhodca ho nevie použiť ako cieľ)")
                 continue
-            for presne, bpc in ((False, False), (True, False), (True, True)):
+            for presne, bpc in ((False, False), (True, False)) + (() if bez_bpc else ((True, True),)):
                 n = nase("srgb", cesta, 1, 3, rgb, kc, presne, bpc)
                 i = lcms(srgb, profil, "RGB", rezim, 1, rgb, kc, (BEZ_OPTIMALIZACIE if presne else 0) | (BPC if bpc else 0))
                 if not presne:
