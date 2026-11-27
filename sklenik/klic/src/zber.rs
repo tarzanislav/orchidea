@@ -275,8 +275,23 @@ fn posli_rad() -> Result<(), String> {
         crate::linux::hlas(&format!("zberač meraní (R247): nájdený {a} cez {meno}"));
     }
     let a = adresa.ok_or("bez adresy")?;
+    // R257: MAC adresa rozhrania, cez ktoré sa posiela. Identita vzniká pri štarte (zapni), keď na RPi 3 B+ ešte
+    // nemusí byť čip siete na USB (LAN7515) ohlásený – 27. 11. prišiel RPi 3 B+ bez MAC (zberač ho zaradil podľa
+    // sériového čísla, nie do zoznamu zariadení). Doplní sa tu do identity aj do správ, ktoré ju nemajú.
+    let mac_rozhrania = std::fs::read_to_string(format!("/sys/class/net/{meno}/address"))
+        .ok()
+        .map(|m| m.trim().to_string())
+        .filter(|m| m.len() == 17 && m != "00:00:00:00:00:00");
+    if let (Some(m), Ok(mut s)) = (&mac_rozhrania, STAV.lock())
+        && s.identita.mac.is_empty()
+    {
+        s.identita.mac = m.clone();
+    }
     loop {
-        let Some(sprava) = STAV.lock().ok().and_then(|s| s.rad.front().cloned()) else { return Ok(()) };
+        let Some(mut sprava) = STAV.lock().ok().and_then(|s| s.rad.front().cloned()) else { return Ok(()) };
+        if let Some(m) = &mac_rozhrania {
+            doplni_mac(&mut sprava, m);
+        }
         let n = nonce().ok_or("bez náhodných čísel (/dev/urandom)")?;
         match zber::posli(a, &kluc, &n, &sprava, Duration::from_secs(15)) {
             Ok(o) if o == "ok" => {
@@ -298,9 +313,36 @@ fn posli_rad() -> Result<(), String> {
     }
 }
 
+/// R257: prázdne alebo chýbajúce pole `mac` správy doplní (vyplnené nemení).
+fn doplni_mac(sprava: &mut Sprava, mac: &str) {
+    match sprava.polia.iter_mut().find(|(k, _)| k == "mac") {
+        Some((_, v)) if v.is_empty() => *v = mac.to_string(),
+        Some(_) => {}
+        None => sprava.polia.push(("mac".into(), mac.to_string())),
+    }
+}
+
 #[cfg(test)]
 mod skusky {
     use super::*;
+
+    #[test]
+    fn r257_mac_doplnena_pri_odoslani() {
+        let i = Identita {
+            zariadenie: "Raspberry Pi 3 Model B Plus Rev 1.4".into(),
+            id: "00000000d7a60416".into(),
+            ..Default::default()
+        };
+        let mut s = s_identitou(&i).s("zaznam", "0");
+        assert_eq!(s.pole("mac"), Some(""));
+        doplni_mac(&mut s, "b8:27:eb:a6:04:16");
+        assert_eq!(s.pole("mac"), Some("b8:27:eb:a6:04:16"));
+        doplni_mac(&mut s, "11:22:33:44:55:66");
+        assert_eq!(s.pole("mac"), Some("b8:27:eb:a6:04:16"), "vyplnenú MAC nemení");
+        let mut bez = Sprava::nova().s("zaznam", "hotove");
+        doplni_mac(&mut bez, "b8:27:eb:a6:04:16");
+        assert_eq!(bez.pole("mac"), Some("b8:27:eb:a6:04:16"));
+    }
 
     #[test]
     fn odtlacok_rozlisi_obsah() {
