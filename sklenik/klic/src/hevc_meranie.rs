@@ -395,6 +395,31 @@ pub fn spusti(
                         break;
                     }
                 }
+                // R241 (prúd B, #3): viac vlákien ako jadier – len rýchlosť (obr_s); rozhodne, či pri prehrávaní
+                // dekódovať viac obrazov naraz (čakanie hlavného vlákna ~30 % pri 4 vláknach)
+                if jadra >= 4 {
+                    let mut casti = Vec::new();
+                    for n in [6usize, 8] {
+                        ochlad();
+                        let b = spusti_beh(
+                            program,
+                            &[
+                                "--rychlost".into(),
+                                "--vlakna".into(),
+                                n.to_string(),
+                                tok.to_string_lossy().to_string(),
+                            ],
+                            strop_behu,
+                        );
+                        casti.push(popis_rychlosti(n, &b));
+                        let prerusene = b.prerusene.is_some();
+                        pridaj(format!("    VYSLEDOK vlakna={n} {}", vysledok_s_teplotou(&b)));
+                        if prerusene {
+                            break;
+                        }
+                    }
+                    pridaj(format!("{meno} viac vlákien ako jadier ({jadra}): {} (R241)", casti.join(" · ")));
+                }
             }
         }
         drop(takt);
