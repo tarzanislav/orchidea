@@ -523,8 +523,13 @@ static void dokonci_aktualnu(struct skl_hevc *h)
 	h->aktualna = NULL;
 }
 
-/* označí za nereferenčné snímky, ktoré nie sú v sade referencií novej snímky (RPS) */
-static void uplatni_rps(struct skl_hevc *h, int poc)
+/*
+ * Označí za nereferenčné snímky, ktoré nie sú v sade referencií novej snímky (RPS). `vsetky` – IRAP
+ * s NoRaslOutputFlag = 1 (IDR, BLA, prvý CRA): podľa 8.3.2 sú nepoužité všetky referencie a RPS sa nečíta.
+ * 27. 11. (karta fab08af): tok samých IDR – mikrokód pri IDR nedá ukončenú RPS, položka s posunom 0 sa zhodla
+ * s každou predošlou IDR (všetky majú POC 0), buffre ostali „referenciami“ a 8. snímka nemala voľný buffer (7/8).
+ */
+static void uplatni_rps(struct skl_hevc *h, int poc, bool vsetky)
 {
 	const struct skl_rpm *p = &h->rpm;
 	int i, j;
@@ -535,7 +540,7 @@ static void uplatni_rps(struct skl_hevc *h, int poc)
 
 		if (!s->vbuf || !s->referencna)
 			continue;
-		for (j = 0; j < 16 && !(p->rps[j] & 0x8000); j++) {
+		for (j = 0; !vsetky && j < 16 && !(p->rps[j] & 0x8000); j++) {
 			int delta = p->rps[j] & 0x1fff;
 			int r = (p->rps[j] & BIT(13)) ? poc - (0x2000 - delta) : poc + delta;
 
@@ -1009,7 +1014,7 @@ static bool spracuj_rez(struct skl_hevc *h)
 			odpovedz(h, ST_HOTOVO);
 			return false;
 		}
-		uplatni_rps(h, h->poc);
+		uplatni_rps(h, h->poc, bez_rasl);
 		vydavaj(h, false);
 	} else if (!h->nova_snimka && !h->aktualna) {
 		/* pokračovanie snímky, ktorá sa nezačala – preskočiť */

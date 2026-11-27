@@ -10,7 +10,7 @@ index 6e726af84..7aaafd26b 100644
  
  obj-$(CONFIG_VIDEO_MESON_VDEC) += meson-vdec.o
 diff --git a/drivers/staging/media/meson/vdec/esparser.c b/drivers/staging/media/meson/vdec/esparser.c
-index 4632346f0..c4a11095c 100644
+index 4632346f0..730330213 100644
 --- a/drivers/staging/media/meson/vdec/esparser.c
 +++ b/drivers/staging/media/meson/vdec/esparser.c
 @@ -265,6 +265,13 @@ int esparser_queue_eos(struct amvdec_core *core, const u8 *data, u32 len)
@@ -37,7 +37,7 @@ index 4632346f0..c4a11095c 100644
  		if (codec_ops->num_pending_bufs)
  			num_dst_bufs = codec_ops->num_pending_bufs(sess);
  
-@@ -383,6 +391,18 @@ void esparser_queue_all_src(struct work_struct *work)
+@@ -383,6 +391,24 @@ void esparser_queue_all_src(struct work_struct *work)
  		if (esparser_queue(sess, &buf->vb) < 0)
  			break;
  	}
@@ -50,14 +50,20 @@ index 4632346f0..c4a11095c 100644
 +		struct amvdec_codec_ops *codec_ops = sess->fmt_out->codec_ops;
 +
 +		sess->should_stop = 1;
-+		if (codec_ops->sklenik_koniec_toku)
++		if (codec_ops->sklenik_koniec_toku) {
 +			codec_ops->sklenik_koniec_toku(sess);
++		} else if (codec_ops->eos_sequence) {
++			u32 len;
++			const u8 *data = codec_ops->eos_sequence(&len);
++
++			esparser_queue_eos(sess->core, data, len);
++		}
 +	}
  	mutex_unlock(&sess->lock);
  }
  
 diff --git a/drivers/staging/media/meson/vdec/vdec.c b/drivers/staging/media/meson/vdec/vdec.c
-index 49df5c639..1fc61858d 100644
+index 49df5c639..aa5df2abb 100644
 --- a/drivers/staging/media/meson/vdec/vdec.c
 +++ b/drivers/staging/media/meson/vdec/vdec.c
 @@ -323,6 +323,7 @@ static int vdec_start_streaming(struct vb2_queue *q, unsigned int count)
@@ -76,14 +82,15 @@ index 49df5c639..1fc61858d 100644
  		return 0;
  	}
  
-@@ -732,6 +734,17 @@ vdec_decoder_cmd(struct file *file, void *fh, struct v4l2_decoder_cmd *cmd)
+@@ -732,6 +734,18 @@ vdec_decoder_cmd(struct file *file, void *fh, struct v4l2_decoder_cmd *cmd)
  
  	dev_dbg(dev, "Received V4L2_DEC_CMD_STOP\n");
  
-+	if (codec_ops->sklenik_koniec_toku) {
++	if (codec_ops->sklenik_koniec_toku || codec_ops->eos_sequence) {
 +		/*
 +		 * SKLENÍK (R174): pôvodne should_stop = 1 hneď – buffre ešte v rade sa už nezapísali do toku, posledné
 +		 * snímky (aj EOS programu) dekodér nedostal. Zapíše ich esparser_queue_all_src, potom koniec toku.
++		 * Od 27. 11. aj H.264 a MPEG-1/2 (eos_sequence); VP9 (drain) ostáva po starom.
 +		 */
 +		sess->sklenik_stop = 1;
 +		v4l2_m2m_mark_stopped(sess->m2m_ctx);
