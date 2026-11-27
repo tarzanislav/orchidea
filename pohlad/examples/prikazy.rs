@@ -15,6 +15,8 @@
 //! - `prikazy herbar <katalóg> pridaj <priečinok> [--bez-podpriecinkov]` / `obnov` / `znova` / `hladaj <dotaz>` – katalóg
 //!   fotiek; `hladaj` vypíše riadok `ZAZNAM cesta | dátum | fotoaparát | kľúče` na každý nájdený súbor
 //! - `prikazy zmensi <vstup> <výstup.surove> <šírka> <výška>` – zmenšenie a surové vzorky (ako `formaty prevod`)
+//! - `prikazy klavesnica <rozloženie.xkb>` – rozloženie klávesnice XKB (okno pre Linux): riadok
+//!   `K evdev stlačené zamknuté skupina symbol znak` pre každý kláves a kombináciu modifikátorov (na porovnanie s libxkbcommon)
 
 use orchidea_formaty::obraz::Vzorky;
 use orchidea_formaty::{Format, Limity};
@@ -338,6 +340,26 @@ fn spusti(a: &[String]) -> Result<(), String> {
                 }
                 x => Err(format!("neznámy príkaz katalógu fotografií (Herbár): {x}")),
             }
+        }
+        Some("klavesnica") if a.len() == 3 => {
+            let t = std::fs::read_to_string(&a[2]).map_err(|e| e.to_string())?;
+            let k = orchidea_pohlad::klavesnica::Klavesnica::z_textu(&t).ok_or("rozloženie sa nedá prečítať")?;
+            // Shift, AltGr (Mod5), Shift+AltGr, Ctrl; Caps Lock, Num Lock
+            let kombinacie = [(0, 0), (1, 0), (0x80, 0), (0x81, 0), (0, 2), (1, 2), (0, 0x10), (4, 0), (0x82, 0)];
+            let mut von = String::new();
+            for kod in 1..248u32 {
+                for skupina in 0..2 {
+                    for &(stlacene, zamknute) in &kombinacie {
+                        let mut k = k.clone();
+                        k.nastav(stlacene, 0, zamknute, skupina);
+                        let st = k.stlac(kod);
+                        let z = st.znak.map_or("-".to_string(), |c| format!("{:x}", c as u32));
+                        von.push_str(&format!("K {kod} {stlacene} {zamknute} {skupina} {:x} {z}\n", k.symbol(kod)));
+                    }
+                }
+            }
+            print!("{von}");
+            Ok(())
         }
         Some("zmensi") if a.len() == 6 => {
             let d = std::fs::read(&a[2]).map_err(|e| e.to_string())?;

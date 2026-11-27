@@ -1,14 +1,24 @@
-ORCHIDEA – prehliadač a editor fotografií (Pohľad) – skúšobná zostava pre Windows (10/11, 64-bit)
-==================================================================================================
+ORCHIDEA – prehliadač a editor fotografií (Pohľad) – skúšobná zostava pre Windows (10/11, 64-bit) a Linux
+============================================================================================================
 
 Obsah balíka
-  pohlad.exe    prehliadač a editor fotografií (Pohľad) – okno
-  prikazy.exe   príkazový riadok: dávka, náhľady, porovnanie, katalóg fotografií (Herbár)
+  pohlad.exe    prehliadač a editor fotografií (Pohľad) – okno          (Linux: pohlad)
+  prikazy.exe   príkazový riadok: dávka, náhľady, porovnanie, katalóg fotografií (Herbár)   (Linux: prikazy)
   NAVOD.txt     tento návod
 
-Inštalácia nie je potrebná. Rozbaľte ZIP do ľubovoľného priečinka a spustite pohlad.exe.
+Windows: inštalácia nie je potrebná. Rozbaľte ZIP do ľubovoľného priečinka a spustite pohlad.exe.
 Windows SmartScreen môže pri prvom spustení upozorniť na neznámeho vydavateľa (program nie je podpísaný):
 „Ďalšie informácie“ → „Spustiť aj tak“.
+
+Linux (64-bit, x86-64): rozbaľte ZIP, v termináli v tom priečinku  chmod +x pohlad prikazy  a potom  ./pohlad
+  alebo  ./pohlad ~/Obrázky . Okno potrebuje prostredie Wayland (GNOME, KDE Plasma, Sway, Hyprland, weston …);
+  v prostredí X11 sa zatiaľ nespustí (vypíše hlásenie). Nič ďalšie netreba – program nepoužíva knižnice okien
+  (GTK, Qt, libwayland, libxkbcommon), všetko vrátane rozloženia klávesnice a mŕtvych klávesov (ˇ ´) je vlastné.
+  Ak prostredie kreslí rámy okien samo (KDE, Sway), lišta okna je od neho; inak (GNOME, weston) má okno vlastnú
+  lištu s titulkom: ťahaním sa presúva, dvojklikom maximalizuje, za okraj sa mení veľkosť, pravé tlačidlo = ponuka okna.
+  Rozdiel oproti Windows: tlačidlo Otvoriť zatiaľ nemá dialóg výberu súboru (je sivé) – súbor alebo priečinok
+  pretiahnite do okna zo správcu súborov alebo ho zadajte pri spustení; v katalógu „Pridať priečinok“ pridá
+  práve otvorený priečinok.
 
 Otvorenie obrázkov
   - tlačidlo Otvoriť alebo Ctrl+O (otvorí sa vybraný obrázok aj celý jeho priečinok),
@@ -58,7 +68,8 @@ Katalóg fotografií (Herbár) – bez importu, fotky ostávajú, kde sú
   - Šípky vyberajú, Enter alebo kliknutie otvorí fotku; ďalej sa listuje vo výsledkoch.
     Tlačidlom Katalóg sa vrátite k výsledkom, Esc v katalógu vráti pôvodný priečinok.
   - Dolu je riadok s údajmi vybranej fotky (dátum, fotoaparát, rozmery, ISO, kľúčové slová, priečinok).
-  Súbor katalógu: %APPDATA%\ORCHIDEA\herbar.txt (do fotiek sa nič nezapisuje). Katalóg je len rýchly zoznam –
+  Súbor katalógu: %APPDATA%\ORCHIDEA\herbar.txt, v Linuxe ~/.local/share/orchidea/herbar.txt
+  (do fotiek sa nič nezapisuje). Katalóg je len rýchly zoznam –
   hodnotenia a kľúčové slová sú trvalo v súboroch XMP vedľa fotiek, takže sa dá kedykoľvek poskladať znova
   (prikazy.exe herbar "%APPDATA%\ORCHIDEA\herbar.txt" znova). Pri otvorení katalógu sa na pozadí prečítajú
   zmenené fotky a súbory XMP (aj zmeny z iných programov).

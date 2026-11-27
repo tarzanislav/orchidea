@@ -16,6 +16,7 @@
 
 #![allow(unsafe_code)]
 
+use crate::okno::{self, Dalej, Samotest, povel_znaku};
 use crate::prehliadac::{Povel, Prehliadac, Vstup, ZiadostOkna};
 use orchidea_pismo::Platno;
 use std::cell::RefCell;
@@ -387,29 +388,6 @@ fn w(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
-/// Samotest v CI: povely, po ktorých sa uloží snímka okna.
-struct Samotest {
-    povely: Vec<Krok>,
-    vystup: PathBuf,
-    kod: i32,
-    /// Tlačidlo zo samotestu nie je na paneli.
-    chyba: bool,
-    /// Koľko dialógov si jadro vyžiadalo (v samoteste sa neukážu).
-    dialogy: usize,
-}
-
-/// Krok samotestu: vstup alebo kliknutie na tlačidlo panela podľa mena.
-enum Krok {
-    Vstup(Vstup),
-    Stlac(String),
-    /// Napísať text do poľa hľadania (znak po znaku).
-    Pis(String),
-    /// Súbor katalógu fotografií.
-    Katalog(PathBuf),
-    /// Kontrola: jadro si doteraz vyžiadalo práve toľkoto dialógov.
-    Dialogy(usize),
-}
-
 struct Stav {
     hwnd: Hwnd,
     jadro: Prehliadac,
@@ -504,98 +482,23 @@ fn povel_klavesu(vk: usize) -> Option<Povel> {
     })
 }
 
-fn povel_znaku(c: char) -> Option<Povel> {
-    Some(match c {
-        '0' | '*' => Povel::Prisposobit,
-        '1' => Povel::Skutocna,
-        'm' | 'M' => Povel::Oznac,
-        'c' | 'C' => Povel::Rezim,
-        't' | 'T' => Povel::Pas,
-        'i' | 'I' => Povel::Udaje,
-        // úpravy: malé písmeno = viac / vpravo, veľké = menej / vľavo
-        'r' => Povel::OtocVpravo,
-        'R' => Povel::OtocVlavo,
-        'f' | 'F' => Povel::Zrkadlo,
-        'x' | 'X' => Povel::Orezat,
-        'j' => Povel::JasViac,
-        'J' => Povel::JasMenej,
-        'k' => Povel::KontrastViac,
-        'K' => Povel::KontrastMenej,
-        'g' => Povel::GamaViac,
-        'G' => Povel::GamaMenej,
-        'z' => Povel::Zmensit,
-        'p' | 'P' => Povel::Pauza,
-        '?' => Povel::Napoveda,
-        '\t' => Povel::Panel,
-        '\u{1A}' => Povel::Spat,
-        '\u{19}' => Povel::Znova,
-        '\u{13}' => Povel::Ulozit,
-        '\u{f}' => Povel::Otvorit,
-        '\u{b}' => Povel::PridajKluc,
-        _ => return None,
-    })
-}
-
 /// Pokračuje samotest: ak jadro nepracuje, použije ďalší povel; po poslednom uloží snímku a zavrie okno.
 fn samotest_krok(s: &mut Stav) {
-    if s.jadro.pracuje() {
-        return;
-    }
-    let krok = match s.samotest.as_mut() {
-        None => return,
-        Some(t) if t.povely.is_empty() => None,
-        Some(t) => Some(t.povely.remove(0)),
-    };
-    if let Some(k) = krok {
-        let v = match k {
-            Krok::Vstup(v) => Some(v),
-            Krok::Stlac(id) => s.jadro.tlacidlo(&id).map(|(x, y)| Vstup::Klik { x, y }),
-            Krok::Pis(t) => {
-                for c in t.chars() {
-                    vstup(s, Vstup::Znak(c));
-                }
-                Some(Vstup::Tik)
+    let Some(mut t) = s.samotest.take() else { return };
+    match t.krok(&mut s.jadro) {
+        Dalej::Cakaj => {}
+        Dalej::Vstupy(v) => {
+            for v in v {
+                vstup(s, v);
             }
-            Krok::Katalog(c) => {
-                s.jadro.nastav_katalog(c);
-                Some(Vstup::Tik)
-            }
-            Krok::Dialogy(n) => s.samotest.as_ref().is_some_and(|t| t.dialogy == n).then_some(Vstup::Tik),
-        };
-        match v {
-            Some(v) => vstup(s, v),
-            None => {
-                if let Some(t) = s.samotest.as_mut() {
-                    t.chyba = true;
-                }
-            }
+            unsafe { PostMessageW(s.hwnd, WM_SAMOTEST, 0, 0) };
         }
-        unsafe { PostMessageW(s.hwnd, WM_SAMOTEST, 0, 0) };
-        return;
+        Dalej::Koniec => {
+            t.dokonci(&mut s.jadro, &mut s.platno);
+            unsafe { PostMessageW(s.hwnd, WM_CLOSE, 0, 0) };
+        }
     }
-    let Some(t) = s.samotest.as_mut() else { return };
-    s.jadro.vykresli(&mut s.platno);
-    let body: Vec<u8> =
-        s.platno.body.iter().flat_map(|&f| [(f >> 16) as u8, (f >> 8) as u8, f as u8]).collect();
-    let ok = orchidea_formaty::Obraz::novy(
-        s.platno.sirka,
-        s.platno.vyska,
-        orchidea_formaty::obraz::Model::Rgb,
-        false,
-        orchidea_formaty::obraz::Vzorky::U8(body),
-    )
-    .and_then(|o| orchidea_formaty::zapis(&o, orchidea_formaty::Format::Png))
-    .map(|d| std::fs::write(&t.vystup, d).is_ok())
-    .unwrap_or(false);
-    t.kod = if t.chyba {
-        3
-    } else if ok && s.jadro.pocet() > 0 {
-        0
-    } else {
-        2
-    };
-    println!("SAMOTEST vykreslení {} obrázkov {} kód {}", s.jadro.vykresleni, s.jadro.pocet(), t.kod);
-    unsafe { PostMessageW(s.hwnd, WM_CLOSE, 0, 0) };
+    s.samotest = Some(t);
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize {
@@ -812,46 +715,7 @@ unsafe fn spracuj_spravu(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize {
 
 /// Spustí okno. `argumenty`: [cesta] alebo `--samotest <cesta> <výstup.png> [povely …]`.
 pub fn spusti(argumenty: &[String]) -> i32 {
-    let (cesta, samotest) = match argumenty.first().map(String::as_str) {
-        Some("--samotest") if argumenty.len() >= 3 => {
-            let povely = argumenty[3..]
-                .iter()
-                .filter_map(|p| match p.as_str() {
-                    "dalsi" => Some(Krok::Vstup(Vstup::Povel(Povel::Dalsi))),
-                    "oznac" => Some(Krok::Vstup(Vstup::Povel(Povel::Oznac))),
-                    "rezim" => Some(Krok::Vstup(Vstup::Povel(Povel::Rezim))),
-                    "priblizit" => Some(Krok::Vstup(Vstup::Povel(Povel::Priblizit))),
-                    "prezentacia" => Some(Krok::Vstup(Vstup::Povel(Povel::Prezentacia))),
-                    "tik" => Some(Krok::Vstup(Vstup::Tik)),
-                    "napoveda" => Some(Krok::Vstup(Vstup::Povel(Povel::Napoveda))),
-                    "katalog" => Some(Krok::Vstup(Vstup::Povel(Povel::Katalog))),
-                    "enter" => Some(Krok::Vstup(Vstup::Znak('\r'))),
-                    "ctrl-k" => Some(Krok::Vstup(Vstup::Povel(Povel::PridajKluc))),
-                    t if t.starts_with("hodnotenie:") => {
-                        t[11..].parse().ok().map(|n| Krok::Vstup(Vstup::Povel(Povel::Hodnotenie(n))))
-                    }
-                    t if t.starts_with("pis:") => Some(Krok::Pis(t[4..].to_string())),
-                    t if t.starts_with("katalog-subor:") => Some(Krok::Katalog(PathBuf::from(&t[14..]))),
-                    t if t.starts_with("dialogy:") => t[8..].parse().ok().map(Krok::Dialogy),
-                    // stlac:<tlačidlo> – kliknutie na tlačidlo panela (poloha sa zistí až v okne)
-                    t if t.starts_with("stlac:") => Some(Krok::Stlac(t[6..].to_string())),
-                    _ => None,
-                })
-                .collect();
-            (
-                Some(PathBuf::from(&argumenty[1])),
-                Some(Samotest {
-                    povely,
-                    vystup: PathBuf::from(&argumenty[2]),
-                    kod: 1,
-                    chyba: false,
-                    dialogy: 0,
-                }),
-            )
-        }
-        Some(c) => (Some(PathBuf::from(c)), None),
-        None => (None, None),
-    };
+    let (cesta, samotest) = okno::argumenty(argumenty);
     unsafe {
         SetProcessDpiAwarenessContext(-4);
         let inst = GetModuleHandleW(std::ptr::null());

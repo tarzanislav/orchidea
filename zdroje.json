@@ -311,6 +311,22 @@
       "kde": "len CI – z balíkov Ubuntu pri behu; malé výstupy kodéra flac 1.4.3 (media/tests/data/*.flac, spolu ≈ 28 kB) sú v repozitári ako skúšobné dáta, nie kód",
       "ucel": "cudzí kodér zapíše súbory FLAC s MD5 v STREAMINFO v mnohých nastaveniach; naše dekódovanie musí mať to isté MD5",
       "posudenie_charty": "slobodné nástroje len ako rozhodcovia; žiadny ich kód nie je v ORCHIDEI, dekodér je písaný podľa RFC 9639"
+    },
+    {
+      "meno": "register klávesových symbolov X11 (keysymdef.h, XF86keysym.h, Sunkeysym.h, DECkeysym.h, HPkeysym.h z xorgproto) a databáza znakov Unicode (UCD)",
+      "trieda": "B",
+      "licencia": "MIT/X11 (xorgproto – The Open Group, Digital Equipment Corporation a ďalší); Unicode License v3 (UCD)",
+      "kde": "nie je v repozitári – z nich je vygenerovaná tabuľka pohlad/src/klavesnica/tabulky.rs (mená a kódy symbolov, znaky, spojenia mŕtvych klávesov) nástrojom pohlad/nastroje/tabulky_klavesnice.py",
+      "ucel": "okno pre Linux (Wayland): kompozitor posiela rozloženie klávesnice ako text XKB s menami symbolov; kódy symbolov definuje norma „X Window System Protocol“, príloha A, register mien je jej súčasťou",
+      "posudenie_charty": "otvorené normové dáta (protokol X11, Unicode) bez vojenského účelu; žiadny cudzí kód – rozbor XKB a prevod znakov je vlastný"
+    },
+    {
+      "meno": "rozhodcovia okna pre Linux v CI: weston (kompozitor Wayland bez obrazovky, weston-screenshooter) a libxkbcommon (xkbcli, knižnica cez ctypes)",
+      "trieda": "B",
+      "licencia": "MIT (weston, libxkbcommon)",
+      "kde": "len v CI (úloha pohlad-okno-linux) a v nástroji pohlad/nastroje/over_klavesnicu.py – program ich nepoužíva",
+      "ucel": "nezávislé overenie: okno sa ukáže v skutočnom kompozitore (samotest, snímka obrazovky) a rozbor rozložení XKB dá rovnaké symboly a znaky ako libxkbcommon",
+      "posudenie_charty": "slobodné nástroje bez vojenského účelu, len na skúšky"
     }
   ],
   "triedy": {

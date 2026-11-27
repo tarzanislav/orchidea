@@ -568,6 +568,86 @@ jobs:
           path: balik/
           retention-days: 30
 
+  pohlad-okno-linux:
+    name: Prehliadač a editor fotografií (Pohľad) – okno v Linuxe (Wayland, weston bez obrazovky, samotest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Kompozitor weston a rozhodca klávesnice (libxkbcommon)
+        run: |
+          sh nastroje/balicky.sh weston libxkbcommon-tools
+          python3 -m pip install --user --break-system-packages numpy Pillow
+      - name: Zostavenie okna
+        run: cargo build --locked --release -p orchidea-pohlad --bin pohlad --example prikazy
+      - name: Rozloženia klávesnice XKB proti libxkbcommon (17 rozložení, 9 kombinácií modifikátorov, 2 skupiny)
+        run: python3 pohlad/nastroje/over_klavesnicu.py target/release/examples/prikazy
+      - name: Weston bez obrazovky (pixman) a skúšobné obrázky
+        run: |
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdg"; mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          echo "WAYLAND_DISPLAY=wayland-ci" >> "$GITHUB_ENV"
+          echo "HOME_POHLAD=$RUNNER_TEMP/domov" >> "$GITHUB_ENV"
+          weston --backend=headless --renderer=pixman --socket=wayland-ci --idle-time=0 --width=1280 --height=900 --debug > "$RUNNER_TEMP/weston.log" 2>&1 &
+          for i in $(seq 1 50); do [ -S "$XDG_RUNTIME_DIR/wayland-ci" ] && break; sleep 0.2; done
+          ls -la "$XDG_RUNTIME_DIR"
+          python3 -c "import numpy as np, os; from PIL import Image; os.makedirs('skusobne', exist_ok=True); r=np.random.default_rng(1); a=(r.random((300,400,3))*255).astype('uint8'); Image.fromarray(a).save('skusobne/a.png'); Image.fromarray(255-a).save('skusobne/b.jpg', quality=90)"
+      - name: Samotest okna (otvorí priečinok, porovná A a B, uloží snímku, zavrie sa)
+        run: |
+          HOME="$HOME_POHLAD" timeout 60 target/release/pohlad --samotest skusobne snimka.png oznac dalsi rezim
+          python3 -c "from PIL import Image; import numpy as np; o=np.asarray(Image.open('snimka.png').convert('RGB')); c=np.asarray(Image.open('snimka.png.okno.png').convert('RGB')); print('snímka', o.shape, 'okno', c.shape, 'rôznych farieb', len(np.unique(o.reshape(-1,3), axis=0))); assert o.shape[0] > 200 and len(np.unique(o.reshape(-1,3), axis=0)) > 1000 and c.shape[0] == o.shape[0] + 32"
+      - name: Samotest prezentácie (celá obrazovka, ďalší obraz po tiku časovača)
+        run: |
+          HOME="$HOME_POHLAD" timeout 60 target/release/pohlad --samotest skusobne prezentacia.png prezentacia tik
+          python3 -c "from PIL import Image; import numpy as np; o=np.asarray(Image.open('prezentacia.png').convert('RGB')); print('snímka', o.shape, 'roh', o[0,0]); assert o.shape[0] >= 600 and o[0,0].max() == 0"
+      - name: Samotest panela nástrojov a nápovedy (kliknutie na tlačidlo Otočiť vpravo, F1)
+        run: |
+          HOME="$HOME_POHLAD" timeout 60 target/release/pohlad --samotest skusobne panel.png stlac:otoc_vpravo napoveda
+          python3 -c "from PIL import Image; import numpy as np; o=np.asarray(Image.open('panel.png').convert('RGB')).astype(int); ram=np.all(o==[0x5A,0x8D,0xEE],axis=-1).sum(); tl=np.all(o[:34]==[0x34,0x37,0x3B],axis=-1).sum(); print('rám nápovedy', ram, 'tlačidlá', tl); assert ram > 500 and tl > 1000"
+      - name: Samotest katalógu fotografií (Herbár) v okne – hľadanie písaním, mriežka náhľadov
+        run: |
+          target/release/examples/prikazy herbar katalog_skuska.txt pridaj skusobne
+          HOME="$HOME_POHLAD" timeout 60 target/release/pohlad --samotest skusobne katalog.png katalog-subor:katalog_skuska.txt katalog pis:b stlac:katalog_pridaj dialogy:0
+          python3 -c "from PIL import Image; import numpy as np; o=np.asarray(Image.open('katalog.png').convert('RGB')).astype(int); f=len(np.unique(o[74:196].reshape(-1,3),axis=0)); c=np.all(o[34:74]==[0x5A,0x8D,0xEE],axis=-1).sum(); print('farieb v mriežke', f, 'čiara poľa hľadania', c); assert f > 300 and c > 100"
+          grep -c "^P" katalog_skuska.txt | grep -qx 1
+      - name: Samotest hodnotenia a kľúčových slov – zápis do súboru XMP vedľa fotky
+        run: |
+          HOME="$HOME_POHLAD" timeout 60 target/release/pohlad --samotest skusobne xmp.png hodnotenie:4 ctrl-k pis:skúška enter
+          python3 -c "import glob; s=glob.glob('skusobne/*.xmp'); print('súbory XMP', s); t=open(s[0], encoding='utf-8').read(); assert len(s) == 1 and s[0].endswith('a.png.xmp') and 'xmp:Rating='+chr(34)+'4'+chr(34) in t and '<rdf:li>skúška</rdf:li>' in t and not glob.glob('skusobne/*docasny*')"
+      - name: Okno na obrazovke kompozitora (snímka obrazovky weston)
+        run: |
+          (HOME="$HOME_POHLAD" target/release/pohlad skusobne &) ; sleep 3
+          weston-screenshooter
+          pkill -f "target/release/pohlad" || true
+          python3 -c "import glob; from PIL import Image; import numpy as np; s=sorted(glob.glob('wayland-screenshot*.png'))[-1]; o=np.asarray(Image.open(s).convert('RGB')).astype(int); tl=np.all(o==[0x34,0x37,0x3B],axis=-1).sum(); li=np.all(o==[0x1E,0x1F,0x22],axis=-1).sum()+np.all(o==[0x26,0x27,0x2A],axis=-1).sum(); print(s, o.shape, 'tlačidlá panela', tl, 'lišta okna', li); assert tl > 1000 and li > 5000"
+          cp "$(ls wayland-screenshot*.png | tail -1)" obrazovka.png
+      - name: Záznam kompozitora
+        if: always()
+        run: tail -40 "$RUNNER_TEMP/weston.log" || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pohlad-okno-linux-snimka
+          path: |
+            snimka.png
+            snimka.png.okno.png
+            prezentacia.png
+            panel.png
+            katalog.png
+            xmp.png
+            obrazovka.png
+      - name: Balík na vyskúšanie (pohlad, prikazy, návod)
+        run: |
+          mkdir -p balik
+          cp target/release/pohlad target/release/examples/prikazy pohlad/NAVOD.txt balik/
+          ls -la balik
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchidea-pohlad-linux
+          path: balik/
+          retention-days: 30
+
   shadery:
     name: Overenie shaderov – ${{ matrix.meno }}
     strategy:

@@ -559,9 +559,13 @@ impl Herbar {
     }
 
     /// Pridá priečinok do indexu (ak tam ešte nie je).
+    /// Cesta sa uloží v jednotnej podobe (úplná, bez `.` a `..`), aby ten istý priečinok zadaný inak
+    /// (relatívne, z okna, z príkazového riadka) nedal dvojité záznamy.
     pub fn pridaj_priecinok(&mut self, p: &Path, podpriecinky: bool) {
-        if !self.priecinky.iter().any(|(q, _)| q == p) {
-            self.priecinky.push((p.to_path_buf(), podpriecinky));
+        let p = jednotna_cesta(p);
+        match self.priecinky.iter_mut().find(|(q, _)| jednotna_cesta(q) == p) {
+            Some(q) => q.1 |= podpriecinky,
+            None => self.priecinky.push((p, podpriecinky)),
         }
     }
 
@@ -570,8 +574,9 @@ impl Herbar {
     pub fn obnov(&mut self, vlakna: usize, limity: &Limity) -> (usize, usize, usize) {
         let mut subory = Vec::new();
         let mut xmp_mapa = HashMap::new();
+        // korene v jednotnej podobe – aj starší katalóg s relatívnou cestou dá tie isté cesty súborov
         for (p, rek) in self.priecinky.clone() {
-            zbieraj(&p, rek, &mut subory, &mut xmp_mapa, 0);
+            zbieraj(&jednotna_cesta(&p), rek, &mut subory, &mut xmp_mapa, 0);
         }
         subory.sort();
         subory.dedup();
@@ -657,6 +662,27 @@ impl Herbar {
         });
         v
     }
+}
+
+/// Jednotná podoba cesty: úplná, bez `.` a `..`; mimo Windows aj bez symbolických odkazov
+/// (vo Windows by `canonicalize` pridal predponu `\\?\`, ktorú dialógy nepoužívajú).
+pub fn jednotna_cesta(p: &Path) -> PathBuf {
+    #[cfg(not(windows))]
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    let a = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let mut v = PathBuf::new();
+    for c in a.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                v.pop();
+            }
+            c => v.push(c),
+        }
+    }
+    v
 }
 
 /// Obrázky v priečinku (podľa podpisu prvých bajtov), voliteľne s podpriečinkami; popri tom veľkosť a čas
@@ -900,6 +926,15 @@ mod skusky {
         assert_eq!(h.obnov(1, &l), (1, 0, 0));
         assert_eq!(h.zaznamy[0].hodnotenie, Some(1));
         assert_eq!(h.poskladaj_znova(1, &l), (1, 0, 0));
+        // ten istý priečinok zadaný inak (s „.“ a „..“) nedá dvojité záznamy
+        std::fs::create_dir_all(p.join("pod")).unwrap();
+        h.pridaj_priecinok(&p.join("."), false);
+        h.pridaj_priecinok(&p.join("pod").join(".."), true);
+        assert_eq!(h.priecinky.len(), 1);
+        assert!(h.priecinky[0].1);
+        h.priecinky.push((p.join("pod/.."), false));
+        h.obnov(1, &l);
+        assert_eq!(h.zaznamy.len(), 1);
         let _ = std::fs::remove_dir_all(&p);
     }
 }

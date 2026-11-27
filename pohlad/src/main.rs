@@ -8,11 +8,15 @@ fn main() {
     {
         std::process::exit(orchidea_pohlad::okno_win::spusti(&argumenty));
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        std::process::exit(orchidea_pohlad::okno_linux::spusti(&argumenty));
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = argumenty;
         eprintln!(
-            "Prehliadač a editor fotografií (Pohľad): okno je zatiaľ pre Windows. Na Linuxe a macOS použite príkazový riadok \
+            "Prehliadač a editor fotografií (Pohľad): okno je zatiaľ pre Windows a Linux. Inde použite príkazový riadok \
              (cargo run -p orchidea-pohlad --example prikazy)."
         );
         std::process::exit(1);
