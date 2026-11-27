@@ -201,6 +201,8 @@ pub fn dekoder_zvuku(stopa: &crate::stopa::Stopa) -> Vysledok<Box<dyn DekoderZvu
         Kodek::Opus => {
             Ok(Box::new(crate::opus::dekoder::OpusDekoder::novy(&stopa.konfiguracia, Some(parametre))?))
         }
+        // vrstva III MPEG-1 (MPEG-2 LSF, 2.5 a vrstvy I, II neskôr – dekodér vráti chybu pri prvom rámci)
+        Kodek::MpegAudio { vrstva: 3 } => Ok(Box::new(crate::mpa::dekoder::MpaDekoder::novy(parametre)?)),
         k => Err(Chyba::MimoRozsahu(format!("dekodér zvuku {} ešte nie je", k.meno()))),
     }
 }

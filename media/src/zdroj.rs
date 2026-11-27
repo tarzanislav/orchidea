@@ -50,6 +50,16 @@ impl PametovyZdroj {
     }
 }
 
+/// Zdieľaný zdroj – ten istý súbor pre viac pokusov o otvorenie (rozpoznanie formátu bez druhého otvorenia).
+impl<Z: ZdrojBajtov + ?Sized> ZdrojBajtov for std::sync::Arc<Z> {
+    fn dlzka(&self) -> u64 {
+        (**self).dlzka()
+    }
+    fn citaj_na(&self, pozicia: u64, ciel: &mut [u8]) -> Vysledok<usize> {
+        (**self).citaj_na(pozicia, ciel)
+    }
+}
+
 impl ZdrojBajtov for PametovyZdroj {
     fn dlzka(&self) -> u64 {
         self.data.len() as u64

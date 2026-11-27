@@ -11,6 +11,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
+pub mod dekoder;
 mod rekonstrukcia;
 mod synteza;
 #[allow(clippy::unreadable_literal, clippy::excessive_precision)]
@@ -61,7 +62,71 @@ impl Hlavicka {
     pub fn kanalov(&self) -> usize {
         if self.rezim == 3 { 1 } else { 2 }
     }
+    /// Voľný formát (index toku 0 – tabuľka 8 [S]): pevný tok mimo tabuľky, dĺžka rámca sa určí zo vzdialenosti
+    /// ďalšej hlavičky. Vráti `true`, ak je hlavička platná a vo voľnom formáte.
+    pub fn volny_format(b: &[u8]) -> bool {
+        b.len() >= 4
+            && b[0] == 0xFF
+            && b[1] & 0xE0 == 0xE0
+            && (b[1] >> 3) & 3 != 1
+            && (b[1] >> 1) & 3 != 0
+            && b[2] >> 4 == 0
+            && (b[2] >> 2) & 3 != 3
+    }
+
+    /// Dĺžka rámca voľného formátu bez výplňového bajtu: najmenšia vzdialenosť ďalšej hlavičky s rovnakou verziou,
+    /// vrstvou, frekvenciou a tokom 0, za ktorou nasleduje ešte jedna taká hlavička (náhodná zhoda v údajoch sa
+    /// tak nepoužije). `d` = údaje od začiatku rámca.
+    pub fn dlzka_volneho_formatu(d: &[u8]) -> Option<usize> {
+        if !Hlavicka::volny_format(d) {
+            return None;
+        }
+        let zhodna = |i: usize| {
+            d.get(i..i + 4).is_some_and(|h| {
+                Hlavicka::volny_format(h) && h[1] & 0xFE == d[1] & 0xFE && h[2] & 0xFC == d[2] & 0xFC
+            })
+        };
+        let vypln = |i: usize| ((d[i + 2] >> 1) & 1) as usize;
+        (21..d.len().min(8192)).find_map(|i| {
+            if !zhodna(i) {
+                return None;
+            }
+            let zaklad = i - vypln(0);
+            let dalsi = i + zaklad + vypln(i);
+            (zhodna(dalsi) || dalsi >= d.len()).then_some(zaklad)
+        })
+    }
+
     pub fn z_bajtov(b: &[u8]) -> Option<Hlavicka> {
+        if Hlavicka::volny_format(b) {
+            // voľný formát: rámec je celý predaný úsek (dĺžku určil volajúci – `dlzka_volneho_formatu`)
+            let verzia = match (b[1] >> 3) & 3 {
+                3 => 1,
+                2 => 2,
+                _ => 25,
+            };
+            let f = ((b[2] >> 2) & 3) as usize;
+            let zaklad = [44_100u32, 48_000, 32_000][f];
+            return Some(Hlavicka {
+                verzia,
+                vrstva: 4 - ((b[1] >> 1) & 3),
+                crc: b[1] & 1 == 0,
+                frekvencia: match verzia {
+                    1 => zaklad,
+                    2 => zaklad / 2,
+                    _ => zaklad / 4,
+                },
+                index_frekvencie: match verzia {
+                    1 => f,
+                    2 => 3 + f,
+                    _ => 6 + f,
+                },
+                vypln: (b[2] >> 1) & 1 == 1,
+                rezim: b[3] >> 6,
+                rozsirenie: (b[3] >> 4) & 3,
+                dlzka: b.len(),
+            });
+        }
         let r = crate::ramce::mpeg_audio(b)?;
         let verzia = match (b[1] >> 3) & 3 {
             3 => 1,

@@ -7,7 +7,8 @@ pub struct Paket {
     pub stopa: usize,
     /// Obsah rámca presne ako v kontajneri (po zrušení lacingu, zložení PES a odstránení hlavičky).
     pub data: Vec<u8>,
-    /// Čas zobrazenia (PTS) v tikoch stopy.
+    /// Čas zobrazenia (PTS) v tikoch stopy – čas prvej vzorky rámca **pred** orezaním `orezat_zaciatok`
+    /// (prvý rámec s oneskorením kodéra má PTS záporný).
     pub pts: Option<i64>,
     /// Čas dekódovania (DTS) v tikoch stopy – Matroska ho nemá.
     pub dts: Option<i64>,

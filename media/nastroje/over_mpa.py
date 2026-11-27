@@ -7,9 +7,13 @@
 2. **Presnosť podľa ISO/IEC 11172-4** proti nezávislému rozhodcovi (dekodér `mp3float` FFmpeg v plávajúcej
    čiarke): RMS rozdielu < 2^-15/√12 a najväčší rozdiel ≤ 2^-14 pri plnom rozsahu ±1,0; posun 0, rovnaká dĺžka.
    Toky bez hlavičky Xing/Info (`-write_xing 0`), aby rozhodca nič neorezal – porovnáva sa celé dekódovanie.
-3. **Skúšobné toky ISO** (voliteľne, adresár s pármi `<meno>.bit` + `<meno>.pcm`): referenčný výstup 16 bitov;
+3. **Bezmedzerovo** (čítačka `.mp3` s Xing/Info a značkou LAME, MP3 v MP4, Matroske a MPEG-TS cez
+   `kontajner::otvor` a `DekoderZvuku`): dĺžka výstupu presne ako bezmedzerové dekódovanie rozhodcu (pri .mp3
+   presne dĺžka originálu) a rovnaká presnosť.
+4. **Skúšobné toky ISO** (voliteľne, adresár s pármi `<meno>.bit` + `<meno>.pcm`): referenčný výstup 16 bitov;
    náš výstup zaokrúhlený na 16 bitov sa smie líšiť najviac o 1 LSB (≤ 2^-15 < 2^-14) a RMS rozdielu pred
-   zaokrúhlením je v hraniciach zaokrúhlenia referencie. Formát PCM (LE/BE) sa zistí z menšej chyby.
+   zaokrúhlením je v hraniciach zaokrúhlenia referencie. Formát PCM (LE/BE) sa zistí z menšej chyby, posun musí
+   byť 0; referencia smie byť na konci kratšia najviac o 2 rámce.
 
 Použitie: `over_mpa.py <media_mpa> <adresár> [adresár so skúšobnými tokmi]`
 """
@@ -88,42 +92,95 @@ def varianty(program, adresar):
     return chyb
 
 
+# (meno, frekvencia, kanálov, argumenty) – súbory s hlavičkou Info/Xing a značkou LAME (predvolené FFmpeg)
+BEZMEDZEROVO = [
+    ("cbr_128", 44100, 2, ["-b:a", "128k"]),
+    ("vbr_v2", 44100, 2, ["-q:a", "2"]),
+    ("mono_32k", 32000, 1, ["-b:a", "32k"]),
+    ("cbr_48k", 48000, 2, ["-b:a", "192k"]),
+]
+
+
+def bezmedzerovo(program, adresar):
+    print("\n| bezmedzerovo | kontajner | vzoriek (originál) | vzoriek rozhodcu | RMS rozdielu | najväčší | výsledok |")
+    print("|---|---|---|---|---|---|---|")
+    chyb = 0
+    for meno, f, k, arg in BEZMEDZEROVO:
+        mp3 = os.path.join(adresar, "bm_" + meno + ".mp3")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"{HUDBA}:s={f}:d=8", "-ac", str(k),
+                        "-ar", str(f), "-c:a", "libmp3lame"] + arg + [mp3], check=True)
+        subory = [(mp3, "MP3")]
+        if meno == "cbr_128":
+            for kont in ("mkv", "mp4", "ts"):
+                cesta = mp3[:-3] + kont
+                subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", mp3, "-c", "copy", cesta], check=True)
+                subory.append((cesta, kont.upper()))
+        for cesta, kont in subory:
+            ref_cesta, nas_cesta = cesta + ".ff.f32", cesta + ".nas.f32"
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", cesta, "-f", "f32le", ref_cesta], check=True)
+            r = subprocess.run([program, "--kontajner", cesta, nas_cesta], capture_output=True, text=True)
+            nas = np.fromfile(nas_cesta, dtype="<f4").astype(np.float64)
+            ref = np.fromfile(ref_cesta, dtype="<f4").astype(np.float64)
+            rovnaka = len(nas) == len(ref) and len(ref) > 0
+            rms, mx, _ = presnost(nas, ref) if rovnaka else (math.inf, math.inf, 0.0)
+            # súbor .mp3 so značkou LAME: presne dĺžka originálu (8 s)
+            original = len(nas) // k == 8 * f if kont == "MP3" else True
+            ok = r.returncode == 0 and "chyb=0" in r.stdout and rovnaka and original and rms < HRANICA_RMS \
+                and mx <= HRANICA_MAX
+            chyb += not ok
+            print(f"| {meno} | {kont} | {len(nas) // k}{' (' + str(8 * f) + ')' if kont == 'MP3' else ''} | "
+                  f"{len(ref) // k} | {rms:.2e} | {mx:.2e} | {'✅' if ok else '❌'} |")
+    return chyb
+
+
 def skusobne_toky(program, adresar, prac):
+    """Referenčné PCM 16 bitov; referenčný dekodér nevydá posledné 1–2 rámce (nevidí za nimi ďalšiu hlavičku),
+    preto sa porovná dĺžka referencie a zarovnanie sa overí hľadaním posunu (musí vyjsť 0)."""
     mena = sorted(m[:-4] for m in os.listdir(adresar) if m.endswith(".bit")
                   and os.path.exists(os.path.join(adresar, m[:-4] + ".pcm")))
-    print("\n| skúšobný tok ISO | kanálov / kHz | vzoriek | formát ref. | RMS rozdielu | najväčší (LSB po zaokrúhlení) "
-          "| intenzita | výsledok |")
-    print("|---|---|---|---|---|---|---|---|")
+    print("\n| skúšobný tok ISO | kanálov / kHz | vzoriek (ref.) | formát ref. | posun | RMS rozdielu "
+          "| najväčší (LSB po zaokrúhlení) | intenzita | výsledok |")
+    print("|---|---|---|---|---|---|---|---|---|")
     chyb = 0
     for meno in mena:
         nas_cesta = os.path.join(prac, meno + ".nas.f32")
         kod, m = dekoduj(program, os.path.join(adresar, meno + ".bit"), nas_cesta)
         nas = np.fromfile(nas_cesta, dtype="<f4").astype(np.float64)
         surove = open(os.path.join(adresar, meno + ".pcm"), "rb").read()
+        k = max(m.get("kanalov", 1), 1)
         najlepsi = None
         for fmt in ("<i2", ">i2"):
             ref = np.frombuffer(surove[: len(surove) // 2 * 2], dtype=fmt).astype(np.float64) / 32768.0
-            n = min(len(ref), len(nas))
-            if n == 0:
-                continue
-            rms, mx, _ = presnost(nas[:n], ref[:n])
-            if najlepsi is None or rms < najlepsi[0]:
-                najlepsi = (rms, fmt, ref, n)
+            # posun sa hľadá na úvodnom úseku (≈ 4 s), štatistika potom na celej spoločnej dĺžke
+            for posun in range(-2 * 1152 * k, 2 * 1152 * k + 1, k):
+                a, b = nas[max(0, posun):], ref[max(0, -posun):]
+                n = min(len(a), len(b), 200_000)
+                if n < 1152:
+                    continue
+                rms, _, _ = presnost(a[:n], b[:n])
+                if najlepsi is None or rms < najlepsi[0]:
+                    najlepsi = (rms, fmt, posun, ref)
+        if najlepsi is not None:
+            _, fmt, posun, ref = najlepsi
+            a, b = nas[max(0, posun):], ref[max(0, -posun):]
+            n = min(len(a), len(b))
+            najlepsi = (presnost(a[:n], b[:n])[0], fmt, posun, a[:n], b[:n], len(ref))
         if najlepsi is None:
-            print(f"| {meno} | – | 0 | – | – | – | – | ❌ |")
+            print(f"| {meno} | – | {len(nas)} | – | – | – | – | – | ❌ |")
             chyb += 1
             continue
-        rms, fmt, ref, n = najlepsi
-        lsb = int(np.abs(np.clip(np.round(nas[:n] * 32768.0), -32768, 32767) - np.round(ref[:n] * 32768.0)).max())
-        # RMS rozdielu proti 16-bitovej referencii = zaokrúhlenie referencie (≈ 2^-15/√12) + naša chyba
-        ok = (kod == 0 and m.get("chyb", 1) == 0 and len(nas) == len(ref) and lsb <= 1
+        rms, fmt, posun, a, b, n_ref = najlepsi
+        lsb = int(np.abs(np.clip(np.round(a * 32768.0), -32768, 32767) - np.round(b * 32768.0)).max())
+        kratsia = len(nas) - n_ref
+        # RMS proti 16-bitovej referencii = zaokrúhlenie referencie (≈ 2^-15/√12) + naša chyba
+        ok = (kod == 0 and m.get("chyb", 1) == 0 and posun == 0 and 0 <= kratsia <= 2 * 1152 * k and lsb <= 1
               and rms < HRANICA_RMS * 1.1)
         chyb += not ok
-        print(f"| {meno} | {m.get('kanalov')} / {m.get('frekvencia', 0) / 1000:g} | {len(nas)} (ref. {len(ref)}) | "
-              f"{'LE' if fmt == '<i2' else 'BE'} | {rms:.2e} | {lsb} | {m.get('intenzitne_pasma', 0)} | "
+        print(f"| {meno} | {k} / {m.get('frekvencia', 0) / 1000:g} | {len(nas)} ({n_ref}) | "
+              f"{'LE' if fmt == '<i2' else 'BE'} | {posun} | {rms:.2e} | {lsb} | {m.get('intenzitne_pasma', 0)} | "
               f"{'✅' if ok else '❌'} |")
     if not mena:
-        print("| (žiadne toky) | | | | | | | ❌ |")
+        print("| (žiadne toky) | | | | | | | | ❌ |")
         chyb += 1
     return chyb
 
@@ -132,6 +189,7 @@ def main():
     program, adresar = sys.argv[1], sys.argv[2]
     os.makedirs(adresar, exist_ok=True)
     chyb = varianty(program, adresar)
+    chyb += bezmedzerovo(program, adresar)
     if len(sys.argv) > 3:
         chyb += skusobne_toky(program, sys.argv[3], adresar)
     sys.exit(1 if chyb else 0)

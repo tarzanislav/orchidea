@@ -26,6 +26,8 @@ pub enum FormatKontajnera {
     },
     /// Súbor FLAC (`.flac`, RFC 9639) – zároveň kontajner aj kodek.
     Flac,
+    /// Súbor MPEG audio (`.mp3`, `.mp2`) – rámce za sebou, voliteľne Xing/Info/VBRI a značka LAME.
+    MpegAudio,
 }
 
 impl FormatKontajnera {
@@ -38,6 +40,7 @@ impl FormatKontajnera {
             FormatKontajnera::MpegTs { velkost_paketu: 192 } => "MPEG-TS (M2TS)",
             FormatKontajnera::MpegTs { .. } => "MPEG-TS",
             FormatKontajnera::Flac => "FLAC",
+            FormatKontajnera::MpegAudio => "MPEG audio",
         }
     }
 }
@@ -78,6 +81,10 @@ pub fn rozpoznaj(zaciatok: &[u8]) -> Option<FormatKontajnera> {
         if (0..pocet).all(|k| zaciatok.get(posun + k * velkost) == Some(&0x47)) {
             return Some(FormatKontajnera::MpegTs { velkost_paketu: velkost as u16 });
         }
+    }
+    // MPEG audio: platná hlavička rámca a za ním ďalšia zhodná (ak sa zmestí do začiatku)
+    if crate::mpa_subor::je_tok(zaciatok) {
+        return Some(FormatKontajnera::MpegAudio);
     }
     None
 }
@@ -132,11 +139,19 @@ pub fn otvor<Z: ZdrojBajtov + 'static>(zdroj: Z, limity: Limity) -> Vysledok<Box
             Ok(Box::new(crate::mp4::Mp4::otvor(zdroj, limity)?))
         }
         Some(FormatKontajnera::MpegTs { .. }) => Ok(Box::new(crate::ts::Ts::otvor(zdroj, limity)?)),
+        Some(FormatKontajnera::MpegAudio) => Ok(Box::new(crate::mpa_subor::SuborMpa::otvor(zdroj, limity)?)),
         // posledný pokus: tok FLAC s neparsovateľnými údajmi na začiatku (rámec overí CRC-8 aj CRC-16)
-        None => match crate::flac_subor::FlacSubor::otvor(zdroj, limity) {
-            Ok(f) => Ok(Box::new(f)),
-            Err(_) => Err(Chyba::PoskodeneData("neznámy formát kontajnera".into())),
-        },
+        None => {
+            let zdroj = std::sync::Arc::new(zdroj);
+            match crate::flac_subor::FlacSubor::otvor(zdroj.clone(), limity) {
+                Ok(f) => Ok(Box::new(f)),
+                // súbor MPEG audio s neparsovateľnými údajmi pred rámcami (hľadanie s overením ďalšieho rámca)
+                Err(_) => match crate::mpa_subor::SuborMpa::otvor(zdroj, limity) {
+                    Ok(m) => Ok(Box::new(m)),
+                    Err(_) => Err(Chyba::PoskodeneData("neznámy formát kontajnera".into())),
+                },
+            }
+        }
     }
 }
 

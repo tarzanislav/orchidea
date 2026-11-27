@@ -70,6 +70,13 @@ jobs:
           cargo build --release -p orchidea-media --example media_mpa
           echo "### Médiá – MPEG audio vrstva III (spotreba bitov, presnosť 11172-4)" >> "$GITHUB_STEP_SUMMARY"
           python3 media/nastroje/over_mpa.py target/release/examples/media_mpa "$RUNNER_TEMP/mpa" "$RUNNER_TEMP/mp3-iso" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Skúšobné toky ISO pri neúspechu (base64 na rozbor – stiahnutie artefaktov nie je vždy dostupné)
+        if: failure()
+        shell: bash
+        run: |
+          for f in he_mode si_huff sin1k0db he_free; do
+            echo "=== $f.bit"; base64 -w 0 "$RUNNER_TEMP/mp3-iso/$f.bit"; echo; echo "=== koniec $f"
+          done
       - name: Pakety Opus pri neúspechu (na rozbor)
         if: failure()
         uses: actions/upload-artifact@v4

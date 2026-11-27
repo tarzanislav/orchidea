@@ -660,6 +660,18 @@ impl<Z: ZdrojBajtov> Mp4<Z> {
         let zostava = self.koniec.saturating_sub(poloha);
         let dlzka = self.limity.over_paket(velkost, zostava)?;
         let data = self.c.presne(poloha, dlzka)?.to_vec();
+        // zvuk pred začiatkom úpravy (media_time v elst – oneskorenie kodéra) sa neprehrá: orezanie začiatku
+        // rámca v počte vzoriek (ISO/IEC 14496-12 §8.6.6)
+        let orezat_zaciatok = match self.stopy[ix].zvuk {
+            Some(z) if pts < 0 && trvanie_spolu > 0 => {
+                let tikov = (-pts).min(trvanie_spolu as i64) as i128;
+                let zakladna = self.stopy[ix].zakladna;
+                let vzoriek =
+                    tikov * zakladna.citatel() as i128 * z.frekvencia as i128 / zakladna.menovatel() as i128;
+                vzoriek.clamp(0, u32::MAX as i128) as u32
+            }
+            _ => 0,
+        };
         let s = &mut self.stav[ix];
         s.dalsia += n;
         Ok(Paket {
@@ -670,7 +682,7 @@ impl<Z: ZdrojBajtov> Mp4<Z> {
             trvanie: Some(trvanie_spolu as i64),
             klucovy,
             prerusenie: std::mem::take(&mut s.prerusenie),
-            orezat_zaciatok: 0,
+            orezat_zaciatok,
             orezat_koniec: 0,
             pozicia: poloha,
         })

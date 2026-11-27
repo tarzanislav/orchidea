@@ -125,6 +125,22 @@ pub fn mpeg_audio(b: &[u8]) -> Option<HlavickaRamca> {
     })
 }
 
+/// Bitový tok rámca MPEG audio v b/s (z indexu toku a verzie; tá istá tabuľka ako pri dĺžke rámca).
+/// Priemerná dĺžka rámca CBR v bajtoch je presne `vzoriek / 8 · tok / frekvencia`.
+pub fn mpeg_audio_tok(b: &[u8]) -> Option<u32> {
+    let h = mpeg_audio(b)?;
+    let mpeg1 = (b[1] >> 3) & 3 == 3;
+    let index_toku = (b[2] >> 4) as usize;
+    let tok = if mpeg1 {
+        MPA_TOKY[h.vrstva as usize - 1][index_toku - 1]
+    } else if h.vrstva == 1 {
+        MPA_TOKY[3][index_toku - 1]
+    } else {
+        MPA_TOKY_LSF[index_toku - 1]
+    };
+    Some(tok as u32 * 1000)
+}
+
 /// Nominálne bitové toky AC-3 v kb/s podľa frmsizecod / 2 (A/52 tabuľka 5.18).
 const AC3_TOKY: [u32; 19] =
     [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640];

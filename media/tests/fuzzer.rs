@@ -597,3 +597,63 @@ fn mpa_vrstva3() {
         }
     }
 }
+
+/// Súbor MPEG audio: ID3v2, rámec Info so značkou LAME a TOC, rámce s náhodnými údajmi, APEv2 a ID3v1.
+fn subor_mpa(n: &mut Nahoda, ramcov: usize) -> Vec<u8> {
+    let mut d = b"ID3\x03\x00\x00\x00\x00\x00\x08\xFF\xFB\x90\x00\xFF\xFB\x00\x00".to_vec();
+    let mut info = vec![0u8; 417];
+    info[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+    info[36..40].copy_from_slice(b"Info");
+    info[40..44].copy_from_slice(&7u32.to_be_bytes());
+    info[44..48].copy_from_slice(&(ramcov as u32).to_be_bytes());
+    info[48..52].copy_from_slice(&((ramcov as u32 + 1) * 418).to_be_bytes());
+    for i in 0..100 {
+        info[52 + i] = (i * 256 / 100) as u8;
+    }
+    info[152..161].copy_from_slice(b"LAME3.100");
+    info[173..176].copy_from_slice(&[0x24, 0x05, 0xA0]);
+    d.extend(info);
+    for _ in 0..ramcov {
+        let mut r = vec![0xFF, 0xFB, 0x92, (n.mensie_ako(4) as u8) << 6 | (n.mensie_ako(4) as u8) << 4];
+        r.extend(bajty(n, 414).into_iter().chain(std::iter::repeat(0)).take(414));
+        d.extend(r);
+    }
+    d.extend(b"APETAGEX\xD0\x07\x00\x00\x20\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+    d.extend(b"TAG");
+    d.extend([0u8; 125]);
+    d
+}
+
+#[test]
+fn mpa_subor() {
+    use orchidea_media::zvuk::dekoder_zvuku;
+    let mut n = nahoda(18);
+    let zaklady: Vec<Vec<u8>> = (0..4).map(|i| subor_mpa(&mut n, 20 + 30 * i)).collect();
+    for i in 0..pocet_pokusov() / 10 {
+        let d = if i % 8 == 0 { zaklady[i % 4].clone() } else { zmutuj(&zaklady[i % 4], &mut n) };
+        let Ok(mut k) = orchidea_media::kontajner::otvor(PametovyZdroj::novy(d), Limity::default()) else {
+            continue;
+        };
+        let _ = k.trvanie_ns();
+        let mut dek = k.stopy().first().and_then(|s| dekoder_zvuku(s).ok());
+        let mut blok = BlokZvuku::f32(44_100, RozlozenieKanalov::STEREO);
+        for _ in 0..400 {
+            match k.dalsi_paket() {
+                Ok(Some(p)) => {
+                    assert!(
+                        p.orezat_zaciatok as i64 + p.orezat_koniec as i64
+                            <= p.trvanie.unwrap_or(1152).max(1152)
+                    );
+                    if let Some(dek) = dek.as_mut() {
+                        let _ = dek.dekoduj(&p, &mut blok);
+                    }
+                }
+                _ => break,
+            }
+        }
+        let _ = k.posun(n.mensie_ako(3_000_000_000) as i64, Posun::Presny);
+        for _ in 0..3 {
+            let _ = k.dalsi_paket();
+        }
+    }
+}
