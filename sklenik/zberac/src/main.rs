@@ -103,18 +103,48 @@ mod windows {
     }
 }
 
+/// R266: denník zberača v priečinku MERANIA – každý riadok okna aj s dátumom, priebežne (relácia A ho číta).
+const DENNIK: &str = "_dennik-zberaca.txt";
+/// Pri tejto veľkosti sa denník presunie do `_dennik-zberaca-stary.txt` (ostane jeden starší).
+const DENNIK_NAJVIAC_B: u64 = 4 << 20;
+
+/// Otvorí denník na pripisovanie; príliš veľký najprv presunie.
+fn otvor_dennik(cesta: &std::path::Path) -> Option<std::fs::File> {
+    if std::fs::metadata(cesta).is_ok_and(|m| m.len() >= DENNIK_NAJVIAC_B) {
+        let stary = cesta.with_file_name("_dennik-zberaca-stary.txt");
+        let _ = std::fs::remove_file(&stary);
+        let _ = std::fs::rename(cesta, stary);
+    }
+    std::fs::OpenOptions::new().create(true).append(true).open(cesta).ok()
+}
+
 /// R253: riadky do okna píše samostatné vlákno – keď okno stojí, prenos ani ukladanie nečakajú.
-fn hlasatel() -> impl Fn(&str) + Send + Sync + 'static {
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
+/// R266: to isté vlákno ich pripisuje aj do denníka `dennik` (každý riadok hneď, s dátumom).
+fn hlasatel(dennik: Option<PathBuf>) -> impl Fn(&str) + Send + Sync + 'static {
+    let (tx, rx) = std::sync::mpsc::channel::<(sklad::Cas, String)>();
     let _ = std::thread::Builder::new().name("okno".into()).spawn(move || {
+        let mut subor = dennik.as_deref().and_then(otvor_dennik);
+        let mut zapisane = 0u64;
         // chyba zápisu do okna (println! by pri nej spadol) sa ticho preskočí – prenos beží ďalej
-        for riadok in rx {
-            let _ = writeln!(std::io::stdout(), "{riadok}");
+        for (c, t) in rx {
+            let _ = writeln!(std::io::stdout(), "{:02}:{:02}:{:02}  {t}", c.3, c.4, c.5);
+            if let Some(f) = subor.as_mut() {
+                let riadok =
+                    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}  {t}\r\n", c.0, c.1, c.2, c.3, c.4, c.5);
+                if f.write_all(riadok.as_bytes()).is_ok() {
+                    let _ = f.flush();
+                    zapisane += riadok.len() as u64;
+                }
+                // občas skontrolovať veľkosť (denník beží týždne)
+                if zapisane >= DENNIK_NAJVIAC_B / 8 {
+                    zapisane = 0;
+                    subor = dennik.as_deref().and_then(otvor_dennik);
+                }
+            }
         }
     });
     move |t: &str| {
-        let c = cas();
-        let _ = tx.send(format!("{:02}:{:02}:{:02}  {t}", c.3, c.4, c.5));
+        let _ = tx.send((cas(), t.to_string()));
     }
 }
 
@@ -268,6 +298,7 @@ fn main() {
     println!("Priečinok MERANIA: {}", priecinok.display());
     // R254: zoznam zariadení (HERBÁR) – stále čísla podľa MAC adresy
     println!("Zoznam zariadení ({}):", zoznam::SUBOR);
+    let z_zoznam = sklad.zoznam.polozky().len();
     for z in sklad.zoznam.polozky() {
         println!("  {:>2}  {}  {}", z.cislo, z.mac, z.nazov);
     }
@@ -277,7 +308,15 @@ fn main() {
             println!("Kľúč domácnosti ešte nie je – vznikne pri prvom zápise karty v ORCHIDEA Zapisovači.")
         }
     }
-    let hlas = Arc::new(hlasatel());
+    let hlas = Arc::new(hlasatel(Some(priecinok.join(DENNIK))));
+    // R266: začiatok behu do denníka – verzia, priečinok, zoznam zariadení, kľúč
+    hlas(&format!(
+        "zberač spustený · verzia {}{zostavenie} · priečinok {} · zariadení v zozname {} · kľúč domácnosti {}",
+        env!("CARGO_PKG_VERSION"),
+        priecinok.display(),
+        z_zoznam,
+        if sklenik_korene::zber::nacitaj_kluc().is_some() { "✓" } else { "chýba" }
+    ));
     let z = Arc::new(siet::Zberac {
         sklad,
         ponuky,
@@ -288,6 +327,7 @@ fn main() {
             move |t: &str| h(t)
         }),
     });
+    let hlas_sieti = hlas.clone();
     // R264 (F3): zberač sa sám vymení za novší z _aktualizacia (kontrola pri štarte a každú minútu)
     {
         let z = z.clone();
@@ -316,11 +356,15 @@ fn main() {
         ),
     }
     match siet::spusti(z, &n) {
-        Ok((h, p)) => println!(
-            "Čakám na krabičky v miestnej sieti (hľadanie UDP {h}, prenos TCP {p}). Okno môžete minimalizovať."
-        ),
+        Ok((h, p)) => {
+            println!(
+                "Čakám na krabičky v miestnej sieti (hľadanie UDP {h}, prenos TCP {p}). Okno môžete minimalizovať."
+            );
+            hlas_sieti(&format!("čakám na krabičky (hľadanie UDP {h}, prenos TCP {p}) · denník {DENNIK}"));
+        }
         Err(e) => {
             eprintln!("zberač sa nespustil: {e} (beží už iný zberač?)");
+            hlas_sieti(&format!("zberač sa nespustil: {e} (beží už iný zberač?)"));
             std::thread::sleep(std::time::Duration::from_secs(5));
             std::process::exit(1);
         }
@@ -491,6 +535,31 @@ mod skusky {
                 .unwrap()
                 .contains("aktualizácia f00d123 potvrdená")
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R266: denník – riadok s dátumom hneď v súbore; príliš veľký sa presunie do staršieho.
+    #[test]
+    fn r266_dennik_zberaca() {
+        let d = docasny("dennik");
+        std::fs::create_dir_all(&d).unwrap();
+        let cesta = d.join(DENNIK);
+        let hlas = hlasatel(Some(cesta.clone()));
+        hlas("prvý riadok");
+        hlas("druhý riadok");
+        let t = std::time::Instant::now();
+        while !std::fs::read_to_string(&cesta).is_ok_and(|x| x.contains("druhý riadok")) {
+            assert!(t.elapsed() < Duration::from_secs(5), "denník sa nezapísal");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let text = std::fs::read_to_string(&cesta).unwrap();
+        let r: Vec<&str> = text.lines().collect();
+        assert_eq!(r.len(), 2);
+        assert!(r[0].ends_with("  prvý riadok") && r[0].as_bytes()[4] == b'-' && r[0].as_bytes()[13] == b':');
+        std::fs::write(&cesta, vec![b'x'; DENNIK_NAJVIAC_B as usize]).unwrap();
+        drop(otvor_dennik(&cesta));
+        assert_eq!(std::fs::metadata(d.join("_dennik-zberaca-stary.txt")).unwrap().len(), DENNIK_NAJVIAC_B);
+        assert_eq!(std::fs::metadata(&cesta).unwrap().len(), 0);
         let _ = std::fs::remove_dir_all(&d);
     }
 }
