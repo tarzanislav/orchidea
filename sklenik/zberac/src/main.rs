@@ -300,6 +300,10 @@ fn main() {
                     hlas(&t);
                     posledne = t;
                 }
+                // R265: Zapisovač (a ďalšie programy balíka) vedľa zberača vždy aktuálny
+                for t in aktualizacia::obnov_pomocne(&z.ponuky) {
+                    hlas(&t);
+                }
                 std::thread::sleep(std::time::Duration::from_secs(60));
             }
         });

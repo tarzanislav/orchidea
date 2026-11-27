@@ -223,6 +223,51 @@ pub fn vymen_sa(ponuky: &Ponuky, hlas: &dyn Fn(&str)) -> Option<String> {
 /// Premenná prostredia nového zberača po výmene – počká, kým starý uvoľní porty.
 pub const NASLEDNIK: &str = "ORCHIDEA_ZBERAC_NASLEDNIK";
 
+/// R265: ostatné programy z balíka zberača (ORCHIDEA Zapisovač `sadic.exe`) vedľa zberača – vždy aktuálne.
+/// Vlastník 27. 11.: „Zapisovač by mohol byť tiež tam ako zberač a vždy by bol aktuálny“. Vráti popisy zmien.
+pub fn obnov_pomocne(ponuky: &Ponuky) -> Vec<String> {
+    let Some(priecinok) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) else {
+        return Vec::new();
+    };
+    let vlastne =
+        std::env::current_exe().ok().and_then(|e| e.file_name().map(|n| n.to_string_lossy().to_string()));
+    obnov_pomocne_v(ponuky, &vlastna_arch(), &priecinok, vlastne.as_deref().unwrap_or(""))
+}
+
+/// Jadro [`obnov_pomocne`]: súbory balíka `zberac-<arch>` v koreni balíka (okrem zberača `vlastne`) skopíruje do
+/// `ciel`, ak tam chýbajú alebo sa líšia od popisu. Bežiaci program sa len premenuje (Windows to dovolí).
+pub fn obnov_pomocne_v(ponuky: &Ponuky, arch: &str, ciel: &Path, vlastne: &str) -> Vec<String> {
+    let Ok(Some((b, d))) = ponuky.balik("zberac", arch) else { return Vec::new() };
+    let mut zmeny = Vec::new();
+    for s in &b.subory {
+        let zberac = s.cesta.starts_with("orchidea-zberac");
+        if s.cesta.contains('/') || zberac || s.cesta.eq_ignore_ascii_case(vlastne) {
+            continue;
+        }
+        let cesta = ciel.join(&s.cesta);
+        let aktualny = std::fs::read(&cesta)
+            .is_ok_and(|x| x.len() as u64 == s.velkost && aktualizacia::odtlacok(&x) == s.odtlacok);
+        if aktualny {
+            continue;
+        }
+        let r = (|| -> std::io::Result<()> {
+            let novy = cesta.with_extension("novy");
+            std::fs::copy(Ponuky::cesta_suboru(&d, &s.cesta), &novy)?;
+            if cesta.exists() {
+                let stary = cesta.with_extension("stary");
+                let _ = std::fs::remove_file(&stary);
+                std::fs::rename(&cesta, &stary)?;
+            }
+            std::fs::rename(&novy, &cesta)
+        })();
+        zmeny.push(match r {
+            Ok(()) => format!("{} aktualizovaný na {} (R265)", s.cesta, b.verzia),
+            Err(e) => format!("{} sa nepodarilo aktualizovať: {e}", s.cesta),
+        });
+    }
+    zmeny
+}
+
 #[cfg(test)]
 mod skusky {
     use super::*;
@@ -231,6 +276,35 @@ mod skusky {
         let zaklad = if cfg!(target_family = "wasm") { PathBuf::from(".") } else { std::env::temp_dir() };
         let n = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         zaklad.join(format!("orchidea-{meno}-{n}"))
+    }
+
+    /// R265: Zapisovač z balíka zberača sa skopíruje vedľa zberača; rovnaký sa znova nekopíruje, zmenený áno.
+    #[test]
+    fn r265_zapisovac_vedla_zberaca() {
+        let m = docasny("pomocne");
+        let ciel = docasny("pomocne-ciel");
+        std::fs::create_dir_all(&ciel).unwrap();
+        let p = Ponuky::novy(&m);
+        let d = p.priecinok("zberac", "windows-x86_64").unwrap();
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("orchidea-zberac.exe"), b"ZBERAC").unwrap();
+        std::fs::write(d.join("sadic.exe"), b"ZAPISOVAC-1").unwrap();
+        aktualizacia::zbal_priecinok(&d, "zberac", "windows-x86_64", "abc1234", 1).unwrap();
+        let z = obnov_pomocne_v(&p, "windows-x86_64", &ciel, "orchidea-zberac.exe");
+        assert_eq!(z.len(), 1, "{z:?}");
+        assert_eq!(std::fs::read(ciel.join("sadic.exe")).unwrap(), b"ZAPISOVAC-1");
+        assert!(!ciel.join("orchidea-zberac.exe").exists(), "zberač sa vymieňa inak (vymen_sa)");
+        assert!(
+            obnov_pomocne_v(&p, "windows-x86_64", &ciel, "orchidea-zberac.exe").is_empty(),
+            "už aktuálny"
+        );
+        std::fs::write(d.join("sadic.exe"), b"ZAPISOVAC-2").unwrap();
+        aktualizacia::zbal_priecinok(&d, "zberac", "windows-x86_64", "def5678", 2).unwrap();
+        assert_eq!(obnov_pomocne_v(&p, "windows-x86_64", &ciel, "orchidea-zberac.exe").len(), 1);
+        assert_eq!(std::fs::read(ciel.join("sadic.exe")).unwrap(), b"ZAPISOVAC-2");
+        assert_eq!(std::fs::read(ciel.join("sadic.stary")).unwrap(), b"ZAPISOVAC-1");
+        let _ = std::fs::remove_dir_all(&m);
+        let _ = std::fs::remove_dir_all(&ciel);
     }
 
     #[test]

@@ -238,7 +238,8 @@ jobs:
         shell: bash
         run: |
           b=aktualizacia/zberac-windows-x86_64
-          mkdir -p "$b" && cp target/release/orchidea-zberac.exe "$b/"
+          # R265: aj ORCHIDEA Zapisovač – zberač ho udrží aktuálny vedľa seba
+          mkdir -p "$b" && cp target/release/orchidea-zberac.exe target/release/sadic.exe "$b/"
           target/release/orchidea-zberac.exe --balik "$b" zberac windows-x86_64 "${GITHUB_SHA::7}" "$(git show -s --format=%ct HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Zberač meraní – prenos cez slučku IPv6 vo Windows (R247)
         run: cargo test --locked --release -p sklenik-zberac -p sklenik-korene
