@@ -81,8 +81,9 @@ def spusti(*argumenty):
     return r.returncode, r.stdout, r.stderr
 
 
-def ffmpeg_dekoduj(cesta, von, dekoder=None):
-    arg = ["ffmpeg", "-v", "error", "-y"] + (["-c:a", dekoder] if dekoder else []) + ["-i", cesta, "-f", "f32le", von]
+def ffmpeg_dekoduj(cesta, von, dekoder=None, volby=()):
+    arg = (["ffmpeg", "-v", "error", "-y"] + (["-c:a", dekoder] if dekoder else []) + list(volby)
+           + ["-i", cesta, "-f", "f32le", von])
     subprocess.run(arg, check=True)
     k = int(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels",
                             "-of", "default=nk=1:nw=1", cesta], capture_output=True, text=True,
@@ -90,9 +91,11 @@ def ffmpeg_dekoduj(cesta, von, dekoder=None):
     return np.fromfile(von, dtype="<f4").astype(np.float64).reshape(-1, k)
 
 
-def nas_dekoduj(cesta, von, kanalov):
-    rc, out, err = spusti(PROGRAM, cesta, von)
-    stat = dict(re.findall(r"(\w+)=(\d+)", out.splitlines()[0])) if out else {}
+def nas_dekoduj(cesta, von, kanalov, *volby):
+    rc, out, err = spusti(PROGRAM, *volby, cesta, von)
+    riadok = next((r for r in out.splitlines() if r.startswith("AC3 ")), "")
+    stat = dict(re.findall(r"(\w+)=(\d+)", riadok))
+    stat["_bloky"] = [r.split(" ", 2)[2] for r in out.splitlines() if r.startswith("BLOK ")]
     ok = rc == 0 and "chyb=0" in out
     d = np.fromfile(von, dtype="<f4").astype(np.float64) if os.path.exists(von) else np.zeros(0)
     return ok, d.reshape(-1, kanalov) if len(d) % kanalov == 0 else d.reshape(-1, 1), stat, err.strip()[:200]
@@ -162,7 +165,8 @@ def varianty():
             dither_ok = False
         stat = vysl["kratke"][3]
         for k, v in vysl["bez"][3].items():
-            spolu[k] = spolu.get(k, 0) + int(v)
+            if not k.startswith("_"):
+                spolu[k] = spolu.get(k, 0) + int(v)
         spolu["kratke"] = spolu.get("kratke", 0) + int(stat.get("kratke", 0))
         spolu["dither"] = spolu.get("dither", 0) + int(vysl["povodny"][3].get("dither", 0))
         ok = (all(v[2] for v in vysl.values()) and rms_b < HRANICA_RMS and max_b <= HRANICA_MAX
@@ -254,18 +258,44 @@ def fate():
             print(f"| {s} | – | – | – | {e} | ❌ |")
             continue
         ref = ffmpeg_dekoduj(bez, bez + ".ff.f32")
-        ok, nas, stat, chyba = nas_dekoduj(bez, bez + ".nas.f32", ref.shape[1])
+        ok, nas, stat, chyba = nas_dekoduj(bez, bez + ".nas.f32", ref.shape[1], "--bloky")
         if int(stat.get("ramcov", 0)) == 0:
             print(f"| {s} | 0 | {ref.shape[1]} | – | nie AC-3 (bsid > 8 – E-AC-3) | ⏭ |")
             continue
+        poznamka = ""
+        if len(ref) == len(nas) + 1536 and "neúplný" in chyba:
+            # skrátený súbor: posledný rámec je neúplný – rozhodca z neho vydá 1536 vzoriek, my ho vynecháme
+            ref = ref[:len(nas)]
+            poznamka = " (posledný neúplný rámec vynechaný)"
         rms, mx = presnost(nas, ref)
         dobre = ok and rms < HRANICA_RMS and mx <= HRANICA_MAX
         if not dobre:
             CHYBY.append(f"FATE {s}: {stlpec(rms, mx)}, {len(nas)} / {len(ref)} {chyba}")
+            diagnostika(s, bez, nas, ref, stat["_bloky"])
         pokrytie = ", ".join(f"{k} {stat.get(k, 0)}" for k in ("kratke", "vazba", "fazove", "rematrix", "delta",
                                                                  "dynrng", "preskok", "lfe"))
-        print(f"| {s} | {stat.get('ramcov', 0)} | {ref.shape[1]} | {stlpec(rms, mx)} | {pokrytie} | "
+        print(f"| {s} | {stat.get('ramcov', 0)} | {ref.shape[1]} | {stlpec(rms, mx)}{poznamka} | {pokrytie} | "
               f"{'✅' if dobre else '❌'} |")
+
+
+def diagnostika(meno, bez, nas, ref, bloky):
+    """Pri nezhode: bez dynrng na oboch stranách a prvé bloky s rozdielom (príznaky bloku)."""
+    ref0 = ffmpeg_dekoduj(bez, bez + ".ff0.f32", volby=["-drc_scale", "0"])
+    _, nas0, _, _ = nas_dekoduj(bez, bez + ".nas0.f32", ref.shape[1], "--bez-dynrng")
+    n = min(len(nas0), len(ref0))
+    rms0, mx0 = presnost(nas0[:n], ref0[:n])
+    CHYBY.append(f"  {meno} bez dynrng na oboch stranách: {stlpec(rms0, mx0)}")
+    n = min(len(nas), len(ref))
+    zle = []
+    for g in range(n // 256):
+        e = [float(np.abs(nas[g * 256:(g + 1) * 256, c] - ref[g * 256:(g + 1) * 256, c]).max())
+             for c in range(ref.shape[1])]
+        if max(e) > HRANICA_MAX:
+            zle.append((g, e))
+    for g, e in zle[:6]:
+        CHYBY.append(f"  {meno} blok {g} (rámec {g // 6}): max po kanáloch {['%.1e' % x for x in e]}; "
+                     f"{bloky[g] if g < len(bloky) else '?'}")
+    CHYBY.append(f"  {meno}: blokov s rozdielom {len(zle)} z {n // 256}")
 
 
 def main():

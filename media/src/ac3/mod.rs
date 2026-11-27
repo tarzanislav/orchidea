@@ -296,6 +296,10 @@ pub struct DekoderAc3 {
     pub bez_ditheru: bool,
     /// Kontrola crc1 a crc2 (predvolene zapnutá; fuzzer ju vypne, aby skúšal rozbor poškodených rámcov).
     pub kontrola_crc: bool,
+    /// Dynamický rozsah dynrng (§7.7.1) – predvolene zapnutý; poslucháč ho smie vypnúť (plný dynamický rozsah).
+    pub dynrng: bool,
+    /// Záznam blokov pre rozhodcu: jeden riadok na blok (príznaky, dynrng, väzba, preskok).
+    pub zaznam: Option<Vec<String>>,
     /// Pri zázname: bitové polohy blksw a dithflag v každom bloku (nástroj rozhodcu `media_ac3 --uprav`).
     polohy: Option<Vec<(Vec<usize>, Vec<usize>)>>,
 }
@@ -316,6 +320,8 @@ impl DekoderAc3 {
             statistika: StatistikaAc3::default(),
             bez_ditheru: false,
             kontrola_crc: true,
+            dynrng: true,
+            zaznam: None,
             polohy: None,
         }
     }
@@ -786,9 +792,22 @@ impl DekoderAc3 {
             }
         }
         // dynamický rozsah (§7.7.1): Ch2 v režime 1+1 má dynrng2, inak všetky kanály (aj LFE) dynrng
+        if let Some(z) = self.zaznam.as_mut() {
+            z.push(format!(
+                "blksw={:?} dynrng={:?} cplinu={} cplbegf={} cplendf={} remat={:?} strategia={:?} delta={}",
+                &s.blksw[..nfchans],
+                s.dynrng,
+                s.cplinu,
+                s.cplbegf,
+                s.cplendf,
+                s.rematflg,
+                s.strategia,
+                s.delta.iter().filter(|d| d.is_some()).count()
+            ));
+        }
         for ch in 0..h.kanalov() {
             let kod = s.dynrng[if acmod == 0 && ch == 1 { 1 } else { 0 }];
-            if kod != 0 {
+            if kod != 0 && self.dynrng {
                 let zisk = dynrng_zisk(kod);
                 for v in koef[ch].iter_mut() {
                     *v *= zisk;

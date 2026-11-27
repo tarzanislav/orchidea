@@ -3,7 +3,8 @@
 //! - `media_ac3 <súbor.ac3> [výstup.f32]` – elementárny tok AC-3: nájde rámce podľa synchronizačného slova
 //!   a veľkosti (tabuľka 5.18), každý dekóduje a voliteľne zapíše prekladané f32 LE (kanály v spoločnom poradí).
 //!   Na stdout `AC3 …` (pokrytie nástrojov), `ZVUK kanalov= frekvencia= vzoriek=` a `VYSLEDOK ramcov= chyb=`.
-//!   Prepínač `--bez-ditheru` pred súborom zakáže dither (porovnanie s tokom bez dithflag).
+//!   Prepínače pred súborom: `--bez-ditheru` zakáže dither, `--bez-dynrng` dynamický rozsah (§7.7.1 – voľba
+//!   poslucháča), `--bloky` vypíše `BLOK <n> …` (príznaky a parametre každého bloku) pred riadkom `AC3`.
 //! - `media_ac3 --uprav <vstup.ac3> <výstup.ac3> [--dither 0|1] [--blksw-kazdy N [--blksw-spolu]]` – prepíše bity
 //!   dithflag a blksw v rámcoch a prepočíta crc1 a crc2 (A/52 §7.10.1); na stdout `BLKSW <blok> <kanál>` pre každý
 //!   krátky blok (číslovanie blokov od začiatku toku). Zmena týchto bitov nemení dĺžku ani polohu
@@ -20,6 +21,11 @@ fn ramce(d: &[u8]) -> Vec<(usize, Hlavicka)> {
                 v.push((i, h));
                 i += h.dlzka;
             }
+            Some(_) if v.last().is_some_and(|&(z, h): &(usize, Hlavicka)| z + h.dlzka == i) => {
+                // hlavička hneď za posledným rámcom, ale rámec presahuje koniec súboru (skrátený súbor)
+                eprintln!("posledný rámec je neúplný (súbor je skrátený)");
+                break;
+            }
             _ => i += 1,
         }
     }
@@ -32,14 +38,26 @@ fn main() {
         uprav(&a[1..]);
         return;
     }
-    let bez_ditheru = a.first().map(String::as_str) == Some("--bez-ditheru");
-    if bez_ditheru {
+    let mut bez_ditheru = false;
+    let mut bez_dynrng = false;
+    let mut bloky = false;
+    while let Some(p) = a.first().filter(|p| p.starts_with("--")).cloned() {
+        match p.as_str() {
+            "--bez-ditheru" => bez_ditheru = true,
+            "--bez-dynrng" => bez_dynrng = true,
+            "--bloky" => bloky = true,
+            x => panic!("neznámy prepínač {x}"),
+        }
         a.remove(0);
     }
     let d = std::fs::read(&a[0]).expect("súbor");
     let mut von = a.get(1).map(|c| std::io::BufWriter::new(std::fs::File::create(c).expect("výstup")));
     let mut dek = DekoderAc3::novy();
     dek.bez_ditheru = bez_ditheru;
+    dek.dynrng = !bez_dynrng;
+    if bloky {
+        dek.zaznam = Some(Vec::new());
+    }
     let (mut ramcov, mut chyb, mut vzoriek, mut kanalov, mut frekvencia) = (0, 0, 0usize, 0, 0);
     for (i, h) in ramce(&d) {
         ramcov += 1;
@@ -63,6 +81,9 @@ fn main() {
                 eprintln!("rámec {ramcov}: {e}");
             }
         }
+    }
+    for (i, r) in dek.zaznam.take().unwrap_or_default().iter().enumerate() {
+        println!("BLOK {i} {r}");
     }
     let s = dek.statistika();
     println!(
