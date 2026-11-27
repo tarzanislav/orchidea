@@ -103,7 +103,7 @@ impl HlavickaOpus {
     }
 
     /// Rozloženie a poradie: `poradie[c]` = index spoločného poradia pre výstupný kanál `c` hlavičky.
-    fn rozlozenie(&self) -> (RozlozenieKanalov, Vec<usize>) {
+    pub fn rozlozenie(&self) -> (RozlozenieKanalov, Vec<usize>) {
         let n = self.kanalov;
         // poradie Vorbis (RFC 7845 §5.1.1.2) → poradie bitov masky (FL FR FC LFE BL BR … BC SL SR)
         let poradie: Vec<usize> = match (self.rodina, n) {

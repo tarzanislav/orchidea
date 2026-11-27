@@ -149,12 +149,19 @@ impl Znacky {
     }
 
     /// ReplayGain z kľúčov `REPLAYGAIN_TRACK_GAIN`, `REPLAYGAIN_TRACK_PEAK`, `REPLAYGAIN_ALBUM_GAIN`,
-    /// `REPLAYGAIN_ALBUM_PEAK`; `None`, ak nie je ani jedno zosilnenie.
+    /// `REPLAYGAIN_ALBUM_PEAK`; pri Opus z `R128_TRACK_GAIN` a `R128_ALBUM_GAIN` ([`r128_db`]). `None`, ak nie je
+    /// ani jedno zosilnenie.
     pub fn replaygain(&self) -> Option<ReplayGain> {
         let rg = ReplayGain {
-            stopa_db: self.hodnota("REPLAYGAIN_TRACK_GAIN").and_then(decibely),
+            stopa_db: self
+                .hodnota("REPLAYGAIN_TRACK_GAIN")
+                .and_then(decibely)
+                .or_else(|| self.hodnota("R128_TRACK_GAIN").and_then(r128_db)),
             stopa_vrchol: self.hodnota("REPLAYGAIN_TRACK_PEAK").and_then(vrchol),
-            album_db: self.hodnota("REPLAYGAIN_ALBUM_GAIN").and_then(decibely),
+            album_db: self
+                .hodnota("REPLAYGAIN_ALBUM_GAIN")
+                .and_then(decibely)
+                .or_else(|| self.hodnota("R128_ALBUM_GAIN").and_then(r128_db)),
             album_vrchol: self.hodnota("REPLAYGAIN_ALBUM_PEAK").and_then(vrchol),
         };
         (rg.stopa_db.is_some() || rg.album_db.is_some()).then_some(rg)
@@ -185,6 +192,18 @@ pub fn decibely(s: &str) -> Option<f32> {
     };
     let x: f64 = s.replace(',', ".").parse().ok()?;
     (x.is_finite() && x.abs() < 1000.0).then_some(x as f32)
+}
+
+/// Zosilnenie z `R128_TRACK_GAIN`/`R128_ALBUM_GAIN` (RFC 7845 §5.2: celé číslo −32768 až 32767, najviac 6 znakov,
+/// voliteľné znamienko, Q7.8 dB voči úrovni EBU R128 −23 LUFS, navyše k výstupnému zisku OpusHead, ktorý už
+/// uplatní dekodér) prevedené na úroveň ReplayGain 2.0 (−18 LUFS): dB = hodnota / 256 + 5.
+pub fn r128_db(s: &str) -> Option<f32> {
+    let cisla = s.strip_prefix(['+', '-']).unwrap_or(s);
+    if s.len() > 6 || cisla.is_empty() || !cisla.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let q: i32 = s.parse().ok()?;
+    (-32768..=32767).contains(&q).then(|| q as f32 / 256.0 + 5.0)
 }
 
 /// Vrchol ReplayGain: lineárna amplitúda ≥ 0 (1,0 = plný rozsah, môže byť aj viac).
@@ -219,6 +238,13 @@ pub fn vorbis_comment(d: &[u8]) -> Option<Znacky> {
         let Some(n) = le32(d, i) else { break };
         let Some(polozka) = d.get(i + 4..(i + 4).saturating_add(n)) else { break };
         i += 4 + n;
+        // obal: METADATA_BLOCK_PICTURE = base64 bloku PICTURE z FLAC (Vorbis/Opus v Ogg)
+        if polozka.len() > 23 && polozka[..23].eq_ignore_ascii_case(b"METADATA_BLOCK_PICTURE=") {
+            if let Some(blok) = base64(&polozka[23..]) {
+                flac_picture(&mut z, &blok);
+            }
+            continue;
+        }
         let text = String::from_utf8_lossy(polozka);
         if let Some((k, v)) = text.split_once('=') {
             z.pridaj(k, v);
@@ -245,6 +271,36 @@ pub fn flac_picture(z: &mut Znacky, d: &[u8]) {
     if let Some((druh, mime, popis, data)) = precitaj() {
         z.pridaj_obal(&mime, druh, &popis, data);
     }
+}
+
+/// Base64 (RFC 4648 §4: abeceda A–Z, a–z, 0–9, „+“, „/“, doplnenie „=“; biele znaky sa preskočia). `None` pri
+/// neplatnom znaku alebo výsledku nad [`NAJVIAC_OBAL`] + 1 MB.
+fn base64(d: &[u8]) -> Option<Vec<u8>> {
+    if d.len() / 4 * 3 > NAJVIAC_OBAL + (1 << 20) {
+        return None;
+    }
+    let mut vysl = Vec::with_capacity(d.len() / 4 * 3);
+    let (mut zasobnik, mut bitov) = (0u32, 0u32);
+    for &b in d {
+        let v = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => break,
+            b' ' | b'\t' | b'\r' | b'\n' => continue,
+            _ => return None,
+        };
+        zasobnik = (zasobnik << 6) | v as u32;
+        bitov += 6;
+        if bitov >= 8 {
+            bitov -= 8;
+            vysl.push((zasobnik >> bitov) as u8);
+            zasobnik &= (1 << bitov) - 1;
+        }
+    }
+    Some(vysl)
 }
 
 /// Odstránenie nesynchronizácie (ID3v2.4 §6.1): každá dvojica `FF 00` sa zmení na `FF`.
@@ -1022,6 +1078,23 @@ mod skusky {
         z.pridaj_obal("-->", 3, "", b"http://x");
         z.pridaj_obal("image/png", 3, "", b"");
         assert_eq!(z.obaly().len(), 1);
+    }
+
+    #[test]
+    fn base64_podla_rfc4648() {
+        // RFC 4648 §10 – skúšobné vektory
+        for (a, b) in [
+            ("", ""),
+            ("Zg==", "f"),
+            ("Zm8=", "fo"),
+            ("Zm9v", "foo"),
+            ("Zm9vYg==", "foob"),
+            ("Zm9vYmE=", "fooba"),
+            ("Zm9vYmFy", "foobar"),
+        ] {
+            assert_eq!(base64(a.as_bytes()).unwrap(), b.as_bytes());
+        }
+        assert!(base64(b"Zm9v!").is_none());
     }
 
     #[test]

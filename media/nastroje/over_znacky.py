@@ -2,7 +2,8 @@
 """Rozhodca značiek (metadát) a ReplayGain pre LÝRU: náš `media_znacky` proti `ffprobe`.
 
 Súbory vytvorí:
-- **FFmpeg** (`-metadata`): MP3 s ID3v2.4 aj ID3v2.3, MP3 len s ID3v1, MP2, FLAC, Matroska (FLAC, Opus), M4A;
+- **FFmpeg** (`-metadata`): MP3 s ID3v2.4 aj ID3v2.3, MP3 len s ID3v1, FLAC, Matroska (FLAC, Opus), M4A, Ogg
+  (Opus – aj R128_TRACK_GAIN/R128_ALBUM_GAIN, Vorbis, FLAC);
 - **metaflac** (referenčný nástroj FLAC): skutočne vypočítaný ReplayGain (`--add-replay-gain`) a značky UTF-8;
 - **mkvpropedit** (MKVToolNix): značky Matroska s cieľmi skladba (30) a album (50) vrátane `REPLAYGAIN_GAIN`
   a `REPLAYGAIN_PEAK` podľa `matroska_tags.xml`;
@@ -17,8 +18,8 @@ a prvej zvukovej stopy z ffprobe (bez technických kľúčov MP4: značky, jazyk
 a výsledku metaflac sa navyše overí ReplayGain presne podľa očakávaných hodnôt.
 
 **Obal albumu:** bajty `Znacky::obal` proti obrázku `attached_pic`, ktorý vytiahne FFmpeg (APIC v ID3v2.4 a 2.3,
-PICTURE vo FLAC z FFmpeg aj metaflac, `covr` v M4A, príloha `cover.png` v Matroske, APEv2 „Cover Art (Front)“ cez
-WavPack), alebo proti pôvodnému obrázku, kde má súbor viac obrázkov (zadná strana pred prednou; Matroska s písmom
+PICTURE vo FLAC z FFmpeg aj metaflac, `covr` v M4A, príloha `cover.png` v Matroske, `METADATA_BLOCK_PICTURE`
+v Ogg Opus, APEv2 „Cover Art (Front)“ cez WavPack), alebo proti pôvodnému obrázku, kde má súbor viac obrázkov (zadná strana pred prednou; Matroska s písmom
 a `small_cover` pred `cover`) a ID3v2.2 PIC.
 
 Použitie: `over_znacky.py <media_znacky> <adresár>`
@@ -242,11 +243,18 @@ def main():
     for meno, arg in (("id3v24.mp3", ["-c:a", "libmp3lame"]), ("id3v23.mp3", ["-c:a", "libmp3lame", "-id3v2_version", "3"]),
                       ("id3v1.mp3", ["-c:a", "libmp3lame", "-id3v2_version", "0", "-write_id3v1", "1"]),
                       ("flac.flac", ["-c:a", "flac"]), ("flac.mkv", ["-c:a", "flac"]),
-                      ("opus.mka", ["-c:a", "libopus"]), ("aac.m4a", ["-c:a", "aac"])):
+                      ("opus.mka", ["-c:a", "libopus"]), ("aac.m4a", ["-c:a", "aac"]),
+                      ("ogg_opus.opus", ["-c:a", "libopus"]), ("ogg_vorbis.ogg", ["-c:a", "libvorbis"]),
+                      ("ogg_flac.oga", ["-c:a", "flac"])):
         cesta = os.path.join(adresar, meno)
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=440:d=1"] + meta + arg + [cesta],
                        check=True)
         subory.append((meno, cesta, None, None))
+    # Opus v Ogg: R128_TRACK_GAIN/R128_ALBUM_GAIN (RFC 7845 §5.2, Q7.8 voči −23 LUFS) → ReplayGain (−18 LUFS): +5 dB
+    cesta = os.path.join(adresar, "r128.opus")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=440:d=1", "-c:a", "libopus",
+                    "-metadata", "R128_TRACK_GAIN=-573", "-metadata", "R128_ALBUM_GAIN=+111", cesta], check=True)
+    subory.append(("r128.opus", cesta, {"stopa_db": str(-573 / 256 + 5), "album_db": str(111 / 256 + 5)}, None))
     # metaflac: skutočný ReplayGain referenčného nástroja FLAC
     cesta = os.path.join(adresar, "metaflac.flac")
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
@@ -379,6 +387,14 @@ def obaly(program, adresar):
     cesta = os.path.join(adresar, "obal_zadna_predna.mp3")
     open(cesta, "wb").write(b"ID3\x04\x00\x00" + synchsafe(len(telo)) + telo + zvuk_b)
     subory.append(("obal_zadna_predna.mp3", cesta, jpg_b, "image/jpeg"))
+    # Opus v Ogg: METADATA_BLOCK_PICTURE (base64 bloku PICTURE z FLAC) vo OpusTags
+    import base64
+    blok = struct.pack(">II", 3, 9) + b"image/png" + struct.pack(">I", 4) + b"Obal" + bytes(16) \
+        + struct.pack(">I", len(png_b)) + png_b
+    cesta = os.path.join(adresar, "obal_ogg.opus")
+    subprocess.run(["ffmpeg", "-v", "error", "-y"] + zvuk + ["-c:a", "libopus", "-metadata",
+                    "METADATA_BLOCK_PICTURE=" + base64.b64encode(blok).decode(), cesta], check=True)
+    subory.append(("obal_ogg.opus", cesta, cesta, "image/png"))
     # APEv2 „Cover Art (Front)“: referencia je ten istý blok v súbore WavPack
     hodnota = b"obal.jpg\x00" + jpg_b
     polozka = struct.pack("<II", len(hodnota), 2) + b"Cover Art (Front)\x00" + hodnota

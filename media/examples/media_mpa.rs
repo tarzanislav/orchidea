@@ -5,7 +5,7 @@
 //! začiatku a konca – porovnáva sa so surovým dekódovaním rozhodcu). Na stdout `MPA …` (spotreba bitov
 //! a pokrytie), `ZVUK kanalov= frekvencia= vzoriek=` a `VYSLEDOK ramcov=<n> chyb=<n>`.
 //!
-//! `media_mpa --kontajner <súbor> <výstup.f32>` – súbor (.mp3, MKV, MP4, TS) otvorí `kontajner::otvor`, prvú
+//! `media_mpa --kontajner <súbor> <výstup.f32>` – súbor (.mp3, MKV, MP4, TS, Ogg) otvorí `kontajner::otvor`, prvú
 //! zvukovú stopu dekóduje cez `DekoderZvuku` (bezmedzerové orezanie podľa paketov) a zapíše prekladané f32 LE.
 
 use orchidea_media::mpa::{DekoderMpa, Hlavicka};
@@ -121,7 +121,14 @@ fn kontajner(cesta: &str, vystup: &str) {
             chyb += 1;
             continue;
         }
-        let VzorkyZvuku::F32(d) = &blok.vzorky else { panic!("f32") };
+        // celé čísla (PCM, FLAC) sa prevedú na ±1,0 podľa bitovej hĺbky (x / 2^(bitov − 1))
+        let d: Vec<f32> = match &blok.vzorky {
+            VzorkyZvuku::F32(d) => d.clone(),
+            VzorkyZvuku::Cele { bitov, data } => {
+                let m = 1.0 / (1u64 << (bitov.saturating_sub(1)).min(62)) as f64;
+                data.iter().map(|&x| (x as f64 * m) as f32).collect()
+            }
+        };
         let n = blok.ramcov;
         let kanalov = d.len() / n.max(1);
         let mut b = Vec::with_capacity(d.len() * 4);

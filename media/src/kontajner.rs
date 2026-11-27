@@ -28,6 +28,8 @@ pub enum FormatKontajnera {
     Flac,
     /// Súbor MPEG audio (`.mp3`, `.mp2`) – rámce za sebou, voliteľne Xing/Info/VBRI a značka LAME.
     MpegAudio,
+    /// Ogg (RFC 3533) – `.opus`, `.ogg`, `.oga`.
+    Ogg,
 }
 
 impl FormatKontajnera {
@@ -41,6 +43,7 @@ impl FormatKontajnera {
             FormatKontajnera::MpegTs { .. } => "MPEG-TS",
             FormatKontajnera::Flac => "FLAC",
             FormatKontajnera::MpegAudio => "MPEG audio",
+            FormatKontajnera::Ogg => "Ogg",
         }
     }
 }
@@ -54,6 +57,10 @@ const BOXY_NA_ZACIATKU: [&[u8; 4]; 11] =
 pub fn rozpoznaj(zaciatok: &[u8]) -> Option<FormatKontajnera> {
     if zaciatok.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
         return Some(FormatKontajnera::Matroska);
+    }
+    // Ogg: stránka „OggS“ verzie 0 so začiatkom logického toku (RFC 3533)
+    if zaciatok.len() >= 6 && zaciatok.starts_with(b"OggS") && zaciatok[4] == 0 && zaciatok[5] & 2 != 0 {
+        return Some(FormatKontajnera::Ogg);
     }
     // FLAC: „fLaC“, alebo tok začínajúci rámcom s platnou hlavičkou (CRC-8)
     if zaciatok.starts_with(b"fLaC") || crate::flac::hlavicka_ramca(zaciatok, None).is_some() {
@@ -145,6 +152,7 @@ pub fn otvor<Z: ZdrojBajtov + 'static>(zdroj: Z, limity: Limity) -> Vysledok<Box
         }
         Some(FormatKontajnera::MpegTs { .. }) => Ok(Box::new(crate::ts::Ts::otvor(zdroj, limity)?)),
         Some(FormatKontajnera::MpegAudio) => Ok(Box::new(crate::mpa_subor::SuborMpa::otvor(zdroj, limity)?)),
+        Some(FormatKontajnera::Ogg) => Ok(Box::new(crate::ogg::Ogg::otvor(zdroj, limity)?)),
         // posledný pokus: tok FLAC s neparsovateľnými údajmi na začiatku (rámec overí CRC-8 aj CRC-16)
         None => {
             let zdroj = std::sync::Arc::new(zdroj);

@@ -18,12 +18,17 @@ Pripustené a vypísané rozdiely – každý je overiteľný z ostatných údaj
   príloha B k prístupovej jednotke za ním (my), FFmpeg ho nechá v predošlom pakete – overí sa, že celý tok
   stopy je bit po bite rovnaký a hranice paketov sa líšia len o tento nulový bajt (obsah paketov je tým určený).
 
-Použitie: over_media.py <cesta k media_pakety> <pracovný priečinok>
+Použitie: over_media.py <cesta k media_pakety> <pracovný priečinok> [cesta k media_mpa]
+S tretím argumentom sa súbory Ogg aj dekódujú (`kontajner::otvor` + `DekoderZvuku`, príklad `media_mpa
+--kontajner`) a porovnajú s dekódovaním FFmpeg: počet vzoriek po pre-skip a orezaní stránkou EOS (RFC 7845 §4.1,
+§4.5) presne ako rozhodca, FLAC bit po bite, Opus s odstupom signálu od rozdielu ≥ 100 dB (dekodér FFmpeg nie je
+bitovo zhodný s libopus; bitovú presnosť proti libopus overuje over_opus.py). Vorbis sa nedekóduje.
 Návratový kód 0 = všetko sedí. Výsledok je tabuľka v Markdowne (pre súhrn CI).
 """
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -31,6 +36,7 @@ import sys
 
 PROGRAM = sys.argv[1]
 PRAC = sys.argv[2]
+DEKODER = sys.argv[3] if len(sys.argv) > 3 else None
 os.makedirs(PRAC, exist_ok=True)
 CHYBY = []
 RIADKY = []
@@ -84,6 +90,13 @@ VARIANTY = [
      + ["sine=frequency=440:sample_rate=48000:duration=20", "-ac", "2", "-c:v", "libx264", "-preset", "ultrafast",
         "-b:v", "6M", "-c:a", "aac", "-mpegts_flags", "+resend_headers"]),
     ("av1_opus", "mkv", OBRAZ + ZVUK + ["-c:v", "libaom-av1", "-cpu-used", "8", "-g", "10", "-c:a", "libopus"]),
+    # Ogg (RFC 3533, RFC 7845): Opus s pre-skip a orezaním konca, 5.1, 20 ms aj 60 ms, FLAC v Ogg, Vorbis (bez časov)
+    ("ogg_opus", "opus", ZVUK + ["-c:a", "libopus"]),
+    ("ogg_opus_mono_60ms", "opus", ZVUK44 + ["-ac", "1", "-c:a", "libopus", "-frame_duration", "60"]),
+    ("ogg_opus_51", "opus", ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3",
+                             "-af", "pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0", "-c:a", "libopus"]),
+    ("ogg_flac", "oga", ZVUK44 + ["-c:a", "flac"]),
+    ("ogg_vorbis", "ogg", ZVUK + ["-c:a", "libvorbis"]),
 ]
 
 
@@ -200,6 +213,10 @@ def porovnaj(meno, cesta):
             poznamky.append(f"stopa {stopa}: tok {n} B bit po bite, {posunutych} paketov s nulovým bajtom zero_byte "
                             "na začiatku (H.26x príloha B), FFmpeg ho dáva na koniec predošlého")
             a_s = [dict(a, md5=b["md5"], velkost=b["velkost"]) for a, b in zip(a_s, b_s)]
+        if cesta.endswith(".ogg") and kodeky.get(stopa) == "vorbis" and all(a["pts"] is None for a in a_s):
+            # Vorbis v Ogg: media ho nedekóduje, časy paketov by vyžadovali rozbor hlavičky setup – porovná sa obsah
+            a_s = [dict(a, pts=b["pts"], trvanie=None) for a, b in zip(a_s, b_s)]
+            poznamky.append(f"stopa {stopa}: Vorbis bez časov paketov (obsah, veľkosť, kľúčovosť porovnané)")
         zaokruhlenych = trvani_zaokruhlenych = trvani_zo_suboru = 0
         predosly_blok = None
         for i, (a, b) in enumerate(zip(a_s, b_s)):
@@ -246,8 +263,38 @@ def porovnaj(meno, cesta):
     RIADKY.append(f"| {meno} | {stopy} | {len(moje)} | {stav} |")
 
 
+def dekodovanie_ogg(subory):
+    """Dekódovanie súborov Ogg (Opus, FLAC) cez kontajner a DekoderZvuku proti dekódovaniu FFmpeg."""
+    import numpy as np
+    print("\n| Ogg – dekódovanie | kodek | kanálov | vzoriek | vzoriek rozhodcu | SNR rozdielu | výsledok |")
+    print("|---|---|---|---|---|---|---|")
+    for meno, cesta in subory:
+        ref_cesta, nas_cesta = cesta + ".ff.f32", cesta + ".nas.f32"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", cesta, "-f", "f32le", ref_cesta], check=True)
+        kanalov = int(json.loads(subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "json",
+             cesta], capture_output=True, text=True, check=True).stdout)["streams"][0]["channels"])
+        r = subprocess.run([DEKODER, "--kontajner", cesta, nas_cesta], capture_output=True, text=True)
+        kodek = next((c.split("=", 1)[1] for c in r.stdout.split() if c.startswith("kodek=")), "?")
+        nas = np.fromfile(nas_cesta, dtype="<f4").astype(np.float64) if r.returncode == 0 else np.zeros(0)
+        ref = np.fromfile(ref_cesta, dtype="<f4").astype(np.float64)
+        dlzka = len(nas) == len(ref) and len(ref) > 0
+        snr = -1.0
+        if dlzka:
+            sum_ = float(np.sum((nas - ref) ** 2))
+            snr = math.inf if sum_ == 0 else 10 * math.log10(float(np.sum(ref ** 2)) / sum_)
+        flac = kodek.lower() == "flac"
+        ok = r.returncode == 0 and "chyb=0" in r.stdout and dlzka and (snr == math.inf if flac else snr >= 100)
+        if not ok:
+            CHYBY.append(f"{meno}: dekódovanie Ogg – vzoriek {len(nas) // kanalov} / {len(ref) // kanalov}, "
+                         f"SNR {snr:.1f} dB {r.stderr.strip()[:200]}")
+        print(f"| {meno} | {kodek} | {kanalov} | {len(nas) // kanalov} | {len(ref) // kanalov} | "
+              f"{'bitovo zhodné' if snr == math.inf else f'{snr:.1f} dB'} | {'✅' if ok else '❌'} |")
+
+
 def main():
     mkvmerge = shutil.which("mkvmerge")
+    na_dekodovanie = []
     for meno, pripona, argumenty in VARIANTY:
         cesta = os.path.join(PRAC, f"{meno}.{pripona}")
         ok, chyba = ffmpeg(cesta, argumenty)
@@ -255,6 +302,8 @@ def main():
             RIADKY.append(f"| {meno} | – | – | ⏭ zapisovač FFmpeg nevie ({chyba}) |")
             continue
         porovnaj(meno, cesta)
+        if DEKODER and meno.startswith("ogg_") and "vorbis" not in meno:
+            na_dekodovanie.append((meno, cesta))
         if mkvmerge and pripona == "mkv":
             druhy = os.path.join(PRAC, f"{meno}_mkvmerge.mkv")
             r = subprocess.run([mkvmerge, "-q", "-o", druhy, cesta], capture_output=True, text=True)
@@ -263,6 +312,8 @@ def main():
     print("| Súbor | Stôp | Paketov | Zhoda s rozhodcom (ffprobe) |")
     print("|---|---|---|---|")
     print("\n".join(RIADKY))
+    if na_dekodovanie:
+        dekodovanie_ogg(na_dekodovanie)
     if CHYBY:
         print("\n**Nezhody:**\n")
         for c in CHYBY:

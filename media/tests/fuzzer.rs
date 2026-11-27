@@ -661,3 +661,91 @@ fn mpa_subor() {
         }
     }
 }
+
+/// Stránka Ogg (RFC 3533) s CRC podľa `framing.html` (mnohočlen 0x04C11DB7, počiatok 0, bez zrkadlenia).
+fn ogg_stranka(priznaky: u8, granula: i64, poradie: u32, pakety: &[Vec<u8>]) -> Vec<u8> {
+    let (mut seg, mut data): (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
+    for p in pakety {
+        seg.extend(std::iter::repeat_n(255u8, p.len() / 255));
+        seg.push((p.len() % 255) as u8);
+        data.extend(p);
+    }
+    let mut d = b"OggS\x00".to_vec();
+    d.push(priznaky);
+    d.extend(granula.to_le_bytes());
+    d.extend(0x1234u32.to_le_bytes());
+    d.extend(poradie.to_le_bytes());
+    d.extend([0; 4]);
+    d.push(seg.len() as u8);
+    d.extend(seg);
+    d.extend(data);
+    let mut c = 0u32;
+    for &b in &d {
+        c ^= (b as u32) << 24;
+        for _ in 0..8 {
+            c = if c & 0x8000_0000 != 0 { (c << 1) ^ 0x04C1_1DB7 } else { c << 1 };
+        }
+    }
+    d[22..26].copy_from_slice(&c.to_le_bytes());
+    d
+}
+
+/// Súbor Ogg Opus: OpusHead (1–2 kanály), OpusTags, stránky s pakety s platným TOC a náhodnými dátami.
+fn subor_ogg(n: &mut Nahoda, stranok: usize) -> Vec<u8> {
+    let kanalov = 1 + n.mensie_ako(2) as u8;
+    let mut h = b"OpusHead\x01".to_vec();
+    h.push(kanalov);
+    h.extend(312u16.to_le_bytes());
+    h.extend(48_000u32.to_le_bytes());
+    h.extend([0, 0, 0]);
+    let mut d = ogg_stranka(2, 0, 0, &[h]);
+    let polozka = b"R128_TRACK_GAIN=-1";
+    let mut t = b"OpusTags\x01\x00\x00\x00x\x01\x00\x00\x00".to_vec();
+    t.extend((polozka.len() as u32).to_le_bytes());
+    t.extend(polozka);
+    d.extend(ogg_stranka(0, 0, 1, &[t]));
+    let mut granula = 0i64;
+    for s in 0..stranok {
+        let pakety: Vec<Vec<u8>> = (0..1 + n.mensie_ako(4))
+            .map(|_| {
+                let toc = (n.dalsie() as u8 & 0xFC) | if kanalov == 2 { 4 } else { 0 };
+                std::iter::once(toc).chain(bajty(n, 60)).collect()
+            })
+            .collect();
+        granula += pakety.len() as i64 * 960;
+        let posledna = s + 1 == stranok;
+        d.extend(ogg_stranka(if posledna { 4 } else { 0 }, granula, s as u32 + 2, &pakety));
+    }
+    d
+}
+
+#[test]
+fn ogg_subory() {
+    use orchidea_media::zvuk::dekoder_zvuku;
+    let mut n = nahoda(19);
+    let zaklady: Vec<Vec<u8>> = (0..4).map(|i| subor_ogg(&mut n, 5 + 10 * i)).collect();
+    for i in 0..pocet_pokusov() / 10 {
+        let d = if i % 8 == 0 { zaklady[i % 4].clone() } else { zmutuj(&zaklady[i % 4], &mut n) };
+        let Ok(mut k) = orchidea_media::kontajner::otvor(PametovyZdroj::novy(d), prisne()) else {
+            continue;
+        };
+        let _ = (k.trvanie_ns(), k.znacky().map(|z| z.replaygain()));
+        let mut dek = k.stopy().first().and_then(|s| dekoder_zvuku(s).ok());
+        let mut blok = BlokZvuku::f32(48_000, RozlozenieKanalov::STEREO);
+        for _ in 0..300 {
+            match k.dalsi_paket() {
+                Ok(Some(p)) => {
+                    assert!(p.data.len() as u64 <= prisne().paket);
+                    if let Some(dek) = dek.as_mut() {
+                        let _ = dek.dekoduj(&p, &mut blok);
+                    }
+                }
+                _ => break,
+            }
+        }
+        let _ = k.posun(n.mensie_ako(2_000_000_000) as i64, Posun::Presny);
+        for _ in 0..3 {
+            let _ = k.dalsi_paket();
+        }
+    }
+}
