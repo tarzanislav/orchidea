@@ -162,6 +162,18 @@ fn over_profil(sps: &Sps, pps: &Pps) -> Vysledok<()> {
     Ok(())
 }
 
+/// Predvolený počet vlákien dekódovania: **dvojnásobok jadier, najviac 8** (1 jadro → 1; bez vlákien, napr.
+/// wasm32-wasip1, sa dekóduje v hlavnom vlákne). Viac obrazov naraz ako jadier vyplní čas, keď vlákno čaká na
+/// riadky referencie – Odroid C4 (A55, 4 jadrá, film 1080p, 27. 11., karta fab08af): 4 / 6 / 8 vlákien
+/// 38,5 / 40,8 / 41,7 obr./s (+8 %). Práca sa tým nezväčší – len menej čakania; vlákna nečakajú aktívne.
+pub fn predvolene_vlakna() -> usize {
+    if cfg!(target_os = "wasi") {
+        return 1;
+    }
+    let jadra = std::thread::available_parallelism().map_or(1, |n| n.get());
+    if jadra <= 1 { 1 } else { (2 * jadra).min(8) }
+}
+
 impl Dekoder {
     pub fn novy() -> Dekoder {
         Dekoder {
@@ -177,12 +189,7 @@ impl Dekoder {
             faktory: None,
             rezerva_stavu: None,
             spolocne: Arc::new(Spolocne::default()),
-            // bez vlákien (napr. wasm32-wasip1) sa dekóduje v hlavnom vlákne
-            vlakien: if cfg!(target_os = "wasi") {
-                1
-            } else {
-                std::thread::available_parallelism().map_or(1, |n| n.get()).min(8)
-            },
+            vlakien: predvolene_vlakna(),
             vlakna: None,
             odoslane: 0,
             hlbky: (8, 8),
@@ -196,7 +203,7 @@ impl Dekoder {
         Dekoder { overovat_odtlacky: false, ..Self::novy() }
     }
 
-    /// Počet vlákien dekódovania (predvolene počet jadier, najviac 8; 1 = všetko v hlavnom vlákne).
+    /// Počet vlákien dekódovania (predvolene [`predvolene_vlakna`]; 1 = všetko v hlavnom vlákne).
     pub fn s_vlaknami(mut self, n: usize) -> Dekoder {
         self.vlakien = n.max(1);
         self
