@@ -95,8 +95,14 @@
 #define NAL_SPS			33
 #define NAL_PPS			34
 #define NAL_EOS			36
+#define NAL_EOB			37
 /* koniec toku: poistka, ak mikrokód EOS neohlási (ms bez novej snímky po zápise EOS) */
 #define SKL_KONIEC_MS		500
+/* koniec toku: EOS, nuly a EOB spolu (dekodér číta tok dopredu – posledná snímka nesmie čakať na ďalšie dáta) */
+#define SKL_KONIEC_BAJTOV	SZ_32K
+/* registre parsera (esparser.c) – len na výpis stavu na konci toku */
+#define SKL_PARSER_VIDEO_WP	0x88
+#define SKL_PARSER_VIDEO_HOLE	0x90
 
 #define REZ_B			0
 #define REZ_P			1
@@ -1312,6 +1318,36 @@ static int skl_stop(struct amvdec_session *sess)
  *
  * Od 27. 11. sa pri príkaze STOP nevolá (koniec toku rieši skl_koniec_toku) – len pri vypnutí prúdu.
  */
+/*
+ * Stav na konci toku do záznamu jadra (27. 11.: posledná snímka 8-snímkového toku nevyšla, poistka našla
+ * „snímka žiadna“ – treba rozlíšiť, či snímka čaká na buffer, alebo jej dáta dekodér z toku ešte neprečítal).
+ * Polohy v toku sú bajty od začiatku VIFIFO: zápis parsera, wp/rp dekodéra, spotrebované jednotkou shift.
+ */
+static void skl_vypis_stav(struct skl_hevc *h, const char *kde)
+{
+	struct amvdec_session *sess = h->sess;
+	struct amvdec_core *core = sess->core;
+	u32 zac = (u32)sess->vififo_paddr;
+	int obs = 0, ref = 0, cak = 0, i;
+
+	for (i = 0; i < SKL_SNIMOK; i++) {
+		struct skl_snimka *s = &h->snimky[i];
+
+		if (!s->vbuf)
+			continue;
+		obs++;
+		ref += s->referencna;
+		cak += s->na_vystup;
+	}
+	dev_info(core->dev,
+		 "sklenik-hevc: %s – stav %#x, snímka %s, čaká na buffer %d, hlavička čaká %d, formát %d; buffre obsadené %d (ref %d, na výstup %d), voľné v rade %u; tok: parser %u (diera %u), wp %u, rp %u, úroveň %u, spotrebované %u; začatých %u, vydaných %u, v toku %d\n",
+		 kde, citaj(h, SKL_STAV), h->aktualna ? "rozpracovaná" : "žiadna", h->cakame_snimku,
+		 h->rpm_cakajuci, h->cakame_format, obs, ref, cak, v4l2_m2m_num_dst_bufs_ready(sess->m2m_ctx),
+		 amvdec_read_parser(core, SKL_PARSER_VIDEO_WP) - zac, amvdec_read_parser(core, SKL_PARSER_VIDEO_HOLE),
+		 citaj(h, HEVC_STREAM_WR_PTR) - zac, citaj(h, HEVC_STREAM_RD_PTR) - zac, citaj(h, HEVC_STREAM_LEVEL),
+		 citaj(h, HEVC_SHIFT_BYTE_COUNT), h->poradie, h->vydanych, atomic_read(&sess->esparser_queued_bufs));
+}
+
 static void skl_drain(struct amvdec_session *sess)
 {
 	struct skl_hevc *h = sess->priv;
@@ -1332,6 +1368,7 @@ static void skl_drain(struct amvdec_session *sess)
 	if (!necinny) {
 		dev_info(jadro(h)->dev, "sklenik-hevc: vyprázdnenie po 500 ms – snímka %s\n",
 			 h->aktualna ? "nedokončená" : "dokončená");
+		skl_vypis_stav(h, "vyprázdnenie");
 		h->dekod_od = 0;	/* čas čakania nie je čas dekódovania */
 	}
 	dokonci_aktualnu(h);
@@ -1347,26 +1384,41 @@ static void skl_drain(struct amvdec_session *sess)
  * esparser zapíše všetky zaradené buffre a až potom zavolá túto funkciu (z toho istého vlákna, pod sess->lock –
  * žiadny súbežný zápis ako vo f34bd86).
  *
- * Tu: EOS a výplň nulami do 4 KiB (ako EOS H.264 v meson-vdec – jadro dekodéra číta tok po blokoch, bez výplne by
+ * Tu: EOS, výplň nulami a EOB (32 KiB; jadro dekodéra číta tok dopredu, bez výplne by
  * koniec posledného buffra ostal neprečítaný). EOS vydá všetky snímky (odpovedz_na_nal); poistka skl_dovrs, ak ho
  * mikrokód v samostatnom hľadaní NAL neohlási.
  */
-static const u8 skl_eos[SZ_4K] = { 0x00, 0x00, 0x00, 0x01, (NAL_EOS << 1), 0x01 };
-
 static void skl_koniec_toku(struct amvdec_session *sess)
 {
 	struct skl_hevc *h = sess->priv;
+	u8 *koniec;
 	int ret;
 
 	if (!h)
 		return;
-	ret = esparser_queue_eos(sess->core, skl_eos, sizeof(skl_eos));
+	/*
+	 * 27. 11. (karta 3318467): zápis 4 KiB vypršal (0) – esparser_queue_eos nedával za dáta vyhľadávací vzor
+	 * parsera (opravené v sklenik-hevc.patch). Navyše väčšia výplň a na konci EOB: dekodér HEVC číta tok
+	 * dopredu a pri doteraz posledných dátach čakal – posledná snímka tak musí mať za sebou dosť dát.
+	 */
+	koniec = kzalloc(SKL_KONIEC_BAJTOV, GFP_KERNEL);
+	if (!koniec)
+		return;
+	koniec[3] = 0x01;
+	koniec[4] = NAL_EOS << 1;
+	koniec[5] = 0x01;
+	koniec[SKL_KONIEC_BAJTOV - 6 + 3] = 0x01;
+	koniec[SKL_KONIEC_BAJTOV - 6 + 4] = NAL_EOB << 1;
+	koniec[SKL_KONIEC_BAJTOV - 6 + 5] = 0x01;
+	ret = esparser_queue_eos(sess->core, koniec, SKL_KONIEC_BAJTOV);
+	kfree(koniec);
 	mutex_lock(&h->zamok);
 	h->koniec_zapisany = true;
 	h->koniec_hotovy = false;
 	h->koniec_od = ktime_get();
 	if (ret <= 0)
 		dev_info(jadro(h)->dev, "sklenik-hevc: EOS na konci toku sa nepodarilo zapísať (%d)\n", ret);
+	skl_vypis_stav(h, "koniec toku zapísaný");
 	mod_delayed_work(system_wq, &h->dovrs, msecs_to_jiffies(SKL_KONIEC_MS));
 	mutex_unlock(&h->zamok);
 }
@@ -1381,6 +1433,7 @@ static void skl_dovrs(struct work_struct *w)
 		dev_info(jadro(h)->dev,
 			 "sklenik-hevc: koniec toku – EOS neohlásený %lld ms po zápise, snímka %s\n",
 			 ktime_ms_delta(ktime_get(), h->koniec_od), h->aktualna ? "rozpracovaná" : "žiadna");
+		skl_vypis_stav(h, "poistka");
 		h->dekod_od = 0;	/* čas čakania nie je čas dekódovania */
 		dokonci_aktualnu(h);
 		vydavaj(h, true);

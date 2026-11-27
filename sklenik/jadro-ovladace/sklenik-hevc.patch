@@ -1,5 +1,5 @@
 diff --git a/drivers/staging/media/meson/vdec/Makefile b/drivers/staging/media/meson/vdec/Makefile
-index 6e726af..7aaafd2 100644
+index 6e726af84..7aaafd26b 100644
 --- a/drivers/staging/media/meson/vdec/Makefile
 +++ b/drivers/staging/media/meson/vdec/Makefile
 @@ -4,5 +4,6 @@
@@ -10,10 +10,24 @@ index 6e726af..7aaafd2 100644
  
  obj-$(CONFIG_VIDEO_MESON_VDEC) += meson-vdec.o
 diff --git a/drivers/staging/media/meson/vdec/esparser.c b/drivers/staging/media/meson/vdec/esparser.c
-index 4632346..1bb6571 100644
+index 4632346f0..c4a11095c 100644
 --- a/drivers/staging/media/meson/vdec/esparser.c
 +++ b/drivers/staging/media/meson/vdec/esparser.c
-@@ -308,7 +308,8 @@ esparser_queue(struct amvdec_session *sess, struct vb2_v4l2_buffer *vbuf)
+@@ -265,6 +265,13 @@ int esparser_queue_eos(struct amvdec_core *core, const u8 *data, u32 len)
+ 		return -ENOMEM;
+ 
+ 	memcpy(eos_vaddr, data, len);
++	/*
++	 * SKLENÍK (R174): za dáta vyhľadávací vzor ako pri bežných buffroch (esparser_pad_start_code). Bez neho
++	 * parser vzor nenašiel, zápis po 200 ms vypršal (vrátil 0) a koniec toku nebol potvrdený.
++	 */
++	memset(eos_vaddr + len, 0, SEARCH_PATTERN_LEN);
++	((u8 *)eos_vaddr)[len + 2] = 0x01;
++	((u8 *)eos_vaddr)[len + 3] = 0xff;
+ 	ret = esparser_write_data(core, eos_paddr, len);
+ 	dma_free_coherent(dev, len + SEARCH_PATTERN_LEN,
+ 			  eos_vaddr, eos_paddr);
+@@ -308,7 +315,8 @@ esparser_queue(struct amvdec_session *sess, struct vb2_v4l2_buffer *vbuf)
  	 * they could pause when there is no capture buffer available and
  	 * resume on this notification.
  	 */
@@ -23,7 +37,7 @@ index 4632346..1bb6571 100644
  		if (codec_ops->num_pending_bufs)
  			num_dst_bufs = codec_ops->num_pending_bufs(sess);
  
-@@ -383,6 +384,18 @@ void esparser_queue_all_src(struct work_struct *work)
+@@ -383,6 +391,18 @@ void esparser_queue_all_src(struct work_struct *work)
  		if (esparser_queue(sess, &buf->vb) < 0)
  			break;
  	}
@@ -43,7 +57,7 @@ index 4632346..1bb6571 100644
  }
  
 diff --git a/drivers/staging/media/meson/vdec/vdec.c b/drivers/staging/media/meson/vdec/vdec.c
-index 49df5c6..1fc6185 100644
+index 49df5c639..1fc61858d 100644
 --- a/drivers/staging/media/meson/vdec/vdec.c
 +++ b/drivers/staging/media/meson/vdec/vdec.c
 @@ -323,6 +323,7 @@ static int vdec_start_streaming(struct vb2_queue *q, unsigned int count)
@@ -81,7 +95,7 @@ index 49df5c6..1fc6185 100644
  
  	v4l2_m2m_mark_stopped(sess->m2m_ctx);
 diff --git a/drivers/staging/media/meson/vdec/vdec.h b/drivers/staging/media/meson/vdec/vdec.h
-index 7a5d8e8..bf453d2 100644
+index 7a5d8e871..bf453d231 100644
 --- a/drivers/staging/media/meson/vdec/vdec.h
 +++ b/drivers/staging/media/meson/vdec/vdec.h
 @@ -138,6 +138,8 @@ struct amvdec_codec_ops {
@@ -103,7 +117,7 @@ index 7a5d8e8..bf453d2 100644
  	unsigned int num_dst_bufs;
  	unsigned int changed_format;
 diff --git a/drivers/staging/media/meson/vdec/vdec_platform.c b/drivers/staging/media/meson/vdec/vdec_platform.c
-index 66bb307..7352e9f 100644
+index 66bb307db..7352e9f2a 100644
 --- a/drivers/staging/media/meson/vdec/vdec_platform.c
 +++ b/drivers/staging/media/meson/vdec/vdec_platform.c
 @@ -12,6 +12,7 @@
