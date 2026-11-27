@@ -236,7 +236,9 @@ impl HlaseniaJadra {
                     let Some((_, text)) = z.split_once(';') else { continue };
                     let text = text.lines().next().unwrap_or("").trim();
                     let mala = text.to_lowercase();
-                    if KLUCE.iter().any(|k| mala.contains(k)) && v.len() < 12 {
+                    // R245: vlastné hlásenia KLÍČA (napr. skúšky videa v tom istom čase) nie sú hlásenia zvuku
+                    let klic = text.starts_with("KLÍČ") || text.starts_with("KL\\x");
+                    if !klic && KLUCE.iter().any(|k| mala.contains(k)) && v.len() < 12 {
                         v.push(text.chars().take(160).collect());
                     }
                 }

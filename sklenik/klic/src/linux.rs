@@ -1304,9 +1304,10 @@ fn kmsg_nove(f: &mut fs::File) -> Vec<String> {
             Ok(n) => {
                 let z = String::from_utf8_lossy(&buf[..n]);
                 let Some((_, text)) = z.split_once(';') else { continue };
-                let text = text.lines().next().unwrap_or("").trim();
+                // R245: diakritika späť z \xNN a celý riadok stavu dekodéra (stav, buffre, polohy v toku)
+                let text = bez_escape(text.lines().next().unwrap_or("").trim());
                 if text.contains("sklenik-hevc") || text.contains("vdec") {
-                    v.push(text.chars().take(200).collect());
+                    v.push(text.chars().take(dlzka_riadka_jadra(&text)).collect());
                 }
             }
             // EPIPE: záznam medzitým prepísaný – ďalší
@@ -4523,6 +4524,12 @@ fn varovanie_jadra(zaznam: &str) -> Option<String> {
     Some(format!("[{:>8.3} s] {druh}: {text}", cas_us as f64 / 1e6))
 }
 
+/// R245: najdlhší riadok jadra v zázname – stav vlastného dekodéra HEVC (sklenik-hevc) celý (polohy v toku sú na
+/// konci riadka; Odroid C4 27. 11. ich orezanie na 200 znakov skrylo), ostatné 200 znakov.
+fn dlzka_riadka_jadra(text: &str) -> usize {
+    if text.contains("sklenik-hevc") { 700 } else { 200 }
+}
+
 /// `/dev/kmsg` zapisuje bajty mimo ASCII ako `\xNN` – späť na UTF-8 (diakritika v hláseniach KLÍČA).
 fn bez_escape(t: &str) -> String {
     let b = t.as_bytes();
@@ -4557,7 +4564,7 @@ fn hlasenie_obrazu(zaznam: &str) -> Option<String> {
     if !(o_obraze || text.starts_with("KLÍČ")) {
         return None;
     }
-    let text: String = text.chars().take(200).collect();
+    let text: String = text.chars().take(dlzka_riadka_jadra(text)).collect();
     Some(format!("[{:>8.3} s] {text}", cas_us as f64 / 1e6))
 }
 
@@ -4653,6 +4660,14 @@ mod skusky {
     #[test]
     fn hlasenia_klica_s_diakritikou() {
         assert_eq!(bez_escape("KL\\xc3\\x8d\\xc4\\x8c: perif\\xc3\\xa9rie"), "KLÍČ: periférie");
+        // R245: stav dekodéra HEVC celý, ostatné riadky 200 znakov
+        let dlhy = format!(
+            "6,1,2,-;meson-vdec x: sklenik-hevc: poistka – stav 0x8; {}tok: parser 527",
+            "a".repeat(300)
+        );
+        assert!(hlasenie_obrazu(&dlhy).is_some_and(|t| t.ends_with("tok: parser 527")));
+        let iny = format!("6,1,2,-;meson-drm: {}", "b".repeat(300));
+        assert!(hlasenie_obrazu(&iny).is_some_and(|t| t.chars().count() < 230));
         assert!(hlasenie_obrazu("6,10,3039000,-;KL\\xc3\\x8d\\xc4\\x8c: takt").is_some());
         assert!(hlasenie_obrazu("6,11,3039000,-;usb 1-2: new device").is_none());
     }
