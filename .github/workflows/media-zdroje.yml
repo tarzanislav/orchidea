@@ -42,7 +42,7 @@ jobs:
         run: |
           n=$(pdfinfo "$RUNNER_TEMP/norma.pdf" | awk '/^Pages/{print $2}')
           for p in $(seq 1 "$n"); do
-            pdftotext -f "$p" -l "$p" -layout "$RUNNER_TEMP/norma.pdf" - | grep -E "^\s*(Table|Figure) [0-9A-Z.]+:" | sed "s/^ */strana $p: /"
+            pdftotext -f "$p" -l "$p" -layout "$RUNNER_TEMP/norma.pdf" - | grep -E "^\s*(Table|Figure) [0-9A-Z.]+:" | sed "s/^ */strana $p: /" || true
           done
       - name: Zvolené strany (len číselné tabuľky)
         if: inputs.strany != ''
