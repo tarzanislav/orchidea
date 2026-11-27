@@ -133,7 +133,7 @@ impl Dekoder {
         Dekoder { overovat_odtlacky: false, ..Self::novy() }
     }
 
-    /// Počet vlákien dekódovania (predvolene dvojnásobok jadier, najviac 8; 1 = všetko v hlavnom vlákne).
+    /// Počet vlákien dekódovania (predvolene 1,5-násobok jadier, najviac 8; 1 = všetko v hlavnom vlákne).
     pub fn s_vlaknami(mut self, n: usize) -> Dekoder {
         self.vlakien = Some(n.max(1));
         self

@@ -162,16 +162,17 @@ fn over_profil(sps: &Sps, pps: &Pps) -> Vysledok<()> {
     Ok(())
 }
 
-/// Predvolený počet vlákien dekódovania: **dvojnásobok jadier, najviac 8** (1 jadro → 1; bez vlákien, napr.
+/// Predvolený počet vlákien dekódovania: **1,5-násobok jadier, najviac 8** (1 jadro → 1; bez vlákien, napr.
 /// wasm32-wasip1, sa dekóduje v hlavnom vlákne). Viac obrazov naraz ako jadier vyplní čas, keď vlákno čaká na
-/// riadky referencie – Odroid C4 (A55, 4 jadrá, film 1080p, 27. 11., karta fab08af): 4 / 6 / 8 vlákien
-/// 38,5 / 40,8 / 41,7 obr./s (+8 %). Práca sa tým nezväčší – len menej čakania; vlákna nečakajú aktívne.
+/// riadky referencie. Film 1080p, 27. 11., 4 / 6 / 8 vlákien: Odroid C4 (A55) 38,5 / 40,8 / 41,7 obr./s,
+/// RPi 3 B+ (A53) 27,1 / **28,6** / 28,0 obr./s – 6 a 8 v rámci šumu, 6 má menej obrazov v pamäti (chladnejšie).
+/// Práca sa tým nezväčší – len menej čakania; vlákna nečakajú aktívne.
 pub fn predvolene_vlakna() -> usize {
     if cfg!(target_os = "wasi") {
         return 1;
     }
     let jadra = std::thread::available_parallelism().map_or(1, |n| n.get());
-    if jadra <= 1 { 1 } else { (2 * jadra).min(8) }
+    if jadra <= 1 { 1 } else { (jadra + jadra / 2).min(8) }
 }
 
 impl Dekoder {

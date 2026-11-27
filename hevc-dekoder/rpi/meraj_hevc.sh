@@ -62,11 +62,15 @@ s_teplotou() {
     echo
   done
   # rozpis času po etapách (riadky CAS, rozhranie R4); 6 a 8 vlákien na 4 jadrách – vyplní čakanie na referencie?
-  for n in 1 4 6 8; do
-    ochlad
-    echo "## Etapy – film1080, vlákien: $n (štart pri $(teplota) °C)"
-    s_teplotou ./hevc_meranie --rychlost --etapy --vlakna "$n" toky/film1080.hevc | grep -v '^OBRAZ'
-    echo
+  # (aj film1080_tazky: zrno a 8 Mb/s ako skutočný film)
+  for f in film1080 film1080_tazky; do
+    [ -f "toky/$f.hevc" ] || continue
+    for n in 1 4 6 8; do
+      ochlad
+      echo "## Etapy – $f, vlákien: $n (štart pri $(teplota) °C)"
+      s_teplotou ./hevc_meranie --rychlost --etapy --vlakna "$n" "toky/$f.hevc" | grep -v '^OBRAZ'
+      echo
+    done
   done
 } 2>&1 | tee "$vysledok"
 echo "Hotovo – výsledok je v súbore $vysledok"
