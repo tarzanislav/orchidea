@@ -168,6 +168,7 @@ impl Strana {
 
     /// Čierny bod strany v XYZ D50 (neutrálny, relatívny kolorimetrický zámer), podľa postupu Adobe pre
     /// kompenzáciu čierneho bodu:
+    /// - profil v4, ktorý pre zámer použije percepčnú tabuľku: čierna referenčného média v4,
     /// - zdroj RGB a sivá: najtmavšia farba zariadenia (0),
     /// - cieľ s tabuľkami a CMYK aj ako zdroj: cesta tam a späť Lab(0, 0, 0) → zariadenie → Lab – najtmavšia farba,
     ///   ktorú profil naozaj vie (pri CMYK nie je nutne 100 % všetkých farieb – limit nánosu),
@@ -180,6 +181,10 @@ impl Strana {
                 neutralny(self.do_xyz(&nula, rel))
             }
             Strana::Icc(p) => {
+                // tabuľka percepčného zámeru profilu v4 má čiernu referenčného média (ICC.1:2010, 6.3.4.3)
+                if p.verzia.0 >= 4 && p.percepcna_tabulka(rel, ako_ciel) {
+                    return CIERNA_V4;
+                }
                 let cmyk = p.priestor == icc::PriestorZariadenia::Cmyk;
                 if (ako_ciel || cmyk) && p.ma_z_pcs(rel) && p.ma_do_pcs(rel) {
                     let zariadenie = p.z_pcs(icc::lab_na_xyz([0.0, 0.0, 0.0]), rel);
@@ -294,10 +299,17 @@ pub struct Volby {
     pub kompenzacia_ciernej: bool,
 }
 
-/// Bod v XYZ → neutrálny bod s rovnakým L* (a* = b* = 0) – čierny bod sa berie ako neutrálny.
+/// Čierny bod referenčného média percepčného zámeru ICC v4 (ICC.1:2010, 6.3.4.3), XYZ D50.
+const CIERNA_V4: V3 = [0.00336, 0.0034731, 0.00287];
+
+/// Bod v XYZ → neutrálny bod s rovnakým L* (a* = b* = 0) – čierny bod sa berie ako neutrálny. Čierna svetlejšia
+/// ako L* = 50 nie je čierna (chybný alebo skúšobný profil) – kompenzácia s ňou nepočíta.
 fn neutralny(x: V3) -> V3 {
-    let lab = icc::xyz_na_lab(x);
-    icc::lab_na_xyz([lab[0].clamp(0.0, 50.0), 0.0, 0.0])
+    let l = icc::xyz_na_lab(x)[0];
+    if !(0.0..=50.0).contains(&l) {
+        return [0.0; 3];
+    }
+    icc::lab_na_xyz([l, 0.0, 0.0])
 }
 
 /// Mriežka pre celé čísla (prevod zariadenie → zariadenie).

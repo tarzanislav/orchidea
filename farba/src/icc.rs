@@ -705,6 +705,13 @@ impl Profil {
         }
     }
 
+    /// Smer do PCS (alebo z PCS) pri zámere `z` ide cez percepčnú tabuľku (A2B0/B2A0) – zámer je percepčný,
+    /// alebo profil tabuľku zámeru nemá a použije sa percepčná (ICC.1, 8.10).
+    pub fn percepcna_tabulka(&self, z: Zamer, z_pcs: bool) -> bool {
+        let t = if z_pcs { &self.b2a } else { &self.a2b };
+        t[0].is_some() && (Profil::index(z) == 0 || t[Profil::index(z)].is_none())
+    }
+
     fn lut_a2b(&self, z: Zamer) -> Option<&Lut> {
         self.a2b[Profil::index(z)].as_ref().or(self.a2b[0].as_ref())
     }
