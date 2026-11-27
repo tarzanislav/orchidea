@@ -358,18 +358,32 @@ impl KoniecToku for Vec<Vec<u8>> {
     }
 }
 
-/// R202: koeficient DC jasu bloku Intra 16×16 (CAVLC, nC 0–1, jediný koeficient na pozícii 0), −8 až 8.
-fn dc_koeficient(b: &mut Bity, c: i32) {
+/// R202: koeficient DC jasu bloku Intra 16×16 (CAVLC, jediný koeficient na pozícii 0), −8 až 8.
+/// R255: pre nC (ITU-T H.264 9.2.1): 0 ≤ nC < 2 tabuľka 9-5 prvý stĺpec, nC ≥ 8 pevná dĺžka 6
+/// bitov (TotalCoeff − 1 a TrailingOnes; „000011“ = žiadny koeficient). Iné nC tok R255 nepotrebuje (susedia sú
+/// len Intra 16×16 bez AC – nN 0 – alebo I_PCM – nN 16).
+fn dc_koeficient_nc(b: &mut Bity, c: i32, nc: u32) {
+    assert!(!(2..8).contains(&nc), "nC {nc}");
+    let pevna = nc >= 8;
     match c.unsigned_abs() {
+        0 if pevna => b.u(6, 0b000011),
         0 => b.u(1, 1), // coeff_token: TotalCoeff 0
         1 => {
-            b.u(2, 0b01); // coeff_token: TotalCoeff 1, TrailingOnes 1
+            if pevna {
+                b.u(6, 0b000001); // TotalCoeff 1 (0000), TrailingOnes 1 (01)
+            } else {
+                b.u(2, 0b01); // coeff_token: TotalCoeff 1, TrailingOnes 1
+            }
             b.u(1, u64::from(c < 0)); // trailing_ones_sign_flag
             b.u(1, 1); // total_zeros 0
         }
         a => {
             assert!(a <= 8);
-            b.u(6, 0b000101); // coeff_token: TotalCoeff 1, TrailingOnes 0
+            if pevna {
+                b.u(6, 0b000000); // TotalCoeff 1, TrailingOnes 0
+            } else {
+                b.u(6, 0b000101); // coeff_token: TotalCoeff 1, TrailingOnes 0
+            }
             // levelCode bez úpravy o 2 (prvá úroveň pri TrailingOnes < 3), suffixLength 0 → len level_prefix
             let kod = if c > 0 { 2 * c - 2 } else { -2 * c - 1 } - 2;
             b.u(kod as u32, 0);
@@ -401,6 +415,22 @@ pub fn h264_dc_z(
     vyska: usize,
     obsah: &[usize],
     sps_zvlast: bool,
+) -> (Vec<Vec<u8>>, Vec<Obraz>) {
+    h264_dc_pcm(sirka, vyska, obsah, sps_zvlast, &|_, _| false)
+}
+
+/// R255 (návrh A, B súhlasí – #21): tok Intra 16×16 DC, v ktorom sú niektoré rady makroblokov I_PCM podľa
+/// `pcm(poradie_snimky, rad_mb)`. Makroblok PCM má jednotný jas (28–227) a farbu 128; susedný blok DC ho
+/// predikuje ako každého suseda. Rozlíši dve hypotézy o zlom prvom rade MB prvého obrazu na SM1:
+/// (a) 1. obraz celý PCM, ďalšie DC – stačí, aby dekodér „prešiel“ jedným obrazom;
+/// (b) 1. rad MB v PCM – chyba je v ceste Intra 16×16 horného radu pri prvom obraze.
+/// Filter zapnutý s posunmi −12: pri hranách PCM–DC qPav = 13 → indexA 1 → α = 0, nič sa nezmení.
+pub fn h264_dc_pcm(
+    sirka: usize,
+    vyska: usize,
+    obsah: &[usize],
+    sps_zvlast: bool,
+    pcm: &dyn Fn(usize, usize) -> bool,
 ) -> (Vec<Vec<u8>>, Vec<Obraz>) {
     assert!(sirka.is_multiple_of(16) && vyska.is_multiple_of(16));
     let (sps, pps) = h264_sps_pps(sirka, vyska);
@@ -435,12 +465,32 @@ pub fn h264_dc_z(
         rez.se(-6); // slice_beta_offset_div2
         let mut jas = vec![0i32; sx * sy];
         for my in 0..sy {
+            let rad_pcm = pcm(poradie, my);
             for mx in 0..sx {
+                if rad_pcm {
+                    let v = ((mx * 11 + my * 13 + n * 5) % 200 + 28) as u8;
+                    rez.ue(25); // mb_type I_PCM
+                    rez.nuly_do_zarovnania(); // pcm_alignment_zero_bit
+                    let mut vzorky = vec![v; 256];
+                    vzorky.extend_from_slice(&[128; 128]);
+                    rez.bajty(&vzorky);
+                    jas[my * sx + mx] = i32::from(v);
+                    continue;
+                }
+                // nC (9.2.1): sused I_PCM má nN 16, Intra 16×16 bez AC 0; obaja → (nA + nB + 1) >> 1
+                let n_radu = |y: usize| if pcm(poradie, y) { 16u32 } else { 0 };
+                let na = (mx > 0).then(|| n_radu(my));
+                let nb = (my > 0).then(|| n_radu(my - 1));
+                let nc = match (na, nb) {
+                    (Some(a), Some(b)) => (a + b + 1) >> 1,
+                    (Some(x), None) | (None, Some(x)) => x,
+                    (None, None) => 0,
+                };
                 let c = ((mx * 3 + my * 5 + n * 7) % 17) as i32 - 8;
                 rez.ue(3); // mb_type I_16x16_2_0_0 – predikcia DC, bez AC a farby
                 rez.ue(0); // intra_chroma_pred_mode DC
                 rez.se(0); // mb_qp_delta
-                dc_koeficient(&mut rez, c);
+                dc_koeficient_nc(&mut rez, c, nc);
                 let hore = (my > 0).then(|| jas[(my - 1) * sx + mx]);
                 let vlavo = (mx > 0).then(|| jas[my * sx + mx - 1]);
                 let pred = match (hore, vlavo) {
@@ -980,6 +1030,20 @@ mod testy {
             [("dc_sps_zvlast", vec![0, 1, 2], true), ("dc_prva_dvakrat", vec![0, 0, 1, 2], false)]
         {
             let (toky, cakane) = h264_dc_z(320, 240, &obsah, zvlast);
+            std::fs::write(format!("{dir}/{meno}.h264"), toky.concat()).unwrap();
+            let mut yuv = Vec::new();
+            for o in &cakane {
+                yuv.extend_from_slice(&o.y);
+                yuv.extend_from_slice(&o.cb);
+                yuv.extend_from_slice(&o.cr);
+            }
+            std::fs::write(format!("{dir}/{meno}.yuv"), yuv).unwrap();
+        }
+        // R255: 1. obraz celý PCM, ďalšie DC; 1. rad makroblokov PCM (susedia DC s nC 8 a 16 – kód pevnej dĺžky)
+        let prvy_pcm: &dyn Fn(usize, usize) -> bool = &|p, _| p == 0;
+        let rad_pcm: &dyn Fn(usize, usize) -> bool = &|_, r| r == 0;
+        for (meno, maska) in [("dc_prvy_pcm", prvy_pcm), ("dc_rad_pcm", rad_pcm)] {
+            let (toky, cakane) = h264_dc_pcm(320, 240, &[0, 1, 2], false, maska);
             std::fs::write(format!("{dir}/{meno}.h264"), toky.concat()).unwrap();
             let mut yuv = Vec::new();
             for o in &cakane {

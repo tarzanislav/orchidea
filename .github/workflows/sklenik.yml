@@ -166,9 +166,11 @@ jobs:
             ffmpeg -v error -i /tmp/vid/pcm.$f -f rawvideo -pix_fmt yuv420p -y /tmp/vid/dek.$f.yuv
             cmp /tmp/vid/dek.$f.yuv /tmp/vid/pcm.yuv && echo "- ✅ skúšobný tok $f: FFmpeg dekóduje presne vzor (bit po bite)" | tee -a "$GITHUB_STEP_SUMMARY"
           done
-          # R202: H.264 bez PCM (Intra 16×16, predikcia DC, koeficienty DC)
-          ffmpeg -v error -i /tmp/vid/dc.h264 -f rawvideo -pix_fmt yuv420p -y /tmp/vid/dek.dc.yuv
-          cmp /tmp/vid/dek.dc.yuv /tmp/vid/dc.yuv && echo "- ✅ skúšobný tok H.264 bez PCM (Intra 16×16 s DC): FFmpeg dekóduje presne (bit po bite)" | tee -a "$GITHUB_STEP_SUMMARY"
+          # R202: H.264 bez PCM (Intra 16×16, predikcia DC, koeficienty DC); R249 a R255: varianty prvej snímky
+          for m in dc dc_sps_zvlast dc_prva_dvakrat dc_prvy_pcm dc_rad_pcm; do
+            ffmpeg -v error -i /tmp/vid/$m.h264 -f rawvideo -pix_fmt yuv420p -y /tmp/vid/dek.$m.yuv
+            cmp /tmp/vid/dek.$m.yuv /tmp/vid/$m.yuv && echo "- ✅ skúšobný tok H.264 $m (Intra 16×16 s DC): FFmpeg dekóduje presne (bit po bite)" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
           # R177: HEVC so skupinami snímok – P-snímky s preskočenými jednotkami cez referenciu, časovanie VUI
           ffmpeg -v error -i /tmp/vid/gop.hevc -f rawvideo -pix_fmt yuv420p -y /tmp/vid/dek.gop.yuv
           cmp /tmp/vid/dek.gop.yuv /tmp/vid/gop.yuv && echo "- ✅ skúšobný tok HEVC so skupinami (P cez referenciu): FFmpeg dekóduje presne (bit po bite)" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -183,6 +185,10 @@ jobs:
           }
           film film720 1280x720
           film film1080 1920x1080
+          # R255 (žiadosť B, #20): ťažší tok ako skutočný film – zrno (časový šum), 8 Mb/s (rovnako ako hevc.yml)
+          ffmpeg $z -i "testsrc2=size=1920x1080:rate=24,noise=alls=10:allf=t+u" -frames:v 96 -c:v libx265 -preset fast \
+            -pix_fmt yuv420p -x265-params "log-level=error:hash=1:bitrate=8000:vbv-maxrate=10000:vbv-bufsize=10000" \
+            klic-vystup/hevc/film1080_tazky.hevc
           ls -l klic-vystup/hevc
           for t in klic-vystup/hevc/*.hevc; do
             v=$(klic-vystup/hevc_meranie "$t" | grep '^VYSLEDOK')

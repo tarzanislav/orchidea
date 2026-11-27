@@ -782,11 +782,13 @@ fn spusti_skusku_videa(
                 let snimky: Vec<video::Obraz> = (0..8).map(|n| video::vzor(sirka, vyska, n)).collect();
                 // R202: H.264 aj bez PCM (Intra 16×16 s DC) – hlavné jadro I_PCM nevie, overí sa bežná cesta
                 let (dc_toky, dc_cakane) = video::h264_dc(sirka, vyska, 8);
-                // R249 (návrh B): je zlá prvá dekódovaná snímka, prvá po SPS, alebo prvá v buffri so SPS a PPS?
-                let (dc_sps_toky, dc_sps_cakane) =
-                    video::h264_dc_z(sirka, vyska, &(0..8).collect::<Vec<_>>(), true);
-                let (dc_2x_toky, dc_2x_cakane) =
-                    video::h264_dc_z(sirka, vyska, &[0, 0, 1, 2, 3, 4, 5, 6], false);
+                // R249 zodpovedané 27. 11. (X96 aj Odroid): SPS zvlášť nepomohol, tá istá snímka 2× → 1. kópia zlá,
+                // 2. presná. R255 (návrh A, B súhlasí): (a) 1. obraz celý PCM, ďalšie DC; (b) 1. rad MB v PCM.
+                let vsetky: Vec<usize> = (0..8).collect();
+                let (dc_pcm1_toky, dc_pcm1_cakane) =
+                    video::h264_dc_pcm(sirka, vyska, &vsetky, false, &|p, _| p == 0);
+                let (dc_rad_toky, dc_rad_cakane) =
+                    video::h264_dc_pcm(sirka, vyska, &vsetky, false, &|_, r| r == 0);
                 for (f, meno, toky, cakane, druh) in [
                     // R242: filter vypnutý – dekodér SM1 kazí spodné 4 riadky každého radu makroblokov (dôkaz chyby)
                     (
@@ -816,17 +818,17 @@ fn spusti_skusku_videa(
                     (v4l2::H264, "H.264 bez PCM", dc_toky, &dc_cakane, "Intra 16×16 s DC, filter bez účinku"),
                     (
                         v4l2::H264,
-                        "H.264 bez PCM, SPS zvlášť",
-                        dc_sps_toky,
-                        &dc_sps_cakane,
-                        "Intra 16×16 s DC, SPS a PPS v samostatnom buffri (R249)",
+                        "H.264 DC, 1. obraz PCM",
+                        dc_pcm1_toky,
+                        &dc_pcm1_cakane,
+                        "1. obraz celý I_PCM, ďalšie Intra 16×16 s DC (R255a)",
                     ),
                     (
                         v4l2::H264,
-                        "H.264 bez PCM, 1. snímka 2×",
-                        dc_2x_toky,
-                        &dc_2x_cakane,
-                        "Intra 16×16 s DC, prvá snímka dvakrát za sebou (R249)",
+                        "H.264 DC, 1. rad MB PCM",
+                        dc_rad_toky,
+                        &dc_rad_cakane,
+                        "horný rad makroblokov I_PCM, ostatné Intra 16×16 s DC (R255b)",
                     ),
                     (v4l2::HEVC, "HEVC", video::hevc_pcm(&snimky), &snimky, "bloky PCM"),
                 ] {

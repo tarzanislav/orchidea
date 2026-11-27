@@ -387,7 +387,12 @@ pub fn spusti(
             }
             // R232: rozpis času po etapách (prúd B, #3) – len najväčší tok, 1 vlákno a všetky vlákna
             if meno.contains("1080") {
-                for n in [1, *vlakna.last().unwrap_or(&1)] {
+                // R255 (žiadosť B, #20): ťažký film aj s 1,5× jadier – predvolený počet vlákien dekodéra (ef38acc)
+                let mut etapy = vec![1, *vlakna.last().unwrap_or(&1)];
+                if meno.contains("tazky") && jadra >= 4 {
+                    etapy.push(jadra * 3 / 2);
+                }
+                for n in etapy {
                     ochlad();
                     let b = spusti_beh(
                         program,
