@@ -312,8 +312,8 @@ fn fuzzer_exif_iptc() {
 #[test]
 fn fuzzer_xmp() {
     use orchidea_formaty::xmp;
-    let darktable =
-        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/xmp/darktable.jpg.xmp")).unwrap();
+    // vložené pri preklade – skúšky bežia aj na Androide a vo WebAssembly bez priečinka s dátami
+    let darktable = include_bytes!("data/xmp/darktable.jpg.xmp").to_vec();
     let novy =
         xmp::novy(&xmp::Zmena { hodnotenie: Some(2), kluce: Some(vec!["a".into(), "b".into()]) }).unwrap();
     let kompaktny = br#"<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:xap="http://ns.adobe.com/xap/1.0/" xap:Rating="3"/></rdf:RDF>"#.to_vec();
