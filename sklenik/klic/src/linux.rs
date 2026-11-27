@@ -2804,6 +2804,18 @@ pub fn spusti() {
                         hlas(&format!("zvuk: {c}"));
                         v.push(c);
                     }
+                    // R263: vc4 (RPi) – port HDMI tejto karty bez monitora → zvuk sa ani neotvorí (ENOTSUPP); netreba
+                    // 5 pokusov po minúte (RPi 5 27. 11. bez rozpoznaného monitora: 2 karty × 4 min čakania)
+                    if let Some(stav) = stav_portu_hdmi_vc4(&meno)
+                        && stav != "connected"
+                    {
+                        let t = format!(
+                            "{z} ({meno}): port HDMI bez monitora (stav {stav}) – zvuk HDMI sa neskúša (R263)"
+                        );
+                        hlas(&format!("zvuk (R226): {t}"));
+                        v.push(t);
+                        continue;
+                    }
                     // R229: vc4 na RPi zvuk neotvorí, kým nebeží obraz (ENOTSUPP) – skúsiť znova o minútu, najviac 5×
                     let mut pokus = 1;
                     let t = loop {
@@ -4667,6 +4679,26 @@ fn bez_escape(t: &str) -> String {
 }
 
 /// R183: hlásenie jadra o obraze, HDMI, CEC, VPU alebo dekodéri (každá úroveň) a každé hlásenie KLÍČA.
+/// R263: koncovka mena konektora DRM pre zvukovú kartu vc4: `vc4hdmi` (RPi 1–3) a `vc4hdmi0` → `-HDMI-A-1`,
+/// `vc4hdmi1` → `-HDMI-A-2`; iné karty `None`.
+fn konektor_vc4(meno_karty: &str) -> Option<String> {
+    let zvysok = meno_karty.trim().strip_prefix("vc4hdmi")?;
+    let n: u32 = if zvysok.is_empty() { 0 } else { zvysok.parse().ok()? };
+    Some(format!("-HDMI-A-{}", n + 1))
+}
+
+/// R263: stav konektora HDMI zvukovej karty vc4 (`vc4hdmiN` → `card*-HDMI-A-(N+1)`), napr. „connected“ alebo
+/// „disconnected“; `None` pre iné karty alebo bez ovládača KMS.
+fn stav_portu_hdmi_vc4(meno_karty: &str) -> Option<String> {
+    let konektor = konektor_vc4(meno_karty)?;
+    fs::read_dir("/sys/class/drm")
+        .ok()?
+        .flatten()
+        .find(|z| z.file_name().to_string_lossy().ends_with(&konektor))
+        .and_then(|z| fs::read_to_string(z.path().join("status")).ok())
+        .map(|s| s.trim().to_string())
+}
+
 fn hlasenie_obrazu(zaznam: &str) -> Option<String> {
     let (hlavicka, text) = zaznam.split_once(';')?;
     let cas_us = hlavicka.split(',').nth(2).and_then(|c| c.parse::<u64>().ok()).unwrap_or(0);
@@ -4802,6 +4834,15 @@ mod skusky {
         assert!(
             hlasenie_obrazu("6,14,3039000,-;usb-storage 1-2:1.0: USB Mass Storage device detected").is_none()
         );
+    }
+
+    #[test]
+    fn r263_konektor_karty_vc4() {
+        assert_eq!(konektor_vc4("vc4hdmi").as_deref(), Some("-HDMI-A-1"));
+        assert_eq!(konektor_vc4("vc4hdmi0").as_deref(), Some("-HDMI-A-1"));
+        assert_eq!(konektor_vc4("vc4hdmi1").as_deref(), Some("-HDMI-A-2"));
+        assert_eq!(konektor_vc4("X96AIR"), None);
+        assert_eq!(konektor_vc4("ODROIDC4"), None);
     }
 
     #[test]
