@@ -1,8 +1,8 @@
 //! **Súbor FLAC** (`.flac`) ako kontajner – RFC 9639, kap. 6–9 (etapa L2).
 //!
 //! - Pred „fLaC“ smie byť značka ID3v2 (časté v hudobných knižniciach), na konci ID3v1 („TAG“, 128 B).
-//! - Bloky metadát: STREAMINFO, SEEKTABLE, VORBIS_COMMENT (značky; aj ID3v2 a ID3v1, ak ich súbor má); ostatné
-//!   (obrázky) sa preskočia.
+//! - Bloky metadát: STREAMINFO, SEEKTABLE, VORBIS_COMMENT a PICTURE (značky a obal; aj ID3v2 a ID3v1, ak ich
+//!   súbor má).
 //! - **Hranica rámca:** rámec končí tam, kde začína ďalšia platná hlavička (CRC-8) **a** CRC-16 doterajších
 //!   bajtov je 0 – náhodná zhoda bajtov synchronizácie v údajoch rámca tak nerozdelí rámec zle.
 //! - Súbor bez „fLaC“ (začína rámcom alebo neparsovateľnými údajmi) sa prečíta od prvého platného rámca.
@@ -60,6 +60,7 @@ impl<Z: ZdrojBajtov> FlacSubor<Z> {
         let mut p = za_id3v2(c.bajty(0, 10)?);
         // značky: VORBIS_COMMENT; ID3v2 na začiatku a ID3v1 na konci (niektoré zapisovače) ich doplnia
         let mut znacky: Option<Znacky> = None;
+        let mut vorbis = false;
         let mut ine_znacky = Znacky::nove();
         if p > 0
             && let Ok(d) = c.presne(0, p.min(limity.prvok) as usize)
@@ -100,7 +101,14 @@ impl<Z: ZdrojBajtov> FlacSubor<Z> {
                             }
                         }
                     }
-                    4 if znacky.is_none() => znacky = znacky::vorbis_comment(&telo),
+                    // prvý VORBIS_COMMENT (RFC 9639: najviac jeden); PICTURE môže byť pred ním aj za ním
+                    4 if !vorbis => {
+                        vorbis = true;
+                        if let Some(z) = znacky::vorbis_comment(&telo) {
+                            znacky.get_or_insert_default().pripoj(z);
+                        }
+                    }
+                    6 => znacky::flac_picture(znacky.get_or_insert_default(), &telo),
                     127 => break, // neplatný typ – ďalej len hľadanie rámcov
                     _ => {}
                 }

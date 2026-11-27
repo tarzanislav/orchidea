@@ -20,10 +20,39 @@ use std::borrow::Cow;
 /// Najviac položiek v jednom súbore (poškodený súbor s miliónmi prázdnych položiek nezaplní pamäť).
 const NAJVIAC_POLOZIEK: usize = 4096;
 
-/// Značky súboru: dvojice (kľúč veľkými písmenami, hodnota) v poradí zo súboru.
+/// Najväčší obrázok obalu (bajty) – väčší sa vynechá (R211; návrh rozhrania s reláciou C).
+pub const NAJVIAC_OBAL: usize = 16 << 20;
+/// Najviac obrázkov v jednom súbore.
+const NAJVIAC_OBALOV: usize = 16;
+
+/// Značky súboru: dvojice (kľúč veľkými písmenami, hodnota) v poradí zo súboru a priložené obrázky.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Znacky {
     polozky: Vec<(String, String)>,
+    obaly: Vec<Obal>,
+}
+
+/// Obrázok priložený k zvuku (obal albumu) – len bajty a typ; dekóduje ho LÝRA (vrstva 3, `orchidea_formaty`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Obal {
+    /// MIME typ (`image/jpeg`, `image/png` …); kde ho formát nemá, podľa podpisu dát
+    pub mime: String,
+    /// typ obrázka podľa ID3v2.4 §4.14 (aj FLAC PICTURE): 3 = predná strana obalu, 4 = zadná, 0 = iný …
+    pub druh: u8,
+    pub popis: String,
+    pub data: Vec<u8>,
+}
+
+/// MIME podľa podpisu dát (JPEG, PNG, GIF, BMP, WebP), inak „image/“ (ID3v2.4 §4.14: chýbajúci typ = image/).
+fn mime_z_dat(d: &[u8]) -> &'static str {
+    match d {
+        [0xFF, 0xD8, 0xFF, ..] => "image/jpeg",
+        [0x89, b'P', b'N', b'G', ..] => "image/png",
+        [b'G', b'I', b'F', b'8', ..] => "image/gif",
+        [b'B', b'M', ..] => "image/bmp",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
+        _ => "image/",
+    }
 }
 
 /// ReplayGain: odporúčané zosilnenie v dB a vrchol (lineárny, 1,0 = plný rozsah) pre skladbu a album.
@@ -65,16 +94,57 @@ impl Znacky {
     }
 
     pub fn je_prazdne(&self) -> bool {
-        self.polozky.is_empty()
+        self.polozky.is_empty() && self.obaly.is_empty()
+    }
+
+    /// Pridá obrázok; prázdny, väčší ako [`NAJVIAC_OBAL`] alebo len odkaz (MIME „-->“) sa vynechá.
+    pub fn pridaj_obal(&mut self, mime: &str, druh: u8, popis: &str, data: &[u8]) {
+        if data.is_empty() || data.len() > NAJVIAC_OBAL || mime == "-->" || self.obaly.len() >= NAJVIAC_OBALOV
+        {
+            return;
+        }
+        let mime = if mime.is_empty() || mime == "image/" { mime_z_dat(data) } else { mime };
+        let mime = if mime.contains('/') {
+            mime.to_ascii_lowercase()
+        } else {
+            format!("image/{mime}").to_ascii_lowercase()
+        };
+        self.obaly.push(Obal { mime, druh, popis: popis.to_string(), data: data.to_vec() });
+    }
+
+    /// Všetky obrázky v poradí zo súboru.
+    pub fn obaly(&self) -> &[Obal] {
+        &self.obaly
+    }
+
+    /// Obal albumu: prvý obrázok typu 3 (predná strana), inak prvý obrázok.
+    pub fn obal(&self) -> Option<&Obal> {
+        self.obaly.iter().find(|o| o.druh == 3).or_else(|| self.obaly.first())
+    }
+
+    /// Pripojí všetky položky a obrázky (ďalšia časť tých istých značiek).
+    pub fn pripoj(&mut self, ine: Znacky) {
+        for (k, v) in ine.polozky {
+            self.pridaj(&k, &v);
+        }
+        for o in ine.obaly {
+            if self.obaly.len() < NAJVIAC_OBALOV {
+                self.obaly.push(o);
+            }
+        }
     }
 
     /// Doplní kľúče, ktoré ešte nemá (pri viacerých značkách v súbore má prednosť prvá – ID3v2 pred APEv2
     /// a ID3v1).
     pub fn dopln(&mut self, ine: Znacky) {
+        let Znacky { polozky, obaly } = ine;
         let nove: Vec<_> =
-            ine.polozky.into_iter().filter(|(k, _)| !self.polozky.iter().any(|(m, _)| m == k)).collect();
+            polozky.into_iter().filter(|(k, _)| !self.polozky.iter().any(|(m, _)| m == k)).collect();
         for (k, v) in nove {
             self.pridaj(&k, &v);
+        }
+        if self.obaly.is_empty() {
+            self.obaly = obaly;
         }
     }
 
@@ -155,6 +225,26 @@ pub fn vorbis_comment(d: &[u8]) -> Option<Znacky> {
         }
     }
     Some(z)
+}
+
+/// Blok PICTURE vo FLAC (RFC 9639, typ bloku 6): typ obrázka (ako ID3v2.4 APIC), dĺžka a MIME, dĺžka a popis
+/// UTF-8, šírka, výška, hĺbka, počet farieb, dĺžka a dáta – čísla 32 bitov big-endian.
+pub fn flac_picture(z: &mut Znacky, d: &[u8]) {
+    let precitaj = || -> Option<(u8, String, String, &[u8])> {
+        let druh = be32(d, 0)?;
+        let n = be32(d, 4)?;
+        let mime = latin1(d.get(8..8usize.checked_add(n)?)?);
+        let mut i = 8 + n;
+        let m = be32(d, i)?;
+        let popis = String::from_utf8_lossy(d.get(i + 4..(i + 4).checked_add(m)?)?).into_owned();
+        i += 4 + m + 16;
+        let dlzka = be32(d, i)?;
+        let data = d.get(i + 4..(i + 4).checked_add(dlzka)?)?;
+        Some((u8::try_from(druh).unwrap_or(0), mime, popis, data))
+    };
+    if let Some((druh, mime, popis, data)) = precitaj() {
+        z.pridaj_obal(&mime, druh, &popis, data);
+    }
 }
 
 /// Odstránenie nesynchronizácie (ID3v2.4 §6.1): každá dvojica `FF 00` sa zmení na `FF`.
@@ -494,6 +584,39 @@ fn ramec_id3(z: &mut Znacky, id: &[u8], d: &[u8]) {
                 z.pridaj("TDAT", t);
             }
         }
+        // ID3v2.4 §4.14 APIC: MIME (ISO-8859-1, ukončený), typ, popis (podľa kódovania), dáta;
+        // ID3v2.2 PIC: formát 3 znaky („JPG“, „PNG“) namiesto MIME
+        b"APIC" | b"PIC" => {
+            let (mime, d) = if id == b"PIC" {
+                let Some(f) = d.get(..3) else { return };
+                let mime = match f {
+                    b"JPG" => "image/jpeg".to_string(),
+                    b"PNG" => "image/png".to_string(),
+                    _ => format!("image/{}", latin1(f).to_ascii_lowercase()),
+                };
+                (mime, &d[3..])
+            } else {
+                let Some(k) = d.iter().position(|&b| b == 0) else { return };
+                (latin1(&d[..k]), &d[k + 1..])
+            };
+            let Some((&druh, d)) = d.split_first() else { return };
+            let (popis, data) = match kodovanie {
+                1 | 2 => {
+                    let k = (0..d.len().saturating_sub(1)).step_by(2).find(|&i| d[i] == 0 && d[i + 1] == 0);
+                    let Some(k) = k else { return };
+                    (utf16(&d[..k]), &d[k + 2..])
+                }
+                _ => {
+                    let Some(k) = d.iter().position(|&b| b == 0) else { return };
+                    let p = &d[..k];
+                    (
+                        if kodovanie == 3 { String::from_utf8_lossy(p).into_owned() } else { latin1(p) },
+                        &d[k + 1..],
+                    )
+                }
+            };
+            z.pridaj_obal(&mime, druh, &popis, data);
+        }
         _ => {
             let Some(kluc) = kluc_ramca(id) else { return };
             for t in texty(kodovanie, d) {
@@ -559,10 +682,20 @@ pub fn apev2(d: &[u8]) -> Option<(Znacky, usize)> {
         let zac = i + 9 + k;
         let Some(hodnota) = zac.checked_add(n).and_then(|e| polozky.get(zac..e)) else { break };
         i = zac + n;
-        if (prz >> 1) & 3 == 0 {
-            for h in hodnota.split(|&b| b == 0) {
-                z.pridaj(&kluc, &String::from_utf8_lossy(h));
+        match (prz >> 1) & 3 {
+            0 => {
+                for h in hodnota.split(|&b| b == 0) {
+                    z.pridaj(&kluc, &String::from_utf8_lossy(h));
+                }
             }
+            // binárna položka „Cover Art (Front|Back|…)“: meno súboru ukončené nulou a obrázok
+            1 if kluc.to_ascii_lowercase().starts_with("cover art") => {
+                if let Some(k) = hodnota.iter().position(|&b| b == 0) {
+                    let druh = if kluc.to_ascii_lowercase().contains("back") { 4 } else { 3 };
+                    z.pridaj_obal("", druh, &String::from_utf8_lossy(&hodnota[..k]), &hodnota[k + 1..]);
+                }
+            }
+            _ => {}
         }
     }
     Some((z, celkom))
@@ -634,6 +767,16 @@ pub fn mp4_udta(udta: &[u8]) -> Option<Znacky> {
                             if c > 0 {
                                 z.pridaj(kluc, &if n > 0 { format!("{c}/{n}") } else { c.to_string() });
                             }
+                        }
+                        // obal: typ dát 13 JPEG, 14 PNG, 27 BMP (inak podľa podpisu)
+                        b"covr" => {
+                            let mime = match druh & 0xFF_FFFF {
+                                13 => "image/jpeg",
+                                14 => "image/png",
+                                27 => "image/bmp",
+                                _ => "",
+                            };
+                            z.pridaj_obal(mime, 3, "", h);
                         }
                         b"gnre" if h.len() >= 2 => {
                             let i = u16::from_be_bytes([h[0], h[1]]) as usize;
@@ -845,6 +988,40 @@ mod skusky {
         assert_eq!(z.hodnota("TRACKNUMBER"), Some("3/12"));
         assert_eq!(z.hodnota("GENRE"), Some("Pop"));
         assert_eq!(z.replaygain().unwrap().stopa_db, Some(-4.5));
+    }
+
+    #[test]
+    fn obaly_apic_picture_a_poradie() {
+        // APIC s popisom v UTF-16 (ukončenie 00 00 na párnej pozícii), zadná strana pred prednou
+        let mut apic = b"\x01image/png\x00\x04\xFF\xFEZ\x00\x00\x00".to_vec();
+        apic.extend(b"\x89PNG zadna");
+        let mut telo = ramec24(b"APIC", &apic);
+        telo.extend(ramec24(b"APIC", b"\x00\x00\x03\x00\xFF\xD8\xFF predna"));
+        let (z, _) = id3v2(&znacka(4, 0, &telo)).unwrap();
+        assert_eq!(z.obaly().len(), 2);
+        assert_eq!((z.obaly()[0].druh, z.obaly()[0].popis.as_str()), (4, "Z"));
+        let o = z.obal().unwrap();
+        assert_eq!((o.druh, o.mime.as_str(), &o.data[..3]), (3, "image/jpeg", &b"\xFF\xD8\xFF"[..]));
+        // FLAC PICTURE
+        let mut d = Vec::new();
+        for x in [3u32, 9] {
+            d.extend(x.to_be_bytes());
+        }
+        d.extend(b"image/png");
+        d.extend(4u32.to_be_bytes());
+        d.extend(b"Obal");
+        d.extend([0; 16]);
+        d.extend(5u32.to_be_bytes());
+        d.extend(b"\x89PNGx");
+        let mut z = Znacky::nove();
+        flac_picture(&mut z, &d);
+        flac_picture(&mut z, &d[..d.len() - 1]); // skrátený blok sa vynechá
+        assert_eq!(z.obaly().len(), 1);
+        assert_eq!((z.obal().unwrap().popis.as_str(), z.obal().unwrap().data.len()), ("Obal", 5));
+        // odkaz a prázdne dáta sa vynechajú
+        z.pridaj_obal("-->", 3, "", b"http://x");
+        z.pridaj_obal("image/png", 3, "", b"");
+        assert_eq!(z.obaly().len(), 1);
     }
 
     #[test]

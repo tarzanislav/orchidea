@@ -16,7 +16,7 @@ use crate::stopa::{
     CisloPcm, DruhStopy, FarbaVidea, Kodek, ParametreVidea, ParametreZvuku, PopisPcm, PoradieBajtov, Stopa,
 };
 use crate::zdroj::{Citac, ZdrojBajtov};
-use crate::znacky::Znacky;
+use crate::znacky::{NAJVIAC_OBAL, Znacky};
 use crate::zvuk::RozlozenieKanalov;
 use orchidea_jadro::{Chyba, Vysledok, Zlomok};
 use std::collections::VecDeque;
@@ -95,6 +95,11 @@ mod id {
     pub const TAG_NAME: u32 = 0x45A3;
     pub const TAG_STRING: u32 = 0x4487;
     pub const ATTACHMENTS: u32 = 0x1941_A469;
+    pub const ATTACHED_FILE: u32 = 0x61A7;
+    pub const FILE_DESCRIPTION: u32 = 0x467E;
+    pub const FILE_NAME: u32 = 0x466E;
+    pub const FILE_MEDIA_TYPE: u32 = 0x4660;
+    pub const FILE_DATA: u32 = 0x465C;
 }
 
 /// Prvky najvyššej úrovne segmentu – ukončia zhluk s neznámou veľkosťou.
@@ -418,7 +423,7 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
 
     /// Prejde prvky najvyššej úrovne segmentu po prvý zhluk; chýbajúce Info, Tracks a Cues dočíta cez SeekHead.
     fn prechod_segmentu(&mut self) -> Vysledok<()> {
-        let (mut info, mut tracks, mut cues, mut znacky) = (false, false, false, false);
+        let (mut info, mut tracks, mut cues, mut znacky, mut prilohy) = (false, false, false, false, false);
         let mut odkazy: Vec<(u32, u64)> = Vec::new();
         let mut p = self.segment;
         let mut prejdenych = 0;
@@ -461,6 +466,10 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
                     }
                     znacky = true;
                 }
+                id::ATTACHMENTS => {
+                    self.citaj_prilohy(p, h);
+                    prilohy = true;
+                }
                 _ => {}
             }
             let Some(v) = h.velkost else { break };
@@ -472,6 +481,7 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
                 id::TRACKS => tracks,
                 id::CUES => cues,
                 id::TAGS => znacky,
+                id::ATTACHMENTS => prilohy,
                 _ => true,
             };
             if hotovo {
@@ -498,6 +508,10 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
                         self.citaj_znacky(&d);
                     }
                     znacky = true;
+                }
+                id::ATTACHMENTS => {
+                    self.citaj_prilohy(p, h);
+                    prilohy = true;
                 }
                 _ => {
                     // Cues na konci súboru: chyba v nich nebráni prehrávaniu (posun pôjde delením intervalu)
@@ -565,6 +579,61 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
             }
         }
         self.znacky = (!z.je_prazdne()).then_some(z);
+    }
+
+    /// Obal z príloh (RFC 9559 – Attachments, AttachedFile; „Cover Art“ v `attachments.md`): súbory
+    /// `cover.(jpg|png)`, `cover_land.*`, `small_cover.*`, `small_cover_land.*` (mená rozlišujú veľkosť písmen)
+    /// v tomto poradí ako predná strana obalu (typ 3). Prílohy sa čítajú po prvkoch – dáta (napr. písma
+    /// titulkov) sa načítajú len pri obale do [`NAJVIAC_OBAL`]. Chyba nebráni prehrávaniu.
+    fn citaj_prilohy(&mut self, p: u64, h: Hlavicka) {
+        let Some(velkost) = h.velkost else { return };
+        let (mut q, koniec) = (p + h.dlzka as u64, (p + h.dlzka as u64).saturating_add(velkost));
+        let mut obaly: Vec<(usize, String, String, Vec<u8>)> = Vec::new();
+        for _ in 0..256 {
+            if q >= koniec {
+                break;
+            }
+            let Ok(Prvok::Hlavicka(a)) = self.hlavicka_na(q) else { break };
+            let Some(v) = a.velkost else { break };
+            if a.id == id::ATTACHED_FILE {
+                let (mut r, k) = (q + a.dlzka as u64, (q + a.dlzka as u64).saturating_add(v));
+                let (mut meno, mut mime, mut popis, mut data) =
+                    (String::new(), String::new(), String::new(), None);
+                while r < k {
+                    let Ok(Prvok::Hlavicka(c)) = self.hlavicka_na(r) else { break };
+                    let Some(cv) = c.velkost else { break };
+                    match c.id {
+                        id::FILE_NAME | id::FILE_MEDIA_TYPE | id::FILE_DESCRIPTION => {
+                            let t = self.obsah(r, c, 4096).map(|d| text(&d)).unwrap_or_default();
+                            match c.id {
+                                id::FILE_NAME => meno = t,
+                                id::FILE_MEDIA_TYPE => mime = t,
+                                _ => popis = t,
+                            }
+                        }
+                        id::FILE_DATA => data = Some((r, c)),
+                        _ => {}
+                    }
+                    r = r.saturating_add(c.dlzka as u64).saturating_add(cv);
+                }
+                let poradie = ["cover.", "cover_land.", "small_cover.", "small_cover_land."]
+                    .iter()
+                    .position(|z| meno.starts_with(z) && [".jpg", ".png"].iter().any(|x| meno.ends_with(x)));
+                if let (Some(poradie), Some((r, c))) = (poradie, data)
+                    && let Ok(d) = self.obsah(r, c, NAJVIAC_OBAL as u64)
+                {
+                    obaly.push((poradie, mime, popis, d));
+                }
+            }
+            q = q.saturating_add(a.dlzka as u64).saturating_add(v);
+        }
+        obaly.sort_by_key(|o| o.0);
+        if !obaly.is_empty() {
+            let z = self.znacky.get_or_insert_default();
+            for (_, mime, popis, d) in obaly {
+                z.pridaj_obal(&mime, 3, &popis, &d);
+            }
+        }
     }
 
     fn citaj_info(&mut self, d: &[u8]) -> Vysledok<()> {

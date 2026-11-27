@@ -16,6 +16,11 @@ Porovnanie: všetky položky (kľúč prevedený na spoločný slovník, hodnota
 a prvej zvukovej stopy z ffprobe (bez technických kľúčov MP4: značky, jazyk, obsluha). Pri cieľoch Matroska
 a výsledku metaflac sa navyše overí ReplayGain presne podľa očakávaných hodnôt.
 
+**Obal albumu:** bajty `Znacky::obal` proti obrázku `attached_pic`, ktorý vytiahne FFmpeg (APIC v ID3v2.4 a 2.3,
+PICTURE vo FLAC z FFmpeg aj metaflac, `covr` v M4A, príloha `cover.png` v Matroske, APEv2 „Cover Art (Front)“ cez
+WavPack), alebo proti pôvodnému obrázku, kde má súbor viac obrázkov (zadná strana pred prednou; Matroska s písmom
+a `small_cover` pred `cover`) a ID3v2.2 PIC.
+
 Použitie: `over_znacky.py <media_znacky> <adresár>`
 """
 import json
@@ -319,7 +324,93 @@ def main():
         if not zhoda and meno not in OCAKAVANE:
             print(f"  len náš: {sorted(set(my) - set(ref))}")
             print(f"  len ffprobe: {sorted(set(ref) - set(my))}")
+    chyb += obaly(program, adresar)
     sys.exit(1 if chyb else 0)
+
+
+def obaly(program, adresar):
+    """Obal albumu: bajty `Znacky::obal` proti obrázku `attached_pic`, ktorý vytiahne FFmpeg, alebo (kde súbor
+    obsahuje viac obrázkov a FFmpeg by vzal prvý) proti pôvodnému obrázku."""
+    jpg, png = os.path.join(adresar, "obal.jpg"), os.path.join(adresar, "obal.png")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=320x320:d=1", "-frames:v", "1", jpg],
+                   check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=200x200:d=1", "-frames:v", "1",
+                    png], check=True)
+    jpg_b, png_b = open(jpg, "rb").read(), open(png, "rb").read()
+    zvuk = ["-f", "lavfi", "-i", "sine=440:d=1"]
+    subory = []  # (meno, cesta, referencia: cesta súboru pre FFmpeg alebo bajty, očakávaný MIME)
+    for meno, arg in (("obal_id3v24.mp3", ["-c:a", "libmp3lame"]), ("obal_id3v23.mp3", ["-c:a", "libmp3lame",
+                      "-id3v2_version", "3"]), ("obal.flac", ["-c:a", "flac"]), ("obal.m4a", ["-c:a", "aac"])):
+        cesta = os.path.join(adresar, meno)
+        subprocess.run(["ffmpeg", "-v", "error", "-y"] + zvuk + ["-i", jpg, "-map", "0", "-map", "1"] + arg
+                       + ["-c:v", "copy", "-disposition:v", "attached_pic", "-metadata:s:v", "comment=Cover (front)",
+                          cesta], check=True)
+        subory.append((meno, cesta, cesta, "image/jpeg"))
+    # Matroska: príloha cover.png (FFmpeg) a súbor s písmom a malým obalom pred normálnym (mkvpropedit)
+    cesta = os.path.join(adresar, "obal.mka")
+    subprocess.run(["ffmpeg", "-v", "error", "-y"] + zvuk + ["-c:a", "flac", "-attach", png, "-metadata:s:t",
+                    "mimetype=image/png", "-metadata:s:t", "filename=cover.png", cesta], check=True)
+    subory.append(("obal.mka", cesta, cesta, "image/png"))
+    cesta = os.path.join(adresar, "obal_poradie.mka")
+    subprocess.run(["ffmpeg", "-v", "error", "-y"] + zvuk + ["-c:a", "flac", cesta], check=True)
+    pismo = os.path.join(adresar, "pismo.ttf")
+    open(pismo, "wb").write(bytes(range(256)) * 64)
+    for subor, meno_prilohy, mime in ((pismo, "pismo.ttf", "font/ttf"), (jpg, "small_cover.jpg", "image/jpeg"),
+                                      (png, "cover.png", "image/png")):
+        subprocess.run(["mkvpropedit", "-q", cesta, "--attachment-name", meno_prilohy, "--attachment-mime-type", mime,
+                        "--add-attachment", subor], check=True)
+    subory.append(("obal_poradie.mka", cesta, png_b, "image/png"))
+    # metaflac: obrázok typu 3 s popisom
+    cesta = os.path.join(adresar, "obal_metaflac.flac")
+    subprocess.run(["ffmpeg", "-v", "error", "-y"] + zvuk + ["-c:a", "flac", cesta], check=True)
+    subprocess.run(["metaflac", f"--import-picture-from=3|image/png|Predná strana||{png}", cesta], check=True)
+    subory.append(("obal_metaflac.flac", cesta, cesta, "image/png"))
+    # ID3v2.2 PIC a ID3v2.4 so zadnou stranou pred prednou (podľa špecifikácie)
+    zvuk_b = zvuk_mp3(adresar)
+    pic = b"\x00PNG\x03Obal\x00" + png_b
+    telo = b"TT2" + (6).to_bytes(3, "big") + b"\x00Nazov" + b"PIC" + len(pic).to_bytes(3, "big") + pic
+    cesta = os.path.join(adresar, "obal_id3v22.mp3")
+    open(cesta, "wb").write(b"ID3\x02\x00\x00" + synchsafe(len(telo)) + telo + zvuk_b)
+    subory.append(("obal_id3v22.mp3", cesta, png_b, "image/png"))
+    def apic(druh, data, mime):
+        o = b"\x03" + mime + b"\x00" + bytes([druh]) + "Strana".encode() + b"\x00" + data
+        return b"APIC" + synchsafe(len(o)) + b"\x00\x00" + o
+    telo = apic(4, png_b, b"image/png") + apic(3, jpg_b, b"image/jpeg")
+    cesta = os.path.join(adresar, "obal_zadna_predna.mp3")
+    open(cesta, "wb").write(b"ID3\x04\x00\x00" + synchsafe(len(telo)) + telo + zvuk_b)
+    subory.append(("obal_zadna_predna.mp3", cesta, jpg_b, "image/jpeg"))
+    # APEv2 „Cover Art (Front)“: referencia je ten istý blok v súbore WavPack
+    hodnota = b"obal.jpg\x00" + jpg_b
+    polozka = struct.pack("<II", len(hodnota), 2) + b"Cover Art (Front)\x00" + hodnota
+    hlava = lambda p: b"APETAGEX" + struct.pack("<IIII", 2000, len(polozka) + 32, 1, p) + bytes(8)  # noqa: E731
+    ape = hlava(0xA0000000) + polozka + hlava(0x80000000)
+    cesta = os.path.join(adresar, "obal_apev2.mp3")
+    open(cesta, "wb").write(zvuk_b + ape)
+    ref = os.path.join(adresar, "obal_apev2_ref.wv")
+    open(ref, "wb").write(open(os.path.join(adresar, "_ciste.wv"), "rb").read() + ape)
+    subory.append(("obal_apev2.mp3", cesta, ref, "image/jpeg"))
+
+    print("\n| obal albumu | MIME | bajtov (náš / referencia) | referencia | výsledok |")
+    print("|---|---|---|---|---|")
+    chyb = 0
+    for meno, cesta, ref, mime in subory:
+        nas_cesta = cesta + ".obal"
+        if os.path.exists(nas_cesta):
+            os.remove(nas_cesta)
+        r = subprocess.run([program, cesta, nas_cesta], capture_output=True, text=True)
+        nas = open(nas_cesta, "rb").read() if os.path.exists(nas_cesta) else b""
+        nas_mime = next((x.split()[1][5:] for x in r.stdout.splitlines() if x.startswith("OBAL_ALBUMU ")), "")
+        if isinstance(ref, bytes):
+            ref_b, druh = ref, "pôvodný obrázok"
+        else:
+            vyt = cesta + ".ffmpeg"
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", ref, "-map", "0:v:0", "-c", "copy", "-frames:v", "1",
+                            "-f", "image2", vyt], check=True)
+            ref_b, druh = open(vyt, "rb").read(), "attached_pic FFmpeg"
+        ok = r.returncode == 0 and nas == ref_b and len(nas) > 0 and nas_mime == mime
+        chyb += not ok
+        print(f"| {meno} | {nas_mime} | {len(nas)} / {len(ref_b)} | {druh} | {'✅' if ok else '❌'} |")
+    return chyb
 
 
 if __name__ == "__main__":
