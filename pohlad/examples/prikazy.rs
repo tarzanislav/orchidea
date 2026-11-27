@@ -8,7 +8,7 @@
 //!   `NAJVIAC x PRIEMER x PSNR x SSIM x ROZDIELNYCH n`
 //! - `prikazy snimka <súbor|priečinok> <šírka> <výška> <výstup.png> [povely …]` – jadro okna bez okna: povely
 //!   `dalsi predosly prvy posledny priblizit oddialit 1:1 prisposobit oznac rezim pas udaje otoc otocvlavo zrkadlo
-//!   orezat orez-potvrd orez-zrus orez-pomer:4x3 jas kontrast gama zmensit spat znova ulozit prezentacia pauza tik tahaj:dx,dy
+//!   orezat orez-potvrd orez-zrus orez-pomer:4x3 jas kontrast gama zmensit spat znova ulozit prezentacia pauza tik tahaj:dx,dy posun:dx,dy posun-pravym:dx,dy
 //!   koliesko:k,x,y delic:x`; po každom sa počká na prácu na pozadí; riadky `VYKRESLENI n ZOBUDENI n POKOJ ok|…`
 //! - `prikazy xmp <fotka> citaj | hodnotenie <-1..5> | pridaj <slovo> | odober <slovo>` – hodnotenie a kľúčové
 //!   slová v súbore XMP vedľa fotky (`fotka.jpg.xmp`); vypíše `HODNOTENIE n` a riadky `KLUC slovo`
@@ -197,6 +197,10 @@ fn spusti(a: &[String]) -> Result<(), String> {
                     ("tahaj", t) => {
                         let c = cisla(t);
                         Vstup::Tahaj { dx: c[0], dy: c[1] }
+                    }
+                    ("posun" | "posun-pravym", t) => {
+                        let c = cisla(t);
+                        Vstup::Posun { dx: c[0], dy: c[1], pravym: meno == "posun-pravym" }
                     }
                     ("koliesko", t) => {
                         let c = cisla(t);

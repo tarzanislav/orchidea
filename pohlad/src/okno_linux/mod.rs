@@ -50,6 +50,7 @@ const LISTA_TEXT_NEAKTIVNY: u32 = 0x8A8A8A;
 
 const BTN_LAVE: u32 = 0x110;
 const BTN_PRAVE: u32 = 0x111;
+const BTN_STREDNE: u32 = 0x112;
 
 /// Formáty wl_shm.
 const ARGB8888: u32 = 0;
@@ -158,6 +159,8 @@ struct Okno {
     mys_serial: u32,
     tahanie: Option<(f64, f64)>,
     delenie: bool,
+    /// Posun obrazu pravým alebo stredným tlačidlom (true = pravé).
+    posun: Option<bool>,
     posledny_klik: (u32, f64, f64),
     koliesko: (f64, i32),
     pod_mysou: Option<TlacidloListy>,
@@ -671,6 +674,7 @@ impl Okno {
             1 => {
                 self.tahanie = None;
                 self.delenie = false;
+                self.posun = None;
                 if self.pod_mysou.take().is_some() {
                     self.prekreslit = true;
                 }
@@ -686,8 +690,12 @@ impl Okno {
                     self.vstup(Vstup::Tahaj { dx: (x - px) as f32, dy: (y - py) as f32 });
                     return;
                 }
-                if self.delenie {
-                    self.vstup(Vstup::Delic { x: x as f32 });
+                if let Some(pravym) = self.posun {
+                    // pravé tlačidlo: deliaca čiara pri porovnaní aj posun obrazu (jadro vyberie)
+                    if self.delenie {
+                        self.vstup(Vstup::Delic { x: x as f32 });
+                    }
+                    self.vstup(Vstup::Posun { dx: (x - px) as f32, dy: (y - py) as f32, pravym });
                     return;
                 }
                 let t = self.tlacidlo_listy(x, y);
@@ -708,6 +716,7 @@ impl Okno {
                 if stav == 0 {
                     self.tahanie = None;
                     self.delenie = false;
+                    self.posun = None;
                     return;
                 }
                 if tlacidlo == BTN_LAVE {
@@ -739,8 +748,12 @@ impl Okno {
                         );
                     } else {
                         self.delenie = true;
+                        self.posun = Some(true);
                         self.vstup(Vstup::Delic { x: x as f32 });
                     }
+                } else if tlacidlo == BTN_STREDNE && y >= lista {
+                    // stredné tlačidlo – posun priblíženého obrazu
+                    self.posun = Some(false);
                 }
             }
             4 => {
@@ -1245,6 +1258,7 @@ fn spusti_na(z: std::os::unix::net::UnixStream, argumenty: &[String], katalog: O
         mys_serial: 0,
         tahanie: None,
         delenie: false,
+        posun: None,
         posledny_klik: (0, -100.0, -100.0),
         koliesko: (0.0, 0),
         pod_mysou: None,

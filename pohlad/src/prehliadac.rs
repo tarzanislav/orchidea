@@ -137,6 +137,13 @@ pub enum Vstup {
     Delic {
         x: f32,
     },
+    /// Posun priblíženého obrazu ťahaním pravým (`pravym`) alebo stredným tlačidlom. Ťahanie ľavým tlačidlom
+    /// po obraze kreslí výber na orezanie (pri porovnaní a v prezentácii posúva).
+    Posun {
+        dx: f32,
+        dy: f32,
+        pravym: bool,
+    },
     /// Otvoriť súbor alebo priečinok.
     Otvor(PathBuf),
     /// Časovač prezentácie (okno ho pošle len počas prezentácie).
@@ -380,6 +387,8 @@ pub struct Prehliadac {
     orezanie: Option<Orezanie>,
     /// Poloha kurzora pri ťahaní výberu (body okna).
     orez_kurzor: (f32, f32),
+    /// Ľavé tlačidlo stlačené na obraze: odtiaľ sa ťahaním nakreslí nový výber (body okna).
+    vyber_od: Option<(f32, f32)>,
     /// Súbor katalógu fotografií (Herbár).
     katalog_subor: Option<PathBuf>,
     herbar: Option<Herbar>,
@@ -594,6 +603,7 @@ impl Prehliadac {
             klik_v_paneli: false,
             orezanie: None,
             orez_kurzor: (0.0, 0.0),
+            vyber_od: None,
             katalog_subor: None,
             herbar: None,
             katalog: false,
@@ -1387,6 +1397,33 @@ impl Prehliadac {
         self.zmena = true;
     }
 
+    /// Dá sa ťahaním nakresliť výber? (jeden obraz, nie porovnanie ani prezentácia)
+    fn mozno_kreslit_vyber(&self) -> bool {
+        let porovnanie = self.oznaceny.is_some() && self.rezim != Rezim::Jeden;
+        !porovnanie && self.prezentacia.is_none() && !self.napoveda && self.aktualna().is_some()
+    }
+
+    /// Prvé ťahanie po stlačení na obraze: nový výber od bodu stlačenia (aj bez režimu orezania).
+    fn zacni_kreslenie(&mut self) {
+        let Some((x, y)) = self.vyber_od.take() else { return };
+        let Some(s) = self.aktualna() else { return };
+        let z = self.mierka(&s);
+        let (w, h) = self.plocha();
+        let ox = w as f32 / 2.0 + self.posun.0 - s.sirka as f32 * z / 2.0;
+        let oy = h as f32 / 2.0 + self.posun.1 - s.vyska as f32 * z / 2.0;
+        let (bx, by) = ((x - ox) / z, (y - self.hore() as f32 - oy) / z);
+        match self.orezanie.as_mut() {
+            Some(o) => o.nakresli_od(bx, by),
+            None => {
+                let m = self.mriezka_bezstratovo();
+                self.orezanie = Some(Orezanie::nakreslene(s.sirka, s.vyska, bx, by, m));
+                self.sprava = None;
+            }
+        }
+        self.orez_kurzor = (x, y);
+        self.zmena = true;
+    }
+
     /// Mriežka bezstratového orezania aktuálneho JPEG (len ak doterajšie úpravy sú geometrické a bez orezania).
     fn mriezka_bezstratovo(&self) -> Option<Mriezka> {
         use std::io::Read;
@@ -1474,7 +1511,10 @@ impl Prehliadac {
                 let (bx, by) = do_obrazu(*x, *y);
                 self.orez_kurzor = (*x, *y);
                 self.klik_v_paneli = false;
-                self.orezanie.as_mut()?.zacni(bx, by, tolerancia);
+                // mimo výberu: ťahaním sa nakreslí nový, samotné kliknutie výber zruší
+                if !self.orezanie.as_mut()?.zacni(bx, by, tolerancia) {
+                    self.vyber_od = Some((*x, *y));
+                }
                 self.zmena = true;
                 Some(true)
             }
@@ -1490,6 +1530,12 @@ impl Prehliadac {
                 Some(zmena)
             }
             Vstup::Mys { x, y } => {
+                // kliknutie mimo výberu bez ťahania = zrušiť výber
+                if self.vyber_od.take().is_some() {
+                    self.orezanie = None;
+                    self.zmena = true;
+                    return None;
+                }
                 // pohyb bez tlačidla = ťahanie skončilo; zvýrazní sa časť výberu pod myšou
                 let nove = if v_ploche(*y) {
                     let (bx, by) = do_obrazu(*x, *y);
@@ -1507,6 +1553,7 @@ impl Prehliadac {
             }
             Vstup::Otvor(_) => {
                 self.orezanie = None;
+                self.vyber_od = None;
                 None
             }
             _ => None,
@@ -1539,6 +1586,13 @@ impl Prehliadac {
     }
 
     fn vstup_prehliadaca(&mut self, v: Vstup) -> bool {
+        if let Vstup::Tahaj { dx, dy } = v
+            && (dx != 0.0 || dy != 0.0)
+            && self.vyber_od.is_some()
+            && self.mozno_kreslit_vyber()
+        {
+            self.zacni_kreslenie();
+        }
         if self.orezanie.is_some()
             && let Some(r) = self.vstup_orezania(&v)
         {
@@ -1723,7 +1777,23 @@ impl Prehliadac {
                 self.zmena = true;
             }
             Vstup::Tahaj { dx, dy } => {
-                if (dx == 0.0 && dy == 0.0) || self.klik_v_paneli || self.napoveda {
+                // ťahanie ľavým po obraze kreslí výber (vyššie); posúva len pri porovnaní a v prezentácii
+                if (dx == 0.0 && dy == 0.0)
+                    || self.klik_v_paneli
+                    || self.napoveda
+                    || self.mozno_kreslit_vyber()
+                {
+                    return false;
+                }
+                self.posun.0 += dx;
+                self.posun.1 += dy;
+                self.zmena = true;
+            }
+            Vstup::Posun { dx, dy, pravym } => {
+                // pravým tlačidlom sa v delenom porovnaní posúva deliaca čiara, nie obraz
+                if (dx == 0.0 && dy == 0.0)
+                    || (pravym && self.rezim == Rezim::Deleny && self.oznaceny.is_some())
+                {
                     return false;
                 }
                 self.posun.0 += dx;
@@ -1739,6 +1809,7 @@ impl Prehliadac {
                 self.zmena = true;
             }
             Vstup::Mys { x, y } => {
+                self.vyber_od = None;
                 let nove = panel::na_bode(&self.rozlozenie(), x, y)
                     .filter(|t| self.povel_aktivny(t.povel))
                     .map(|t| t.id);
@@ -1765,6 +1836,10 @@ impl Prehliadac {
                     return false;
                 }
                 let (_, h) = self.plocha();
+                // stlačenie na obraze: ťahaním sa nakreslí výber na orezanie
+                if y >= self.hore() as f32 && y < (self.hore() + h) as f32 {
+                    self.vyber_od = Some((x, y));
+                }
                 let h = h + self.hore();
                 let h = h + if self.meta_viditelna() { panel::VYSKA_META } else { 0 };
                 if self.pas_viditelny() && y >= (h + if self.udaje_viditelne() { 24 } else { 0 }) as f32 {
@@ -1935,7 +2010,7 @@ impl Prehliadac {
                 }
                 return false;
             }
-            Vstup::Tahaj { .. } | Vstup::Delic { .. } | Vstup::Tik => return false,
+            Vstup::Tahaj { .. } | Vstup::Delic { .. } | Vstup::Posun { .. } | Vstup::Tik => return false,
         }
         if (self.aktualny, self.prvy_riadok) == povodny {
             return false;

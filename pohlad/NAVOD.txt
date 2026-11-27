@@ -41,16 +41,19 @@ Prehliadanie
   šípky / medzerník / PageUp / PageDown / Backspace   ďalší a predošlý
   Home / End                                         prvý a posledný
   + / -, koliesko                                     priblížiť / oddialiť,  0 = prispôsobiť,  1 = skutočná veľkosť
-  ťahanie myšou                                       posun priblíženého obrazu
+  ťahanie ľavým tlačidlom po obraze                   nakreslí výber na orezanie (pozri Úpravy)
+  ťahanie pravým alebo stredným tlačidlom             posun priblíženého obrazu
+                                                      (pri porovnaní A/B ľavým; pravým sa posúva deliaca čiara)
   M označiť obraz, C porovnanie označeného s aktuálnym (vedľa seba / rozdiel), T pás náhľadov, I údaje
   F5 alebo F11   prezentácia na celú obrazovku (každých 5 s ďalší, P pozastaví, Esc ukončí)
   Esc            zavrie nápovedu alebo prezentáciu, inak koniec
 
 Úpravy (originál sa nikdy neprepíše; Uložiť / Ctrl+S uloží vedľa ako „meno_upravene.jpg“)
   R / Shift+R    otočiť vpravo / vľavo          F  zrkadliť
-  X / Orezať     orezanie výberom: na obraze sa ukáže rámik – ťahajte jeho rohy a okraje, ťahaním vnútri ho posuniete,
-                 ťahaním mimo neho nakreslíte nový. Na paneli pomer strán (Voľný, 1:1, 4:3, 3:2, 16:9; znova kliknúť
-                 = na výšku). Enter alebo Orezať oreže, Esc zruší. Pri JPEG sa ľavý a horný okraj prichytí na mriežku
+  orezanie       nakreslite výber ťahaním ľavým tlačidlom priamo po obraze (do ktoréhokoľvek smeru) – alebo X / Orezať
+                 ukáže rámik celého obrazu. Rohy a okraje rámika sa dajú ťahať, ťahaním vnútri ho posuniete, ťahaním
+                 mimo neho nakreslíte nový, samotné kliknutie mimo neho výber zruší. Na paneli pomer strán (Voľný, 1:1,
+                 4:3, 3:2, 16:9; znova kliknúť = na výšku). Enter alebo Orezať oreže, Esc zruší. Pri JPEG sa ľavý a horný okraj prichytí na mriežku
                  bodov (16 × 16), aby sa dalo uložiť bezstratovo – rámik ukazuje presne to, čo sa uloží.
   J / Shift+J    jas +/-      K / Shift+K  kontrast +/-      G / Shift+G  gama +/-
   Z              zmenšiť na polovicu (kvalitné zmenšenie)

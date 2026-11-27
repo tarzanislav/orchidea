@@ -508,6 +508,21 @@ def upravy(rng):
     vysledok("úpravy: orezanie výberom myšou (roh, posun, 4:3, JPEG)", ok and priemer < 0.05,
              f"600 × 450 od (32, 48) – mriežka MCU, bezstratovo (priemer {priemer:.4f}/255)" if ok
              else str(None if nase is None else nase.shape))
+    # nakreslenie výberu ťahaním po obraze bez tlačidla Orezať (postreh vlastníka 27. 11.) – PNG, do oboch smerov
+    Image.fromarray(g).save(os.path.join(pr, "n.png"))
+    snimka("n.png", "klik:100,100", "tahaj:300,200", "orez-potvrd", "ulozit")
+    snimka("n.png", "klik:500,400", "tahaj:-200,-150", "orez-potvrd", "ulozit")
+    n1, n2 = ulozene("n_upravene.png"), ulozene("n_upravene (2).png")
+    ok = (n1 is not None and n2 is not None and np.array_equal(n1, g[100:300, 100:400])
+          and np.array_equal(n2, g[250:400, 300:500]))
+    vysledok("úpravy: výber nakreslený ťahaním myši (doprava dole aj doľava hore)", ok,
+             "300 × 200 a 200 × 150 bit po bite" if ok else f"{None if n1 is None else n1.shape} {None if n2 is None else n2.shape}")
+    # samotné kliknutie výber nezačne; posun priblíženého obrazu stredným / pravým tlačidlom
+    snimka("v.png", "1:1", "klik:400,300", "mys:400,300", "posun:-100,-50", "posun-pravym:0,0", "orezat", "orez-potvrd", "ulozit")
+    nase = ulozene("v_upravene (2).png")
+    ok = nase is not None and nase.shape == (600, 800, 3) and np.array_equal(nase, velky[350:950, 500:1300])
+    vysledok("okno: posun obrazu stredným tlačidlom, kliknutie bez ťahania", ok,
+             "zobrazený výrez po posune o (100, 50) bit po bite" if ok else str(None if nase is None else nase.shape))
     # Esc orezanie zruší – Ctrl+S uloží neorezaný obraz
     snimka("o.jpg", "orezat", "klik:799,599", "tahaj:-200,-100", "esc", "ulozit")
     nase = ulozene("o_upravene (2).jpg")

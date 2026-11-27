@@ -55,6 +55,8 @@ pub enum Uchop {
     PravyDolny,
     /// Vnútri výberu – posun.
     Stred,
+    /// Nový výber kreslený od kotvy (dá sa ťahať do každého smeru).
+    Novy,
 }
 
 impl Uchop {
@@ -69,7 +71,7 @@ impl Uchop {
             Uchop::PravyHorny => (false, true, true, false),
             Uchop::LavyDolny => (true, false, false, true),
             Uchop::PravyDolny => (false, true, false, true),
-            Uchop::Stred => (false, false, false, false),
+            Uchop::Stred | Uchop::Novy => (false, false, false, false),
         }
     }
 }
@@ -162,17 +164,31 @@ impl Orezanie {
         })
     }
 
-    /// Stlačenie tlačidla myši v bode obrazu: ťahanie úchopu, posun, alebo nový výber z tohto bodu.
-    pub fn zacni(&mut self, bx: f32, by: f32, tolerancia: f32) {
+    /// Nový výber, ktorý sa práve kreslí ťahaním od bodu obrazu (ťahanie myšou po obraze bez režimu orezania).
+    pub fn nakreslene(sirka: usize, vyska: usize, bx: f32, by: f32, mriezka: Option<Mriezka>) -> Orezanie {
+        let mut o = Orezanie::novy(sirka, vyska, None, mriezka);
+        o.nakresli_od(bx, by);
+        o
+    }
+
+    /// Stlačenie tlačidla myši v bode obrazu: ťahanie úchopu alebo posun. `false` = mimo výberu (nový výber
+    /// sa začne kresliť až ťahaním – samotné kliknutie mimo výber zruší).
+    pub fn zacni(&mut self, bx: f32, by: f32, tolerancia: f32) -> bool {
         match self.uchop_na(bx, by, tolerancia) {
-            Some(u) => self.tahanie = Some((u, (bx, by), self.vyber)),
-            None => {
-                let (sw, sh) = (self.obraz.0 as f32, self.obraz.1 as f32);
-                let (x, y) = (bx.clamp(0.0, sw - NAJMENEJ), by.clamp(0.0, sh - NAJMENEJ));
-                self.vyber = (x, y, NAJMENEJ, NAJMENEJ);
-                self.tahanie = Some((Uchop::PravyDolny, (x + NAJMENEJ, y + NAJMENEJ), self.vyber));
+            Some(u) => {
+                self.tahanie = Some((u, (bx, by), self.vyber));
+                true
             }
+            None => false,
         }
+    }
+
+    /// Začne kresliť nový výber od bodu obrazu (kotva); ťahá sa do ľubovoľného smeru.
+    pub fn nakresli_od(&mut self, bx: f32, by: f32) {
+        let (sw, sh) = (self.obraz.0 as f32, self.obraz.1 as f32);
+        let (x, y) = (bx.clamp(0.0, sw), by.clamp(0.0, sh));
+        self.vyber = self.v_obraze((x, y, NAJMENEJ, NAJMENEJ));
+        self.tahanie = Some((Uchop::Novy, (x, y), self.vyber));
     }
 
     /// Ťahá sa? (Kým áno, posun obrazu je vypnutý.)
@@ -191,6 +207,22 @@ impl Orezanie {
         let (dx, dy) = (bx - zx, by - zy);
         let (sw, sh) = (self.obraz.0 as f32, self.obraz.1 as f32);
         let pred = self.vyber;
+        if u == Uchop::Novy {
+            // obdĺžnik medzi kotvou a kurzorom (orezaným na obraz), s pomerom podľa kratšej strany
+            let (cx, cy) = (bx.clamp(0.0, sw), by.clamp(0.0, sh));
+            let (mut w, mut h) = ((cx - zx).abs().max(NAJMENEJ), (cy - zy).abs().max(NAJMENEJ));
+            if let Some(r) = self.pomer_hodnota() {
+                if w / h > r {
+                    w = h * r;
+                } else {
+                    h = w / r;
+                }
+            }
+            let x0 = if cx >= zx { zx } else { zx - w };
+            let y0 = if cy >= zy { zy } else { zy - h };
+            self.vyber = self.v_obraze((x0, y0, w, h));
+            return self.vyber != pred;
+        }
         if u == Uchop::Stred {
             // posun celého výberu, rozmer ostáva
             let nx = (x + dx).clamp(0.0, (sw - w).max(0.0));
@@ -392,15 +424,25 @@ mod skusky {
         o.tahaj(1000.0, 1000.0);
         o.pusti();
         assert_eq!(o.vysledok(), (149, 50, 251, 250));
-        // nový výber mimo
+        // kliknutie mimo výberu nič neuchopí; nový výber sa kreslí od kotvy do každého smeru
         let mut o = Orezanie::novy(400, 300, Some((100, 100, 50, 50)), None);
-        o.zacni(10.0, 10.0, 6.0);
+        assert!(!o.zacni(10.0, 10.0, 6.0));
+        o.nakresli_od(10.0, 10.0);
         o.tahaj(60.0, 40.0);
         assert_eq!(o.vysledok(), (10, 10, 50, 30));
-        // ťahanie pravého dolného rohu za ľavý horný sa zastaví na najmenšom výbere
+        // za kotvu doľava hore a za okraj obrazu
         o.tahaj(-100.0, -100.0);
-        assert_eq!(o.vysledok(), (10, 10, 1, 1));
+        assert_eq!(o.vysledok(), (0, 0, 10, 10));
         assert_eq!(o.uchop_na(500.0, 500.0, 6.0), None);
+        // nakreslený výber (bez režimu orezania): od (300, 250) doľava hore, s pomerom 4:3
+        let mut o = Orezanie::nakreslene(400, 300, 300.0, 250.0, None);
+        o.tahaj(100.0, 50.0);
+        assert_eq!(o.vysledok(), (100, 50, 200, 200));
+        o.nastav_pomer(Pomer::P4x3);
+        o.nakresli_od(300.0, 250.0);
+        o.tahaj(100.0, 50.0);
+        let (x, y, w, h) = o.vysledok();
+        assert_eq!((w * 3, x + w, y + h), (h * 4, 300, 250));
     }
 
     #[test]
@@ -450,8 +492,7 @@ mod skusky {
     #[test]
     fn mriezka_bezstratoveho_jpeg() {
         let m = Mriezka { mcu: (16, 16), posun: (4, 0) };
-        let mut o = Orezanie::novy(100, 75, Some((40, 40, 10, 10)), Some(m));
-        o.zacni(30.0, 20.0, 1.0);
+        let mut o = Orezanie::nakreslene(100, 75, 30.0, 20.0, Some(m));
         o.tahaj(80.0, 60.0);
         // začiatok nadol na 4 + 16·k, 16·k; koniec ostane
         assert_eq!(o.vysledok(), (20, 16, 60, 44));

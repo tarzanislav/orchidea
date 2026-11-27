@@ -368,6 +368,8 @@ const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_LBUTTONUP: u32 = 0x0202;
 const WM_RBUTTONDOWN: u32 = 0x0204;
 const WM_RBUTTONUP: u32 = 0x0205;
+const WM_MBUTTONDOWN: u32 = 0x0207;
+const WM_MBUTTONUP: u32 = 0x0208;
 const WM_MOUSEWHEEL: u32 = 0x020A;
 const WM_DROPFILES: u32 = 0x0233;
 const WM_TIMER: u32 = 0x0113;
@@ -396,6 +398,8 @@ struct Stav {
     bgra: Vec<u32>,
     tahanie: Option<(i32, i32)>,
     delenie: bool,
+    /// Posun obrazu pravým alebo stredným tlačidlom: posledná poloha a či je to pravé tlačidlo.
+    posun: Option<(i32, i32, bool)>,
     titulok: String,
     samotest: Option<Samotest>,
     /// Celá obrazovka: pôvodný štýl a poloha okna.
@@ -658,21 +662,30 @@ unsafe fn spracuj_spravu(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize {
             });
             0
         }
-        WM_LBUTTONUP | WM_RBUTTONUP => {
+        WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP => {
             unsafe { ReleaseCapture() };
             s_stavom(|s| {
                 s.tahanie = None;
                 s.delenie = false;
+                s.posun = None;
             });
             0
         }
         WM_RBUTTONDOWN => {
-            let (x, _) = xy(lp);
+            let (x, y) = xy(lp);
             unsafe { SetCapture(hwnd) };
             s_stavom(|s| {
                 s.delenie = true;
+                s.posun = Some((x, y, true));
                 vstup(s, Vstup::Delic { x: x as f32 });
             });
+            0
+        }
+        WM_MBUTTONDOWN => {
+            // stredné tlačidlo – posun priblíženého obrazu
+            let (x, y) = xy(lp);
+            unsafe { SetCapture(hwnd) };
+            s_stavom(|s| s.posun = Some((x, y, false)));
             0
         }
         WM_MOUSEMOVE => {
@@ -681,8 +694,13 @@ unsafe fn spracuj_spravu(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize {
                 if let Some((px, py)) = s.tahanie {
                     s.tahanie = Some((x, y));
                     vstup(s, Vstup::Tahaj { dx: (x - px) as f32, dy: (y - py) as f32 });
-                } else if s.delenie {
-                    vstup(s, Vstup::Delic { x: x as f32 });
+                } else if let Some((px, py, pravym)) = s.posun {
+                    // pravé tlačidlo: deliaca čiara pri porovnaní aj posun obrazu (jadro vyberie)
+                    s.posun = Some((x, y, pravym));
+                    if s.delenie {
+                        vstup(s, Vstup::Delic { x: x as f32 });
+                    }
+                    vstup(s, Vstup::Posun { dx: (x - px) as f32, dy: (y - py) as f32, pravym });
                 } else {
                     vstup(s, Vstup::Mys { x: x as f32, y: y as f32 });
                 }
@@ -787,6 +805,7 @@ pub fn spusti(argumenty: &[String]) -> i32 {
                 bgra: Vec::new(),
                 tahanie: None,
                 delenie: false,
+                posun: None,
                 titulok: String::new(),
                 samotest,
                 cela_obrazovka: None,
