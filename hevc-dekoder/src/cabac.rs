@@ -187,26 +187,31 @@ impl<'a> Cabac<'a> {
         bin
     }
 
-    /// DecodeBypass (9.3.4.3.4).
+    /// DecodeBypass (9.3.4.3.4) – bez vetvenia (biny obchádzania sú náhodné, vetva by sa často mýlila).
     #[inline]
     pub fn obchadzanie(&mut self) -> u32 {
-        self.hodnota = (self.hodnota << 1) | self.bity(1);
-        if self.hodnota >= self.rozsah {
-            self.hodnota -= self.rozsah;
-            1
-        } else {
-            0
-        }
+        let v = (self.hodnota << 1) | self.bity(1);
+        let bin = (v >= self.rozsah) as u32;
+        self.hodnota = v - (self.rozsah & bin.wrapping_neg());
+        bin
     }
 
-    /// `n` binov obchádzania ako číslo s pevnou dĺžkou (najvyšší bit prvý).
+    /// `n` binov obchádzania (n ≤ 32) ako číslo s pevnou dĺžkou (najvyšší bit prvý) – naraz jedným delením.
+    ///
+    /// n krokov 9.3.4.3.4 (`h = 2h + b`, pri `h ≥ R` bin 1 a `h −= R`) je presne dlhé delenie čísla
+    /// `h·2ⁿ + B` (B = ďalších n bitov) rozsahom R: podiel sú biny, zvyšok nové ivlOffset. Keďže h < R, každá
+    /// číslica podielu je 0 alebo 1. V poškodenom toku (h ≥ R) dá postupný výpočet samé jednotky a zvyšok
+    /// `v − (2ⁿ − 1)·R` – rovnako ako orezaný podiel nižšie, výsledok je teda totožný v každom prípade.
     #[inline]
     pub fn obchadzanie_n(&mut self, n: u32) -> u32 {
-        let mut v = 0;
-        for _ in 0..n {
-            v = (v << 1) | self.obchadzanie();
+        if n <= 1 {
+            return if n == 1 { self.obchadzanie() } else { 0 };
         }
-        v
+        let v = ((self.hodnota as u64) << n) | self.bity(n) as u64;
+        let r = self.rozsah as u64;
+        let q = (v / r).min((1u64 << n) - 1);
+        self.hodnota = (v - q * r) as u32;
+        q as u32
     }
 
     /// DecodeTerminate (9.3.4.3.5).
@@ -529,6 +534,35 @@ mod testy {
                 }
             }
             v
+        }
+    }
+
+    /// n binov obchádzania naraz (delenie) = n binov po jednom – aj v poškodenom stave (ivlOffset ≥ ivlCurrRange)
+    /// a pri rôznom počte bitov v okne.
+    #[test]
+    fn obchadzanie_naraz_ako_po_jednom() {
+        let mut n = orchidea_jadro::nahoda::Nahoda::zo_semienka(2711);
+        for _ in 0..2000 {
+            let data: Vec<u8> = (0..64).map(|_| n.dalsie() as u8).collect();
+            let mut a = Cabac::novy(&data, 0);
+            let mut ks = Kontexty::nove(1, 30);
+            // náhodný stav: niekoľko rozhodnutí a bitov
+            for _ in 0..(n.dalsie() % 12) {
+                a.bin(&mut ks.0[(n.dalsie() % 8) as usize]);
+            }
+            if n.dalsie().is_multiple_of(8) {
+                a.hodnota = a.rozsah + (n.dalsie() % 300) as u32; // poškodený tok
+            }
+            let mut b = a.clone();
+            for _ in 0..6 {
+                let k = (n.dalsie() % 33) as u32;
+                let mut po_jednom = 0u32;
+                for _ in 0..k {
+                    po_jednom = (po_jednom << 1) | b.obchadzanie();
+                }
+                assert_eq!(a.obchadzanie_n(k), po_jednom, "n = {k}");
+                assert_eq!((a.hodnota, a.rozsah, a.spotrebovane()), (b.hodnota, b.rozsah, b.spotrebovane()));
+            }
         }
     }
 

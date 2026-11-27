@@ -1677,11 +1677,9 @@ impl<'a> DekoderRezu<'a> {
                 g2 = self.bin(k::GT2 + ctx_sada + if c > 0 { 4 } else { 0 }) as u8;
             }
             let skryte = skryvanie && (vyznamne[0] as i32 - vyznamne[pocet - 1] as i32) > 3;
-            let mut znamienka = 0u32;
             let pocet_znamienok = if skryte { pocet - 1 } else { pocet };
-            for _ in 0..pocet_znamienok {
-                znamienka = (znamienka << 1) | self.c.obchadzanie();
-            }
+            // coeff_sign_flag – až 16 binov obchádzania naraz
+            let mut znamienka = self.c.obchadzanie_n(pocet_znamienok as u32);
             if skryte {
                 znamienka <<= 1;
             }
