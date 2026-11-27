@@ -1,10 +1,11 @@
 //! Meranie vlastného dekodéra HEVC pre iný program (rozhranie R4 v `ORCHIDEA/rozhrania.md`): jeden súbor .hevc
 //! (Annex B) → na štandardný výstup riadky v pevnom tvare, ktoré sa dajú rozobrať bez knižníc.
 //!
-//! Použitie: `hevc_meranie [--vlakna N] [--rychlost] [--etapy] <súbor.hevc>`
+//! Použitie: `hevc_meranie [--vlakna N] [--rychlost] [--etapy] [--profil] <súbor.hevc>`
 //! - `--vlakna N` – počet vlákien dekódovania (predvolene počet jadier, najviac 8),
 //! - `--rychlost` – bez MD5 obrazov a bez overovania SEI (čisté dekódovanie ako pri prehrávaní),
-//! - `--etapy` – rozpis času po etapách (riadky `CAS`); meranie samo stojí niekoľko % času.
+//! - `--etapy` – rozpis času po etapách (riadky `CAS`); meranie samo stojí niekoľko % času,
+//! - `--profil` – profil po funkciách hlavného vlákna (riadky `PROFIL`, Linux aarch64 a x86-64; s `--vlakna 1`).
 //!
 //! Výstup (každý riadok začína kľúčovým slovom, polia `meno=hodnota` oddelené medzerou):
 //! ```text
@@ -14,7 +15,12 @@
 //! CHYBA <text>                                                         (0 až 5 riadkov)
 //! CAS etapa=<meno> ms=<x.y> podiel=<x.y>                               (len s --etapy, 16 riadkov)
 //! CAS_SPOLU stena_ms=<x> praca_ms=<x> vlakna=<n> vyuzitie=<x.y>        (len s --etapy)
+//! PROFIL_SPOLU vzoriek=<n> stratene=<n> frekvencia=<Hz>                 (len s --profil)
+//! PROFIL vzoriek=<n> podiel=<x.y> symbol=<meno>                        (najviac 40 riadkov, od najväčšieho)
+//! PROFIL_NEDOSTUPNY dovod=<text>                                       (profil sa nedal spustiť)
 //! ```
+//! `symbol` je zakódované meno funkcie (Rust v0, `_R…`; čitateľné cez `c++filt`); adresy mimo funkcií programu
+//! nesú meno mapovania s `?` (napr. `?libc.so.6` – memset, memcpy); vzorkuje sa len používateľský priestor.
 //! Etapy (vlastný čas, súčet cez všetky vlákna): `rozbor` (hlavné vlákno: NAL, hlavičky, správa obrazov),
 //! `cabac` (CABAC a syntax CTU okrem koeficientov), `koeficienty` (CABAC koeficientov, residual_coding),
 //! `pohyb` (kandidáti zlúčenia a AMVP vrátane TMVP), `intra`, `inter` (interpolácia a váženie jasu),
@@ -34,13 +40,16 @@ use orchidea_hevc::odtlacok::{Md5, hex};
 use orchidea_hevc_dekoder::{Dekoder, Vystup};
 use std::time::Instant;
 
+#[path = "spolocne/profil.rs"]
+mod profil;
+
 fn pouzitie() -> ! {
-    eprintln!("použitie: hevc_meranie [--vlakna N] [--rychlost] [--etapy] <súbor.hevc>");
+    eprintln!("použitie: hevc_meranie [--vlakna N] [--rychlost] [--etapy] [--profil] <súbor.hevc>");
     std::process::exit(2);
 }
 
 fn main() {
-    let (mut vlakna, mut rychlost, mut etapy, mut subor) = (None, false, false, None);
+    let (mut vlakna, mut rychlost, mut etapy, mut profiluj, mut subor) = (None, false, false, false, None);
     let mut argumenty = std::env::args().skip(1);
     while let Some(a) = argumenty.next() {
         match a.as_str() {
@@ -50,6 +59,7 @@ fn main() {
             }
             "--rychlost" => rychlost = true,
             "--etapy" => etapy = true,
+            "--profil" => profiluj = true,
             _ if subor.is_none() && !a.starts_with("--") => subor = Some(a),
             _ => pouzitie(),
         }
@@ -65,12 +75,11 @@ fn main() {
     let meno =
         std::path::Path::new(&subor).file_name().map_or(subor.clone(), |m| m.to_string_lossy().into_owned());
 
-    let mut d = if rychlost { Dekoder::na_prehravanie() } else { Dekoder::novy() };
-    if let Some(n) = vlakna {
-        d = d.s_vlaknami(n);
-    }
+    // R4: bez --vlakna počet jadier (najviac 8) – výslovne, dekodér má inak vlastný predvolený počet
     let n_vlakien =
         vlakna.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()).min(8));
+    let d = if rychlost { Dekoder::na_prehravanie() } else { Dekoder::novy() };
+    let mut d = d.s_vlaknami(n_vlakien);
     println!(
         "HEVC_MERANIE verzia=1 subor={} vlakna={n_vlakien} rezim={}",
         meno.replace(' ', "_"),
@@ -79,6 +88,7 @@ fn main() {
 
     orchidea_hevc_dekoder::etapy::zapni(etapy);
     let _ = orchidea_hevc_dekoder::etapy::vezmi();
+    let profil = if profiluj { Some(profil::Profil::spusti()) } else { None };
     let start = Instant::now();
     let (mut poradie, mut yuv) = (0usize, Vec::new());
     let mut vypis = |obrazy: Vec<Vystup>| {
@@ -105,6 +115,7 @@ fn main() {
     }
     vypis(d.koniec());
     let cas = start.elapsed().as_secs_f64();
+    let profil = profil.map(|p| p.map(profil::Profil::zastav));
 
     let s = &d.statistika;
     let stav = if !s.chyby.is_empty() {
@@ -125,6 +136,19 @@ fn main() {
     );
     for c in s.chyby.iter().take(5) {
         println!("CHYBA {}", c.replace('\n', " "));
+    }
+    match profil {
+        Some(Ok(v)) => {
+            println!("PROFIL_SPOLU vzoriek={} stratene={} frekvencia=1000", v.vzoriek, v.stratenych);
+            for (symbol, n) in v.po_symboloch.iter().take(40) {
+                println!(
+                    "PROFIL vzoriek={n} podiel={:.1} symbol={symbol}",
+                    100.0 * *n as f64 / v.vzoriek.max(1) as f64
+                );
+            }
+        }
+        Some(Err(dovod)) => println!("PROFIL_NEDOSTUPNY dovod={dovod}"),
+        None => {}
     }
     if etapy {
         use orchidea_hevc_dekoder::etapy::{VSETKY, vezmi};
