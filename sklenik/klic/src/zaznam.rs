@@ -607,7 +607,7 @@ pub fn identifikacia() -> String {
             Some(e) => riadok(
                 &mut t,
                 format!(
-                    "monitor {vystup}: výrobca {} · kód {:04x} · {} · sér. č. {} · rok {} · najlepšie {} · jadro nastavilo {} · EDID {} B",
+                    "monitor {vystup}: výrobca {} · kód {:04x} · {} · sér. č. {} · rok {} · najlepšie {} · jadro nastavilo {} · EDID {} B{}",
                     e.vyrobca,
                     e.kod_vyrobku,
                     e.nazov.as_deref().unwrap_or("bez názvu"),
@@ -615,7 +615,14 @@ pub fn identifikacia() -> String {
                     e.rok,
                     e.rozlisenie.map_or("?".into(), |(w, h)| format!("{w}×{h}")),
                     rezim.as_deref().unwrap_or("?"),
-                    edid.len()
+                    edid.len(),
+                    // R259: falošný monitor vlastníka (HDMI dummy plug, 27. 11. na RPi 3 B+) – merania bez skutočnej
+                    // obrazovky sa v záznamoch nesmú pliesť so skutočným TV a monitorom
+                    if je_falosny_monitor(&e.vyrobca, e.kod_vyrobku, e.nazov.as_deref()) {
+                        " · FALOŠNÝ MONITOR (HDMI dummy plug)"
+                    } else {
+                        ""
+                    }
                 ),
             ),
             None => riadok(&mut t, format!("monitor {vystup}: popis EDID je poškodený ({} B)", edid.len())),
@@ -1115,6 +1122,12 @@ fn porty_rozbocovaca(zariadenie: &Path, meno: &str) -> Vec<String> {
     v.into_iter().map(|(_, s)| s).collect()
 }
 
+/// R259: známe falošné monitory (HDMI dummy plug) podľa popisu EDID. Vlastníkove (lapert.sk, 4K 60 Hz) sa hlásia
+/// ako výrobca „BBC“, kód 0104, názov „HDP-V104“, sériové „demoset-1“, rok 2018.
+pub fn je_falosny_monitor(vyrobca: &str, kod: u16, nazov: Option<&str>) -> bool {
+    (vyrobca == "BBC" && kod == 0x0104) || nazov.is_some_and(|n| n.trim().eq_ignore_ascii_case("HDP-V104"))
+}
+
 /// R256: riadky „radič xHCI …: port NN – PORTSC“ zo stromu debugfs `usb/xhci/<radič>/ports/portNN/portsc`.
 fn portsc_xhci(koren: &Path) -> Vec<String> {
     let mut v = Vec::new();
@@ -1140,6 +1153,13 @@ fn portsc_xhci(koren: &Path) -> Vec<String> {
 #[cfg(test)]
 mod testy_r256 {
     use super::*;
+
+    #[test]
+    fn r259_falosny_monitor() {
+        assert!(je_falosny_monitor("BBC", 0x0104, Some("HDP-V104")));
+        assert!(je_falosny_monitor("XYZ", 1, Some("hdp-v104 ")));
+        assert!(!je_falosny_monitor("SAM", 0x0285, Some("SyncMaster")));
+    }
 
     #[test]
     fn r256_porty_korena_a_portsc() {
