@@ -125,6 +125,16 @@ pub fn povod_riadku(cakane: &[Obraz], riadok: &[u8]) -> String {
     "?".into()
 }
 
+/// R242: na koniec posledného prístupového bloku jednotka NAL „koniec toku“ (typ 11). Dekodér SM1 pri
+/// V4L2_DEC_CMD_STOP posledné 2 snímky z vyrovnávacej pamäte obrazov neodovzdá (6 z 8) – overí, či ich vydá
+/// po výslovnom konci toku (ak áno, ovládač ho môže pri vyprázdnení pridať sám, ako HEVC prúdu B).
+pub fn s_koncom_toku(mut toky: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+    if let Some(posledny) = toky.last_mut() {
+        posledny.extend(nal(&[0x0B], &[]));
+    }
+    toky
+}
+
 /// Zapisovač bitov (najvyšší bit bajtu prvý) s kódmi Exp-Golomb.
 #[derive(Default)]
 struct Bity {
@@ -400,7 +410,12 @@ pub fn h264_dc(sirka: usize, vyska: usize, pocet: usize) -> (Vec<Vec<u8>>, Vec<O
         rez.u(1, 0); // no_output_of_prior_pics_flag
         rez.u(1, 0); // long_term_reference_flag
         rez.se(0); // slice_qp_delta – QP 26
-        rez.ue(1); // disable_deblocking_filter_idc – bez filtra
+        // R242: filter zapnutý, posuny −12 → indexA = indexB = 26 − 12 = 14 < 16 → α = β = 0, filter nezmení nič
+        // (norma 8.7.2.2, tabuľka 8-16). Vypnutý filter (idc 1) dekodér SM1 nezvláda – Odroid 27. 11.: s filtrom
+        // bloky PCM presne, bez neho spodné 4 riadky každého radu makroblokov zlé.
+        rez.ue(0); // disable_deblocking_filter_idc – filter zapnutý
+        rez.se(-6); // slice_alpha_c0_offset_div2
+        rez.se(-6); // slice_beta_offset_div2
         let mut jas = vec![0i32; sx * sy];
         for my in 0..sy {
             for mx in 0..sx {
@@ -918,6 +933,11 @@ mod testy {
             std::env::var("SKLENIK_VIDEO").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
         let snimky: Vec<Obraz> = (0..3).map(|n| vzor(320, 240, n)).collect();
         std::fs::write(format!("{dir}/pcm.h264"), h264_pcm(&snimky).concat()).unwrap();
+        std::fs::write(
+            format!("{dir}/pcm_filter_koniec.h264"),
+            s_koncom_toku(h264_pcm_odblokovanie(&snimky, true)).concat(),
+        )
+        .unwrap();
         std::fs::write(format!("{dir}/pcm_filter.h264"), h264_pcm_odblokovanie(&snimky, true).concat())
             .unwrap();
         std::fs::write(format!("{dir}/pcm.hevc"), hevc_pcm(&snimky).concat()).unwrap();

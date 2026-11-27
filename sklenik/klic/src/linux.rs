@@ -772,16 +772,32 @@ fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex
                 // R202: H.264 aj bez PCM (Intra 16×16 s DC) – hlavné jadro I_PCM nevie, overí sa bežná cesta
                 let (dc_toky, dc_cakane) = video::h264_dc(sirka, vyska, 8);
                 for (f, meno, toky, cakane, druh) in [
-                    (v4l2::H264, "H.264", video::h264_pcm(&snimky), &snimky, "bloky PCM"),
-                    // R239: len príznak filtra iný – pri PCM filter nič nemení (FFmpeg: bitovo zhodné)
+                    // R242: filter vypnutý – dekodér SM1 kazí spodné 4 riadky každého radu makroblokov (dôkaz chyby)
                     (
                         v4l2::H264,
-                        "H.264 s filtrom",
+                        "H.264 bez filtra",
+                        video::h264_pcm(&snimky),
+                        &snimky,
+                        "bloky PCM, odblokovanie vypnuté",
+                    ),
+                    // R239: len príznak filtra iný – pri PCM filter nič nemení (FFmpeg: bitovo zhodné);
+                    // Odroid 27. 11.: všetky dekódované snímky presne – chyba H.264 bola len vypnutý filter
+                    (
+                        v4l2::H264,
+                        "H.264",
                         video::h264_pcm_odblokovanie(&snimky, true),
                         &snimky,
                         "bloky PCM, odblokovanie zapnuté – pri PCM nič nezmení",
                     ),
-                    (v4l2::H264, "H.264 bez PCM", dc_toky, &dc_cakane, "Intra 16×16 s DC"),
+                    // R242: to isté s jednotkou NAL „koniec toku“ – vydá dekodér aj posledné 2 snímky?
+                    (
+                        v4l2::H264,
+                        "H.264 s koncom toku",
+                        video::s_koncom_toku(video::h264_pcm_odblokovanie(&snimky, true)),
+                        &snimky,
+                        "bloky PCM, odblokovanie zapnuté, NAL koniec toku",
+                    ),
+                    (v4l2::H264, "H.264 bez PCM", dc_toky, &dc_cakane, "Intra 16×16 s DC, filter bez účinku"),
                     (v4l2::HEVC, "HEVC", video::hevc_pcm(&snimky), &snimky, "bloky PCM"),
                 ] {
                     if !d.vie(f) {
