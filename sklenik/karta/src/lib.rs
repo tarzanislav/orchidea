@@ -253,6 +253,9 @@ pub struct Nastavenie {
     pub jazyk: Option<String>,
     /// Samomeranie pri štarte (R122): `Some(false)` = vypnuté; inak zapnuté.
     pub meranie: Option<bool>,
+    /// R247: kľúč domácnosti pre zberač meraní (LOVEC ZBERAČ) – Zapisovač ho dá na každú kartu, ktorú zapíše
+    /// na tomto počítači; krabička ním šifruje výsledky pre zberač v miestnej sieti.
+    pub zberac: Option<[u8; 32]>,
 }
 
 /// Hodnota áno/nie (`ano`, `áno`, `1`, `zapnute` / `nie`, `0`, `vypnute`).
@@ -347,6 +350,11 @@ impl Nastavenie {
         if let Some(m) = self.meranie {
             t += &format!("meranie={}\n", if m { "ano" } else { "nie" });
         }
+        if let Some(k) = &self.zberac {
+            t += "zberac=";
+            t.extend(k.iter().map(|b| format!("{b:02x}")));
+            t += "\n";
+        }
         t += &blok_prepinacov();
         t
     }
@@ -387,6 +395,8 @@ pub struct NastavenieZariadenia {
     /// odhaduje z teploty pri štarte – pri teplom štarte nesprávne).
     /// V desatinách °C (245 = 24,5 °C).
     pub izba: Option<i32>,
+    /// R247: kľúč domácnosti pre zberač meraní (`zberac=` – 64 šestnástkových znakov).
+    pub zberac: Option<[u8; 32]>,
 }
 
 /// R183 – blok prepínačov do SKLENIK.TXT (píše ho SADIČ a doplní ho aj KLÍČ, ak chýba): všetko zapnuté,
@@ -479,6 +489,11 @@ impl NastavenieZariadenia {
             match k {
                 "meno" if platne_meno(v) => n.meno = Some(v.to_string()),
                 "wifi" if !v.is_empty() && v.len() <= 32 => n.wifi = Some(v.to_string()),
+                "zberac" => match hex32(v) {
+                    Some(k) => n.zberac = Some(k),
+                    None => upozornenia
+                        .push(format!("riadok {}: kľúč zberača má mať 64 šestnástkových znakov", i + 1)),
+                },
                 "wifi_psk" => match hex32(v) {
                     Some(k) => n.wifi_psk = Some(k),
                     None => upozornenia
@@ -863,6 +878,20 @@ mod skusky {
     }
 
     #[test]
+    fn r247_kluc_zberaca_na_karte() {
+        let k: [u8; 32] = core::array::from_fn(|i| (i * 11) as u8);
+        let n = Nastavenie { meno: Some("odroid-tv".into()), zberac: Some(k), ..Nastavenie::default() };
+        let t = n.text();
+        let (z, upozornenia) = NastavenieZariadenia::z_textu(&t);
+        assert!(upozornenia.is_empty(), "{upozornenia:?}");
+        assert_eq!(z.zberac, Some(k));
+        assert_eq!(z.meno.as_deref(), Some("odroid-tv"));
+        let (z, upozornenia) = NastavenieZariadenia::z_textu("zberac=12ab");
+        assert_eq!(z.zberac, None);
+        assert_eq!(upozornenia.len(), 1);
+    }
+
+    #[test]
     fn chybne_vstupy_sa_odmietnu() {
         assert!(Nastavenie::z_argumentov(["meno=Veľké"].into_iter()).is_err());
         assert!(Nastavenie::z_argumentov(["wifi_heslo=12345678"].into_iter()).is_err(), "heslo bez siete");
@@ -882,6 +911,7 @@ mod skusky {
             wifi_heslo: Some("tajneheslo".into()),
             jazyk: Some("sk".into()),
             meranie: Some(false),
+            zberac: None,
         };
         let mut text = n.text();
         assert!(text.contains("meranie=nie\n"));

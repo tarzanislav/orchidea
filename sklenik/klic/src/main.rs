@@ -73,6 +73,9 @@ mod uloziska;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod hevc_meranie;
 // R226: zvuk cez HDMI – vlastný zápis do ALSA, skúšobný tón pri štarte
+// R247: záznamy merania pre zberač meraní (LOVEC ZBERAČ) v miestnej sieti
+#[cfg(target_os = "linux")]
+mod zber;
 #[cfg(target_os = "linux")]
 mod zvuk;
 // R230: cesta zvuku na kartách ASoC s prepínačmi (Amlogic)

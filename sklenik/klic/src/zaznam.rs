@@ -190,6 +190,8 @@ pub struct Zapisane {
     pub poradie: u32,
     /// Zapísané súbory (meno, bajtov).
     pub subory: Vec<(String, usize)>,
+    /// R247: pripojený text každého textového súboru (meno, bajty presne ako na karte) – pre zberač meraní.
+    pub texty: Vec<(String, Vec<u8>)>,
 }
 
 /// Zapíše súbory do priečinka `MERANIA` na prvý nosič, na ktorý sa dá. `predosle` = (oddiel, poradie)
@@ -260,6 +262,7 @@ fn zapis_na(
             }
         };
         let mut zapisane = Vec::new();
+        let mut texty: Vec<(String, Vec<u8>)> = Vec::new();
         for s in subory {
             let meno = format!("{poradie:02}-{predpona}{}", s.pripona);
             let textovy = s.pripona.ends_with(".txt");
@@ -284,12 +287,19 @@ fn zapis_na(
                 f.write_all(&obsah)?;
                 f.sync_all()?;
             }
+            if textovy {
+                texty.push((meno.clone(), obsah.clone()));
+            }
             zapisane.push((meno, obsah.len()));
         }
         // posledný riadok: ako dlho trval zápis (aby bolo vidieť, že meranie teplotu neovplyvnilo)
         if let Some(s) = subory.iter().find(|s| s.pripona.ends_with(".txt")) {
             let riadok = zaver(zaciatok.elapsed());
-            let mut ciele = vec![format!("{poradie:02}-{predpona}{}", s.pripona)];
+            let prvy = format!("{poradie:02}-{predpona}{}", s.pripona);
+            if let Some(t) = texty.iter_mut().find(|t| t.0 == prvy) {
+                t.1.extend_from_slice(riadok.as_bytes());
+            }
+            let mut ciele = vec![prvy];
             if s.do_spolu {
                 ciele.push(SPOLU.into());
             }
@@ -299,7 +309,7 @@ fn zapis_na(
                 f.sync_all()?;
             }
         }
-        Ok(Zapisane { nosic: n.clone(), poradie, subory: zapisane })
+        Ok(Zapisane { nosic: n.clone(), poradie, subory: zapisane, texty })
     })();
     // odpojenie zapíše aj adresáre a tabuľku FAT; aj keby zlyhalo, sync zapíše všetko
     let _ = sys::odpoj(PRIPOJNY_BOD);
@@ -1002,6 +1012,10 @@ impl Riadenie {
                 }
                 if let Uloha::Zaznam(m) = uloha {
                     self.zaznamy.push((m, true));
+                }
+                // R247: ten istý text aj zberaču meraní v miestnej sieti (vlastné vlákno, nečaká sa)
+                for (meno, obsah) in &z.texty {
+                    crate::zber::zaznam(meno, obsah);
                 }
                 let subory: Vec<String> =
                     z.subory.iter().map(|(m, b)| format!("{m} ({} kB)", b.div_ceil(1024))).collect();

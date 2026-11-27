@@ -12,6 +12,7 @@
 #![deny(unsafe_code)]
 
 mod pole;
+pub mod zber;
 
 pub use pole::x25519;
 

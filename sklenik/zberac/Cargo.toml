@@ -1,0 +1,22 @@
+[package]
+name = "sklenik-zberac"
+description = "Zberač meraní (LOVEC ZBERAČ) – prijíma výsledky meraní krabičiek ORCHIDEA OS v miestnej sieti a ukladá ich do priečinka MERANIA"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[[bin]]
+name = "orchidea-zberac"
+path = "src/main.rs"
+
+[dependencies]
+sklenik-korene.workspace = true
+
+[lints]
+workspace = true

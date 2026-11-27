@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 orchidea-jadro.workspace = true
 sklenik-karta.workspace = true
+sklenik-korene.workspace = true
 orchidea-pismo.workspace = true
 
 [lints]

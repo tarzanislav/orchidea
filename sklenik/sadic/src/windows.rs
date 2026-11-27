@@ -44,6 +44,18 @@ unsafe extern "system" {
     fn GetSystemWindowsDirectoryW(buf: *mut u16, dlzka: u32) -> u32;
 }
 
+#[link(name = "bcrypt")]
+unsafe extern "system" {
+    fn BCryptGenRandom(algoritmus: *mut c_void, buf: *mut u8, dlzka: u32, priznaky: u32) -> i32;
+}
+
+/// R247: náhodné bajty zo systémového generátora Windows (BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG).
+pub fn nahodne(b: &mut [u8]) -> io::Result<()> {
+    // SAFETY: buffer `b` je platný a zapisovateľný v celej dĺžke; algoritmus NULL so systémovým generátorom.
+    let r = unsafe { BCryptGenRandom(std::ptr::null_mut(), b.as_mut_ptr(), b.len() as u32, 2) };
+    if r == 0 { Ok(()) } else { Err(io::Error::other(format!("BCryptGenRandom zlyhal (0x{r:08x})"))) }
+}
+
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
 const ZDIELAJ_VSETKO: u32 = 1 | 2;

@@ -495,10 +495,17 @@ mod platforma {
         if dlzka == 0 || dlzka % obraz::SEKTOR != 0 {
             return Err(Chyba(1, format!("{} nie je obraz disku (dĺžka {dlzka} B)", u.obraz)));
         }
-        let zaplaty = if u.nastavenie.je_prazdne() {
+        // R247: kľúč domácnosti pre zberač meraní (LOVEC ZBERAČ) – na každú kartu ORCHIDEA OS (obraz so
+        // SKLENIK.TXT); pri prvom zápise vznikne. Overenie bez zápisu ho použije, len ak už je.
+        let mut nastavenie = u.nastavenie.clone();
+        let orchidea = obraz::citaj_nastavenie(&mut f).is_ok();
+        if orchidea && nastavenie.zberac.is_none() {
+            nastavenie.zberac = kluc_domacnosti(u.zapisovat);
+        }
+        let zaplaty = if nastavenie.je_prazdne() {
             Vec::new()
         } else {
-            obraz::zaplaty_nastavenia(&mut f, &u.nastavenie.text()).map_err(|e| Chyba(1, e))?
+            obraz::zaplaty_nastavenia(&mut f, &nastavenie.text()).map_err(|e| Chyba(1, e))?
         };
         let d = povolene(u.disk, u.dovol_virtualny)?;
         if dlzka > d.velkost {
@@ -571,7 +578,49 @@ mod platforma {
                 format!("OVERENIE ZLYHALO: na disku je iný obsah{kde} (karta môže byť poškodená)"),
             ));
         }
+        if u.zapisovat && orchidea {
+            zapis_do_zoznamu(u, &d, &nastavenie, &ocakavany.to_string());
+        }
         Ok(ocakavany.to_string())
+    }
+
+    /// R247: kľúč domácnosti (zberač meraní) – uložený, alebo pri zápise nový zo systémového generátora.
+    fn kluc_domacnosti(vytvor: bool) -> Option<[u8; 32]> {
+        if let Some(k) = sklenik_korene::zber::nacitaj_kluc() {
+            return Some(k);
+        }
+        if !vytvor {
+            return None;
+        }
+        let mut k = [0u8; 32];
+        windows::nahodne(&mut k).ok()?;
+        sklenik_korene::zber::uloz_kluc_ak_chyba(&k).ok()
+    }
+
+    /// R247: zoznam zapísaných kariet (`%APPDATA%\ORCHIDEA\zapisane.txt`) – zberač a relácia A z neho vedia,
+    /// čo je na ktorej karte (obraz, meno, odtlačok), aj keď sa krabička ešte neozvala.
+    fn zapis_do_zoznamu(u: &Uloha, d: &InfoDisku, n: &Nastavenie, odtlacok: &str) {
+        let Some(p) = sklenik_korene::zber::priecinok_nastavenia() else { return };
+        let _ = std::fs::create_dir_all(&p);
+        let cas = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|t| t.as_secs())
+            .unwrap_or(0);
+        let obraz = std::path::Path::new(u.obraz).file_name().map(|m| m.to_string_lossy().to_string());
+        let riadok = format!(
+            "cas_unix={cas} · disk {} ({}, {}, {}) · obraz {} · meno {} · zberac {} · odtlacok {odtlacok}\r\n",
+            u.disk,
+            d.model,
+            d.zbernica.popis(),
+            disk::velkost(d.velkost),
+            obraz.unwrap_or_default(),
+            n.meno.as_deref().unwrap_or("–"),
+            if n.zberac.is_some() { "áno" } else { "nie" },
+        );
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p.join("zapisane.txt"))
+        {
+            let _ = f.write_all(riadok.as_bytes());
+        }
     }
 
     /// Príkaz `zapis` / `over` / `obnov` v príkazovom riadku.

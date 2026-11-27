@@ -157,6 +157,13 @@ impl Kabel {
         Kabel::Zapnute { bez_kabla_s: 0.0 }
     }
 
+    /// R247: niečo potrebuje sieť hneď (zberač meraní) – spiaci čip sa zapne v najbližšom kroku.
+    pub fn zobud(&mut self) {
+        if let Kabel::Spi { s } = self {
+            *s = SPANOK_NEPOTREBNEJ_S.max(SPANOK_PHY_S);
+        }
+    }
+
     /// Riadi ho správca (spí alebo hľadá) – stav „bez spojenia“ je zámer, nie zmena.
     pub fn riadeny(&self) -> bool {
         !matches!(self, Kabel::Zapnute { .. })

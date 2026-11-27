@@ -20,6 +20,7 @@ orchidea-pismo.workspace = true
 orchidea-teplo.workspace = true
 orchidea-zariadenie.workspace = true
 sklenik-karta.workspace = true
+sklenik-korene.workspace = true
 
 [lints]
 workspace = true

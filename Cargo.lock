@@ -104,6 +104,7 @@ dependencies = [
  "orchidea-teplo",
  "orchidea-zariadenie",
  "sklenik-karta",
+ "sklenik-korene",
 ]
 
 [[package]]
@@ -117,4 +118,12 @@ dependencies = [
  "orchidea-jadro",
  "orchidea-pismo",
  "sklenik-karta",
+ "sklenik-korene",
+]
+
+[[package]]
+name = "sklenik-zberac"
+version = "0.1.0"
+dependencies = [
+ "sklenik-korene",
 ]

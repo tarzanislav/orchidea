@@ -227,7 +227,9 @@ jobs:
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
       - name: Zostavenie
-        run: cargo build --locked --release -p sklenik-sadic
+        run: cargo build --locked --release -p sklenik-sadic -p sklenik-zberac
+      - name: Zberač meraní – prenos cez slučku IPv6 vo Windows (R247)
+        run: cargo test --locked --release -p sklenik-zberac -p sklenik-korene
       - name: Zápis, poistky, overenie, záloha a obnova na virtuálnom disku
         shell: pwsh
         run: |
@@ -260,6 +262,10 @@ jobs:
           $obsah = Get-Content "$($p.DriveLetter):\SKLENIK.TXT" -Raw
           Write-Output $obsah
           if ($obsah -notmatch 'meno=skuska' -or $obsah -match 'tajneheslo') { throw "nastavenie na karte nesedí" }
+          # R247: kľúč domácnosti pre zberač meraní na karte a zoznam zapísaných kariet
+          if ($obsah -notmatch 'zberac=[0-9a-f]{64}') { throw "kľúč zberača na karte chýba (R247)" }
+          if (-not (Test-Path "$env:APPDATA\ORCHIDEA\zberac-kluc.txt")) { throw "kľúč domácnosti nevznikol (R247)" }
+          if (-not (Select-String -Path "$env:APPDATA\ORCHIDEA\zapisane.txt" -Pattern 'zberac áno' -Quiet)) { throw "zoznam zapísaných kariet (R247)" }
           & $s zaloha $n "$t\zaloha.img" --dovol-virtualny
           if ($LASTEXITCODE) { throw "záloha zlyhala" }
           & $s obnov $img $n --potvrdzujem $n --dovol-virtualny
@@ -421,7 +427,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sadic-windows-x64
-          path: target/release/sadic.exe
+          path: |
+            target/release/sadic.exe
+            target/release/orchidea-zberac.exe
 
   formaty:
     name: Obrazové formáty – nezávislé overenie a dlhý fuzzer (R211)

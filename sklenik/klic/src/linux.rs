@@ -2136,6 +2136,8 @@ pub fn spusti() {
     let mut hevc_spustene = false;
     // R244: vlákna skúšok (video, zvuk, HEVC) – záverečný záznam rýchlej skúšky počká, kým dobehnú
     let mut skusky: Vec<std::thread::JoinHandle<()>> = Vec::new();
+    // R247: zberač meraní zapnutý (alebo ohlásené, že karta nemá kľúč)
+    let mut zber_ohlaseny = false;
     // R226: skúšobný tón cez HDMI
     let zvuk_riadky: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let mut zvuk_spusteny = false;
@@ -2280,10 +2282,15 @@ pub fn spusti() {
                 }
                 // R170: čip siete bez kábla spí; raz za 30 s sa na chvíľu zobudí a hľadá kábel
                 // R191: sieť zatiaľ nič nepotrebuje (SKLENÍK nemá sieťové služby) – spí aj s káblom
-                let siet_potrebna = !(novinka(&nastavenie, "siet_spi") && siet_spi_faza);
+                // R247: zberač meraní práve posiela – sieť je potrebná a spiaci čip siete sa zobudí hneď
+                let zber_treba = crate::zber::treba_siet();
+                let siet_potrebna = !(novinka(&nastavenie, "siet_spi") && siet_spi_faza) || zber_treba;
                 if tv && periferie_teraz == Some(true) && novinka(&nastavenie, "siet") {
                     for r in supis.siet.iter().filter(|r| !r.bezdrotove && !siet_chyby.contains(&r.meno)) {
                         let k = kable.entry(r.meno.clone()).or_insert_with(chlad::Kabel::novy);
+                        if zber_treba {
+                            k.zobud();
+                        }
                         let spojenie =
                             citaj(format!("/sys/class/net/{}/carrier", r.meno)).as_deref() == Some("1");
                         let Some(p) = k.krok_s_potrebou(dt, spojenie, siet_potrebna) else { continue };
@@ -2615,6 +2622,21 @@ pub fn spusti() {
             }));
             pokoj_stav = Some((pokoj::Stav::Overene, true, n));
         }
+        // R247: zberač meraní – karta s kľúčom domácnosti (zapísaná ORCHIDEA Zapisovačom od R247)
+        if pid1
+            && !skuska
+            && !zber_ohlaseny
+            && let Some((_, n)) = nastavenie.as_ref()
+        {
+            zber_ohlaseny = true;
+            match n.zberac {
+                Some(k) => {
+                    crate::zber::zapni(k, identita_zberaca(&model, n));
+                    hlas("zberač meraní (R247): zapnutý – záznamy pôjdu aj do počítača v miestnej sieti");
+                }
+                None => hlas("zberač meraní (R247): karta nemá kľúč domácnosti – výsledky len na karte"),
+            }
+        }
         // R231: blikajúce kontrolky (tep srdca) → trvalo svietia – raz, keď je známe nastavenie
         if pid1 && !kontrolky_hotove && hore >= 15.0 {
             kontrolky_hotove = true;
@@ -2643,6 +2665,8 @@ pub fn spusti() {
             for k in blikaj_po_merani() {
                 hlas(&format!("kontrolka (R239): {k}"));
             }
+            // R247: zberaču aj správu o konci merania
+            crate::zber::hotove();
         }
         // R227: RPi s vc4 – menej čítaní popisu monitora (budenia I2C)
         if pid1
@@ -3728,6 +3752,7 @@ pub fn spusti() {
                             "  CEC (R181): {}{NL}",
                             cec.as_ref().map_or_else(|| cec_stav.clone(), |c| c.popis())
                         );
+                        text += &format!("  zberač meraní (R247): {}{NL}", crate::zber::popis());
                         if pokus {
                             let r: Vec<String> =
                                 (0..pocet_faz).filter(|&i| rusene[i]).map(|i| (i + 1).to_string()).collect();
@@ -4317,6 +4342,28 @@ impl SledovanieEee {
         } else {
             None
         }
+    }
+}
+
+/// R247: kto posiela záznamy zberaču – model, meno zo Zapisovača, sériové číslo (inak MAC drôtovej siete),
+/// verzia karty a identita tohto štartu (boot_id jadra – nové meranie = nový priečinok u zberača).
+fn identita_zberaca(model: &str, n: &NastavenieZariadenia) -> crate::zber::Identita {
+    let mac = || {
+        let mut mena: Vec<String> = fs::read_dir("/sys/class/net")
+            .ok()?
+            .flatten()
+            .map(|z| z.file_name().to_string_lossy().to_string())
+            .filter(|m| m != "lo" && !m.starts_with("wl"))
+            .collect();
+        mena.sort();
+        citaj(format!("/sys/class/net/{}/address", mena.first()?))
+    };
+    crate::zber::Identita {
+        zariadenie: model.to_string(),
+        meno: n.meno.clone().unwrap_or_default(),
+        id: zaznam::seriove_cislo().filter(|s| !s.is_empty() && s != "–").or_else(mac).unwrap_or_default(),
+        verzia: crate::VERZIA.rsplit(' ').next().unwrap_or(crate::VERZIA).to_string(),
+        beh: citaj("/proc/sys/kernel/random/boot_id").unwrap_or_default(),
     }
 }
 

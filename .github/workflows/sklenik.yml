@@ -104,6 +104,8 @@ jobs:
           for riadok in CONFIG_VFAT_FS=y CONFIG_NLS_CODEPAGE_437=y CONFIG_NLS_ISO8859_1=y; do
             grep -qxF "$riadok" "jadro-vystup/jadro-${{ matrix.id }}.config" || { echo "❌ $riadok chýba v jadre (samomeranie R122)"; exit 1; }
           done
+          # R247: zberač meraní – IPv6 (adresy miestnej linky) priamo v jadre
+          grep -qxF CONFIG_IPV6=y "jadro-vystup/jadro-${{ matrix.id }}.config" || { echo "❌ CONFIG_IPV6=y chýba v jadre (zberač R247)"; exit 1; }
           # R190: vlastný chladný obraz cez KMS potrebuje ovládač vc4 a CEC priamo v jadre
           for riadok in CONFIG_DRM_VC4=y CONFIG_DRM_VC4_HDMI_CEC=y; do
             grep -qxF "$riadok" "jadro-vystup/jadro-${{ matrix.id }}.config" || { echo "❌ $riadok chýba v jadre (obraz R190)"; exit 1; }
