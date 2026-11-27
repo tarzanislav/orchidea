@@ -1979,6 +1979,7 @@ pub fn spusti() {
         Vec<String>,
         Option<obrazovka::Samomeranie>,
         (Option<i64>, &'static str, Option<bool>, Option<i64>, Option<i64>, bool),
+        Vec<String>,
     )> = None;
     let mut krokov = 0u32;
     let mut tep_posledny: Option<Instant> = None;
@@ -3458,8 +3459,22 @@ pub fn spusti() {
             stav_okolia.tau_s.map(|t| (t / 60.0).round() as i64),
             uspora,
         );
-        let ine =
-            (eee.stav(), kmsg.posledne(2), pamat_vysledok, siet_chyby.clone(), stav_merania, kluc_okolia);
+        // R253: kábel zapojený, čip siete spí (R191) – obrazovka nepíše „bez kábla“
+        let mut siet_spi: Vec<String> = kable
+            .iter()
+            .filter(|(m, k)| k.riadeny() && kabel_zapojeny.get(*m) == Some(&true))
+            .map(|(m, _)| m.clone())
+            .collect();
+        siet_spi.sort();
+        let ine = (
+            eee.stav(),
+            kmsg.posledne(2),
+            pamat_vysledok,
+            siet_chyby.clone(),
+            stav_merania,
+            kluc_okolia,
+            siet_spi,
+        );
         let nove_ine = zobrazene_ine.as_ref() != Some(&ine);
         let bezi_s = uptime().unwrap_or(0.0) as u64;
         let novy_cas = Some(bezi_s) != zobrazeny_cas;
@@ -3494,6 +3509,7 @@ pub fn spusti() {
             hlasenia: &ine.1,
             test_pamate: ine.2,
             siet_chyby: &ine.3,
+            siet_spi: &ine.6,
             samomeranie: ine.4.as_ref(),
             okolie: (!hw.snimace.is_empty()).then_some(&stav_okolia),
             chlad: chlad_stav.as_ref(),

@@ -91,20 +91,19 @@ fn obsluz(z: &Zberac, mut t: TcpStream) {
                 return;
             }
         };
-        let odpoved = match Sprava::z_bajtov(&data)
+        let (odpoved, popis) = match Sprava::z_bajtov(&data)
             .map_err(std::io::Error::other)
             .and_then(|s| z.sklad.prijmi(&s, (z.cas)()))
         {
-            Ok((_, popis)) => {
-                (z.hlas)(&popis);
-                "ok".to_string()
-            }
-            Err(e) => {
-                (z.hlas)(&format!("{od}: uloženie zlyhalo – {e}"));
-                format!("chyba {e}")
-            }
+            Ok((_, popis)) => ("ok".to_string(), popis),
+            Err(e) => (format!("chyba {e}"), format!("{od}: uloženie zlyhalo – {e}")),
         };
-        if t.write_all(&zber::odpoved(&kluc, &nonce, &odpoved)).is_err() {
+        // R253: najprv potvrdenie krabičke, až potom riadok do okna – zaseknuté okno (Windows zastaví výpis,
+        // keď v ňom používateľ označuje text) nesmie zastaviť prenos (X96 27. 11.: záznam uložený, potvrdenie
+        // neodišlo, HOTOVÉ ostalo v rade krabičky)
+        let poslane = t.write_all(&zber::odpoved(&kluc, &nonce, &odpoved));
+        (z.hlas)(&popis);
+        if poslane.is_err() {
             return;
         }
     }

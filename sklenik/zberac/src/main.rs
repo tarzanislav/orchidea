@@ -1,6 +1,9 @@
 //! Zberač meraní (LOVEC ZBERAČ, R247) – beží na počítači vlastníka a prijíma výsledky meraní krabičiek
 //! ORCHIDEA OS v miestnej sieti; ukladá ich do priečinka MERANIA, ktorý číta aj relácia A.
 //!
+//! R253: okno nikdy nezastaví prenos – krabička dostane potvrdenie skôr, než sa vypíše riadok, riadky píše
+//! samostatné vlákno a „Rýchla úprava“ okna (zastavuje výpis pri označení textu) je vypnutá.
+//!
 //! Prvé spustenie sa opýta na priečinok MERANIA a zapne spúšťanie po prihlásení (Windows). Kľúč domácnosti
 //! vytvorí ORCHIDEA Zapisovač pri prvom zápise karty – zberač ho číta pri každom spojení.
 //!
@@ -62,6 +65,29 @@ mod windows {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GetLocalTime(cas: *mut SystemTime);
+        fn GetStdHandle(ktory: u32) -> *mut core::ffi::c_void;
+        fn GetConsoleMode(konzola: *mut core::ffi::c_void, rezim: *mut u32) -> i32;
+        fn SetConsoleMode(konzola: *mut core::ffi::c_void, rezim: u32) -> i32;
+    }
+
+    /// R253: vypne v okne „Rýchlu úpravu“ (QuickEdit). Kým je v okne s ňou označený text, Windows zastaví každý
+    /// výpis programu – zberač by stál. Kopírovať z okna ide aj potom (ponuka okna → Upraviť → Označiť).
+    pub fn vypni_rychlu_upravu() -> bool {
+        const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+        const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
+        const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
+        // SAFETY: GetStdHandle nemá predpoklady; neplatný alebo nulový úchyt GetConsoleMode odmietne (vráti 0).
+        let h = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        if h.is_null() || h as isize == -1 {
+            return false;
+        }
+        let mut rezim = 0u32;
+        // SAFETY: úchyt je zo systému, premenná pre režim žije počas volania.
+        if unsafe { GetConsoleMode(h, &mut rezim) } == 0 {
+            return false;
+        }
+        // SAFETY: ten istý úchyt konzoly; nový režim len bez Rýchlej úpravy.
+        unsafe { SetConsoleMode(h, (rezim & !ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS) != 0 }
     }
 
     pub fn miestny_cas() -> crate::sklad::Cas {
@@ -72,9 +98,19 @@ mod windows {
     }
 }
 
-fn hlas(t: &str) {
-    let c = cas();
-    println!("{:02}:{:02}:{:02}  {t}", c.3, c.4, c.5);
+/// R253: riadky do okna píše samostatné vlákno – keď okno stojí, prenos ani ukladanie nečakajú.
+fn hlasatel() -> impl Fn(&str) + Send + Sync + 'static {
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let _ = std::thread::Builder::new().name("okno".into()).spawn(move || {
+        // chyba zápisu do okna (println! by pri nej spadol) sa ticho preskočí – prenos beží ďalej
+        for riadok in rx {
+            let _ = writeln!(std::io::stdout(), "{riadok}");
+        }
+    });
+    move |t: &str| {
+        let c = cas();
+        let _ = tx.send(format!("{:02}:{:02}:{:02}  {t}", c.3, c.4, c.5));
+    }
 }
 
 fn subor_nastavenia() -> Option<PathBuf> {
@@ -126,6 +162,8 @@ fn zapni_spustanie() -> Option<PathBuf> {
 }
 
 fn main() {
+    #[cfg(windows)]
+    windows::vypni_rychlu_upravu();
     let arg: Vec<String> = std::env::args().skip(1).collect();
     let mut n = siet::Nastavenie::default();
     let mut priecinok = None;
@@ -154,7 +192,10 @@ fn main() {
         }
         i += 1;
     }
-    println!("ORCHIDEA – zberač meraní (LOVEC ZBERAČ) · verzia {}", env!("CARGO_PKG_VERSION"));
+    // R253: aj odtlačok zostavenia (commit z GitHub Actions), aby bolo vidno, ktorý zberač beží
+    let zostavenie =
+        option_env!("GITHUB_SHA").map(|c| format!(" · {}", &c[..c.len().min(7)])).unwrap_or_default();
+    println!("ORCHIDEA – zberač meraní (LOVEC ZBERAČ) · verzia {}{zostavenie}", env!("CARGO_PKG_VERSION"));
     let prvy = nacitaj_priecinok().is_none();
     let priecinok = match priecinok.or_else(nacitaj_priecinok) {
         Some(p) => p,
@@ -196,7 +237,7 @@ fn main() {
         sklad,
         kluc: Box::new(sklenik_korene::zber::nacitaj_kluc),
         cas,
-        hlas: Box::new(hlas),
+        hlas: Box::new(hlasatel()),
     });
     match siet::spusti(z, &n) {
         Ok((h, p)) => println!(

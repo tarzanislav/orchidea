@@ -103,6 +103,8 @@ pub struct Stav<'a> {
     pub test_pamate: Option<Result<usize, usize>>,
     /// Sieťové rozhrania, ktoré sa nedali zapnúť – čip siete neodpovedá (R120).
     pub siet_chyby: &'a [String],
+    /// R253: rozhrania so zapojeným káblom, ktorých čip siete práve spí (R191) – nie „bez kábla“.
+    pub siet_spi: &'a [String],
     /// Samomeranie (R122) – `None`, ak je vypnuté.
     pub samomeranie: Option<&'a Samomeranie>,
     /// Odhad okolia a prostredie (R123, R124) – `None` bez snímača teploty.
@@ -588,6 +590,14 @@ pub fn nakresli_s_opisom(
                 ),
                 TLMENY,
             ),
+            (false, _) if s.siet_spi.contains(&r.meno) => (
+                j.t(
+                    "kábel pripojený · čip siete spí, kým sieť netreba",
+                    "kabel připojen · čip sítě spí, dokud síť není potřeba",
+                    "cable connected · network chip sleeps until needed",
+                ),
+                TLMENY,
+            ),
             (false, Some(true)) => (j.t("kábel pripojený", "kabel připojen", "cable connected"), ZELENA),
             (false, Some(false)) => (j.t("bez kábla", "bez kabelu", "no cable"), TLMENY),
             // R120: rozhranie sa nedalo zapnúť – čip siete (PHY) neodpovedá
@@ -998,6 +1008,7 @@ mod skusky {
             hlasenia: &[],
             test_pamate: Some(Ok(64)),
             siet_chyby: &[],
+            siet_spi: &[],
             samomeranie: None,
             okolie: None,
             uspora: false,

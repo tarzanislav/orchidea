@@ -229,4 +229,23 @@ mod skusky {
         assert!(m4.to_string_lossy().ends_with("f5cd597 (2)"));
         let _ = fs::remove_dir_all(&d);
     }
+
+    /// R253: záverečný záznam nesie aj koniec merania – jeden prenos zapíše text aj HOTOVE.txt; opakovaný
+    /// prenos tej istej správy (krabička nedostala potvrdenie) nič nezdvojí.
+    #[test]
+    fn r253_posledny_zaznam_s_koncom() {
+        let d = docasny("koniec");
+        let sk = Sklad::novy(&d).unwrap();
+        let t = (2026, 11, 27, 18, 33, 0);
+        let (m, _) = sk.prijmi(&sprava("0", "z0\n"), t).unwrap();
+        let (_, popis) = sk.prijmi(&sprava("3", "z3\n").s("stav", "hotove"), t).unwrap();
+        assert!(popis.contains("kB do") && popis.contains("HOTOVÉ"), "{popis}");
+        assert!(m.join("HOTOVE.txt").exists());
+        let (_, popis) = sk.prijmi(&sprava("3", "z3\n").s("stav", "hotove"), t).unwrap();
+        assert!(popis.contains("už prijaté"), "{popis}");
+        assert_eq!(fs::read_to_string(m.join("01-Hardkernel-ODROID-C4-SD.txt")).unwrap(), "z0\nz3\n");
+        let prehlad = fs::read_to_string(d.join(PREHLAD)).unwrap();
+        assert_eq!(prehlad.matches("· HOTOVÉ ·").count(), 1, "{prehlad}");
+        let _ = fs::remove_dir_all(&d);
+    }
 }

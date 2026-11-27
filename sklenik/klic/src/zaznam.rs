@@ -1013,9 +1013,12 @@ impl Riadenie {
                 if let Uloha::Zaznam(m) = uloha {
                     self.zaznamy.push((m, true));
                 }
-                // R247: ten istý text aj zberaču meraní v miestnej sieti (vlastné vlákno, nečaká sa)
-                for (meno, obsah) in &z.texty {
-                    crate::zber::zaznam(meno, obsah);
+                // R247: ten istý text aj zberaču meraní v miestnej sieti (vlastné vlákno, nečaká sa);
+                // R253: po poslednom milníku nesie posledný text aj koniec merania (HOTOVÉ)
+                let koniec = self.dalsi >= self.milniky().len();
+                let n = z.texty.len();
+                for (i, (meno, obsah)) in z.texty.iter().enumerate() {
+                    crate::zber::zaznam(meno, obsah, koniec && i + 1 == n);
                 }
                 let subory: Vec<String> =
                     z.subory.iter().map(|(m, b)| format!("{m} ({} kB)", b.div_ceil(1024))).collect();

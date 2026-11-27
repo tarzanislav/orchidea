@@ -56,6 +56,8 @@ static STAV: Mutex<Stav> = Mutex::new(Stav {
 });
 static NOVE: Condvar = Condvar::new();
 static TREBA_SIET: AtomicBool = AtomicBool::new(false);
+/// R253: koniec merania už išiel spolu s posledným záznamom – samostatná správa HOTOVÉ netreba.
+static KONIEC_POSLANY: AtomicBool = AtomicBool::new(false);
 
 /// Potrebuje zberač práve teraz sieť? (správca chladu podľa toho nechá čip siete zapnutý / zobudí ho)
 pub fn treba_siet() -> bool {
@@ -100,23 +102,31 @@ fn s_identitou(i: &Identita) -> Sprava {
         .s("beh", &i.beh)
 }
 
-/// Záznam zapísaný na kartu (súbor `subor` v priečinku MERANIA, pripojený text `obsah`).
-pub fn zaznam(subor: &str, obsah: &[u8]) {
+/// Záznam zapísaný na kartu (súbor `subor` v priečinku MERANIA, pripojený text `obsah`). R253: `posledny` –
+/// záverečný záznam merania nesie aj koniec (HOTOVÉ) v tej istej správe; zberač ho dostane jedným prenosom a
+/// nič nezávisí od toho, či druhá správa stihne odísť, kým sieť zaspí.
+pub fn zaznam(subor: &str, obsah: &[u8], posledny: bool) {
     let i = match STAV.lock() {
         Ok(s) if s.kluc.is_some() => s.identita.clone(),
         _ => return,
     };
+    if posledny {
+        KONIEC_POSLANY.store(true, Ordering::Relaxed);
+    }
     do_radu(
         s_identitou(&i)
             .s("subor", subor)
             .s("zaznam", &format!("{:016x}", odtlacok(obsah)))
-            .s("stav", "bezi")
+            .s("stav", if posledny { "hotove" } else { "bezi" })
             .s_obsahom(obsah.to_vec()),
     );
 }
 
-/// Meranie dobehlo (HOTOVÉ na krabičke).
+/// Meranie dobehlo (HOTOVÉ na krabičke) – samostatná správa len vtedy, keď koniec nešiel so záznamom.
 pub fn hotove() {
+    if KONIEC_POSLANY.load(Ordering::Relaxed) {
+        return;
+    }
     let i = match STAV.lock() {
         Ok(s) if s.kluc.is_some() => s.identita.clone(),
         _ => return,
