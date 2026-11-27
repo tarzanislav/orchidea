@@ -113,6 +113,7 @@ unsafe extern "system" {
     fn PostQuitMessage(kod: i32);
     fn PostMessageW(h: Hwnd, m: u32, w: usize, l: isize) -> i32;
     fn SendMessageW(h: Hwnd, m: u32, w: usize, l: isize) -> isize;
+    fn GetKeyState(vk: i32) -> i16;
     fn ShowWindow(h: Hwnd, prikaz: i32) -> i32;
     fn UpdateWindow(h: Hwnd) -> i32;
     fn DestroyWindow(h: Hwnd) -> i32;
@@ -530,6 +531,7 @@ fn povel_znaku(c: char) -> Option<Povel> {
         '\u{19}' => Povel::Znova,
         '\u{13}' => Povel::Ulozit,
         '\u{f}' => Povel::Otvorit,
+        '\u{b}' => Povel::PridajKluc,
         _ => return None,
     })
 }
@@ -704,6 +706,16 @@ unsafe fn spracuj_spravu(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize {
             } else if wp == 0x70 {
                 // F1 – nápoveda klávesov
                 s_stavom(|s| vstup(s, Vstup::Povel(Povel::Napoveda)));
+            } else if let Some(n) = (unsafe { GetKeyState(0x11) } < 0)
+                .then(|| match wp {
+                    0x30..=0x35 => Some((wp - 0x30) as i8),
+                    0x60..=0x65 => Some((wp - 0x60) as i8),
+                    _ => None,
+                })
+                .flatten()
+            {
+                // Ctrl+0 … Ctrl+5 – hodnotenie (do súboru XMP vedľa fotky)
+                s_stavom(|s| vstup(s, Vstup::Povel(Povel::Hodnotenie(n))));
             } else if wp == 0x74 || wp == 0x7A {
                 // F5 / F11 – prezentácia na celú obrazovku
                 s_stavom(|s| vstup(s, Vstup::Povel(Povel::Prezentacia)));
@@ -789,6 +801,8 @@ unsafe fn spracuj_spravu(hwnd: Hwnd, m: u32, wp: usize, lp: isize) -> isize {
             0
         }
         WM_DESTROY => {
+            // zmeny katalógu fotografií na disk (súbory XMP sú zapísané hneď)
+            s_stavom(|s| s.jadro.pri_zatvoreni());
             unsafe { PostQuitMessage(0) };
             0
         }
@@ -812,6 +826,10 @@ pub fn spusti(argumenty: &[String]) -> i32 {
                     "napoveda" => Some(Krok::Vstup(Vstup::Povel(Povel::Napoveda))),
                     "katalog" => Some(Krok::Vstup(Vstup::Povel(Povel::Katalog))),
                     "enter" => Some(Krok::Vstup(Vstup::Znak('\r'))),
+                    "ctrl-k" => Some(Krok::Vstup(Vstup::Povel(Povel::PridajKluc))),
+                    t if t.starts_with("hodnotenie:") => {
+                        t[11..].parse().ok().map(|n| Krok::Vstup(Vstup::Povel(Povel::Hodnotenie(n))))
+                    }
                     t if t.starts_with("pis:") => Some(Krok::Pis(t[4..].to_string())),
                     t if t.starts_with("katalog-subor:") => Some(Krok::Katalog(PathBuf::from(&t[14..]))),
                     t if t.starts_with("dialogy:") => t[8..].parse().ok().map(Krok::Dialogy),

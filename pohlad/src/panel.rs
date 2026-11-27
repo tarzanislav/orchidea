@@ -285,6 +285,9 @@ pub const NAPOVEDA: &[(&str, &str)] = &[
     ("Ctrl+Z  /  Ctrl+Y", "späť  /  znova"),
     ("Ctrl+S", "uložiť vedľa originálu (JPEG s otočením a orezaním bezstratovo)"),
     ("Ctrl+O", "otvoriť obrázok (otvorí sa celý jeho priečinok)"),
+    ("", "Hodnotenie a kľúčové slová – do súboru XMP vedľa fotky (foto.jpg.xmp), fotka sa nemení"),
+    ("Ctrl+1 … Ctrl+5, Ctrl+0", "hviezdičky (aj kliknutím); Ctrl+0 zruší hodnotenie"),
+    ("Ctrl+K", "pridať kľúčové slovo (Enter uloží, Esc zruší); × slovo odoberie"),
     ("", "Katalóg fotografií (Herbár) – bez importu, fotky ostanú na mieste"),
     ("F3 alebo Katalóg", "otvoriť a zavrieť katalóg; písanie hneď hľadá"),
     ("šípky, Enter, kliknutie", "vybrať a otvoriť fotku; pretiahnutý priečinok sa pridá"),
@@ -347,4 +350,225 @@ mod skusky {
         assert_eq!(na_bode(&u, t.x + 1.0, 10.0).map(|t| t.id), Some("ulozit"));
         assert_eq!(na_bode(&u, t.x + 1.0, VYSKA as f32 + 1.0), None);
     }
+}
+
+// ---------------------------------------------------------------- riadok hodnotenia a kľúčových slov
+
+/// Výška riadku s hodnotením a kľúčovými slovami.
+pub const VYSKA_META: usize = 30;
+const HVIEZDA: f32 = 20.0;
+const ZLATA: Farba = 0xF2C14E;
+const ZLATA_SVETLA: Farba = 0xFFDD80;
+const OBRYS: Farba = 0x8A8D91;
+const POZADIE_META: Farba = 0x232528;
+const CHYBA: Farba = 0xFF8A80;
+
+/// Prvok riadku hodnotenia.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrvokMeta {
+    /// Hviezdička 1–5.
+    Hviezda(i8),
+    /// Kľúčové slovo (poradie medzi zobrazenými).
+    Kluc(usize),
+    /// Odobrať kľúčové slovo.
+    Odober(usize),
+    /// Pridať kľúčové slovo.
+    Pridaj,
+    /// Pole na písanie nového slova.
+    Vstup,
+}
+
+/// Umiestnený prvok riadku hodnotenia.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UmiestnenieMeta {
+    pub prvok: PrvokMeta,
+    pub x: f32,
+    pub sirka: f32,
+    pub text: String,
+}
+
+/// Rozloží riadok: „Hodnotenie ☆☆☆☆☆   Kľúčové slová: [slovo ×] … [+ Pridať]“ (čo sa nezmestí, vypadne).
+pub fn rozloz_meta(
+    pismo: &Pismo,
+    sirka: usize,
+    kluce: &[String],
+    vstup: Option<&str>,
+) -> Vec<UmiestnenieMeta> {
+    let mut v = Vec::new();
+    let max = sirka as f32 - 8.0;
+    let mut x = 10.0 + pismo.sirka("Hodnotenie", VELKOST, 1.0) + 8.0;
+    for n in 1..=5 {
+        v.push(UmiestnenieMeta { prvok: PrvokMeta::Hviezda(n), x, sirka: HVIEZDA, text: String::new() });
+        x += HVIEZDA;
+    }
+    x += 18.0 + pismo.sirka("Kľúčové slová", VELKOST, 1.0) + 8.0;
+    // pole na písanie alebo „+ Pridať“ má prednosť pred ďalšími slovami
+    let koncove = match vstup {
+        Some(t) => {
+            let t = format!("{t}_");
+            (PrvokMeta::Vstup, (pismo.sirka(&t, VELKOST, 1.0) + 16.0).max(160.0), t)
+        }
+        None => {
+            (PrvokMeta::Pridaj, pismo.sirka("+ Pridať", VELKOST, 1.0) + 2.0 * OKRAJ, "+ Pridať".to_string())
+        }
+    };
+    let mut vynechane = 0;
+    for (i, k) in kluce.iter().enumerate() {
+        let w = pismo.sirka(k, VELKOST, 1.0) + 2.0 * OKRAJ;
+        if x + w + 16.0 + 4.0 + koncove.1 > max {
+            vynechane = kluce.len() - i;
+            break;
+        }
+        v.push(UmiestnenieMeta { prvok: PrvokMeta::Kluc(i), x, sirka: w, text: k.clone() });
+        v.push(UmiestnenieMeta { prvok: PrvokMeta::Odober(i), x: x + w, sirka: 16.0, text: "×".into() });
+        x += w + 16.0 + 4.0;
+    }
+    if vynechane > 0 {
+        let t = format!("+{vynechane}");
+        let w = pismo.sirka(&t, VELKOST, 1.0) + 8.0;
+        v.push(UmiestnenieMeta { prvok: PrvokMeta::Kluc(usize::MAX), x, sirka: w, text: t });
+        x += w + 4.0;
+    }
+    if x + koncove.1 <= max {
+        v.push(UmiestnenieMeta { prvok: koncove.0, x, sirka: koncove.1, text: koncove.2 });
+    }
+    v
+}
+
+/// Prvok riadku hodnotenia na bode (x; y vo vnútri riadku).
+pub fn na_bode_meta(u: &[UmiestnenieMeta], x: f32) -> Option<PrvokMeta> {
+    u.iter()
+        .find(|u| x >= u.x && x < u.x + u.sirka && !matches!(u.prvok, PrvokMeta::Kluc(usize::MAX)))
+        .map(|u| u.prvok)
+}
+
+/// Bublina k prvku riadku hodnotenia.
+pub fn tip_meta(p: PrvokMeta, hodnotenie: Option<i8>) -> String {
+    match p {
+        PrvokMeta::Hviezda(n) if hodnotenie == Some(n) => {
+            "Zrušiť hodnotenie (Ctrl+0) – zapíše sa do súboru XMP vedľa fotky".to_string()
+        }
+        PrvokMeta::Hviezda(n) => {
+            format!("Hodnotenie {n} (Ctrl+{n}) – zapíše sa do súboru XMP vedľa fotky, fotka sa nemení")
+        }
+        PrvokMeta::Kluc(_) => "Kľúčové slovo zo súboru XMP alebo z fotky".into(),
+        PrvokMeta::Odober(_) => "Odobrať kľúčové slovo".into(),
+        PrvokMeta::Pridaj => "Pridať kľúčové slovo (Ctrl+K), Enter uloží".into(),
+        PrvokMeta::Vstup => "Enter uloží, Esc zruší".into(),
+    }
+}
+
+/// Nakreslí hviezdu (päť cípov) so stredom (cx, cy) a polomerom r – vyplnený mnohouholník po riadkoch.
+pub fn hviezda(p: &mut Platno, cx: f32, cy: f32, r: f32, farba: Farba) {
+    let body: Vec<(f32, f32)> = (0..10)
+        .map(|i| {
+            let uhol = std::f32::consts::PI * (i as f32) / 5.0 - std::f32::consts::FRAC_PI_2;
+            let rr = if i % 2 == 0 { r } else { r * 0.42 };
+            (cx + rr * uhol.cos(), cy + rr * uhol.sin())
+        })
+        .collect();
+    let (y0, y1) = ((cy - r).floor().max(0.0) as i32, (cy + r).ceil().min(p.vyska as f32 - 1.0) as i32);
+    for y in y0..=y1 {
+        let yc = y as f32 + 0.5;
+        let mut xs: Vec<f32> = Vec::new();
+        for i in 0..10 {
+            let (a, b) = (body[i], body[(i + 1) % 10]);
+            if (a.1 <= yc && b.1 > yc) || (b.1 <= yc && a.1 > yc) {
+                xs.push(a.0 + (yc - a.1) / (b.1 - a.1) * (b.0 - a.0));
+            }
+        }
+        xs.sort_by(|a, b| a.total_cmp(b));
+        for d in xs.chunks(2) {
+            if let [od, po] = d {
+                let (od, po) = (od.round() as i32, po.round() as i32);
+                if po > od {
+                    p.vypln(od, y, po - od, 1, farba);
+                }
+            }
+        }
+    }
+}
+
+/// Nakreslí riadok hodnotenia na výšku `y0`.
+#[allow(clippy::too_many_arguments)]
+pub fn kresli_meta(
+    p: &mut Platno,
+    pismo: &Pismo,
+    y0: i32,
+    u: &[UmiestnenieMeta],
+    hodnotenie: Option<i8>,
+    pod_mysou: Option<PrvokMeta>,
+    sprava: Option<&str>,
+) {
+    p.vypln(0, y0, p.sirka as i32, VYSKA_META as i32, POZADIE_META);
+    let z = y0 as f32 + VYSKA_META as f32 / 2.0 + VELKOST * 0.36;
+    p.text(pismo, "Hodnotenie", 10.0, z, VELKOST, 1.0, POPIS);
+    let mut koniec = 0.0f32;
+    let nahlad = match pod_mysou {
+        Some(PrvokMeta::Hviezda(n)) => Some(n),
+        _ => None,
+    };
+    for m in u {
+        koniec = koniec.max(m.x + m.sirka);
+        match m.prvok {
+            PrvokMeta::Hviezda(n) => {
+                let (cx, cy) = (m.x + HVIEZDA / 2.0, y0 as f32 + VYSKA_META as f32 / 2.0);
+                let plna = nahlad.map_or(hodnotenie.unwrap_or(0) >= n, |h| h >= n);
+                if plna {
+                    hviezda(p, cx, cy, 8.0, if nahlad.is_some() { ZLATA_SVETLA } else { ZLATA });
+                } else {
+                    hviezda(p, cx, cy, 8.0, OBRYS);
+                    hviezda(p, cx, cy, 6.2, POZADIE_META);
+                }
+                if n == 1 {
+                    let x = m.x + 5.0 * HVIEZDA + 18.0;
+                    p.text(pismo, "Kľúčové slová", x, z, VELKOST, 1.0, POPIS);
+                }
+            }
+            PrvokMeta::Kluc(usize::MAX) => {
+                p.text(pismo, &m.text, m.x + 4.0, z, VELKOST, 1.0, POPIS);
+            }
+            PrvokMeta::Kluc(_) => {
+                p.vypln(m.x as i32, y0 + 5, m.sirka as i32 + 16, VYSKA_META as i32 - 10, TLACIDLO);
+                p.text(pismo, &m.text, m.x + OKRAJ, z, VELKOST, 1.0, TEXT);
+            }
+            PrvokMeta::Odober(_) => {
+                let f = if pod_mysou == Some(m.prvok) { CHYBA } else { POPIS };
+                p.text(pismo, "×", m.x + 3.0, z, VELKOST, 1.0, f);
+            }
+            PrvokMeta::Pridaj => {
+                let f = if pod_mysou == Some(m.prvok) { POD_MYSOU } else { TLACIDLO };
+                p.vypln(m.x as i32, y0 + 5, m.sirka as i32, VYSKA_META as i32 - 10, f);
+                p.text(pismo, &m.text, m.x + OKRAJ, z, VELKOST, 1.0, TEXT);
+            }
+            PrvokMeta::Vstup => {
+                p.vypln(m.x as i32, y0 + 4, m.sirka as i32, VYSKA_META as i32 - 8, 0x141517);
+                p.vypln(m.x as i32, y0 + VYSKA_META as i32 - 5, m.sirka as i32, 1, ZLATA);
+                p.text(pismo, &m.text, m.x + 6.0, z, VELKOST, 1.0, 0xFFFFFF);
+            }
+        }
+    }
+    if let Some(t) = sprava {
+        let w = pismo.sirka(t, VELKOST, 1.0);
+        let x = (p.sirka as f32 - w - 10.0).max(koniec + 12.0);
+        let t = pismo.skrat(t, p.sirka as f32 - x - 6.0, VELKOST, 1.0);
+        p.text(pismo, &t, x, z, VELKOST, 1.0, CHYBA);
+    }
+}
+
+/// Bublina nad riadkom hodnotenia.
+pub fn kresli_tip_meta(
+    p: &mut Platno,
+    pismo: &Pismo,
+    u: &[UmiestnenieMeta],
+    prvok: PrvokMeta,
+    y0: i32,
+    text: &str,
+) {
+    let Some(m) = u.iter().find(|m| m.prvok == prvok) else { return };
+    let w = pismo.sirka(text, VELKOST, 1.0) + 16.0;
+    let x = m.x.min(p.sirka as f32 - w - 4.0).max(4.0);
+    let y = y0 - 28;
+    p.vypln(x as i32, y, w as i32, 24, TIP);
+    p.text(pismo, text, x + 8.0, y as f32 + 16.5, VELKOST, 1.0, TEXT);
 }

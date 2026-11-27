@@ -375,8 +375,8 @@ def panel_nastrojov(rng):
 
     TLACIDLO, TIP, RAM = (0x34, 0x37, 0x3B), (0x3B, 0x3F, 0x45), (0x5A, 0x8D, 0xEE)
     obr, txt = snimka()
-    # plocha pod panelom: 800 × 566, obraz 400 × 300 v strede
-    ok = (obr is not None and np.array_equal(obr[167:467, 200:600], a) and farba(obr, TLACIDLO, np.s_[:34])
+    # plocha medzi panelom (34) a riadkom hodnotenia (30): 800 × 536, obraz 400 × 300 v strede
+    ok = (obr is not None and np.array_equal(obr[152:452, 200:600], a) and farba(obr, TLACIDLO, np.s_[:34])
           and len(np.unique(obr[:34].reshape(-1, 3), axis=0)) > 8 and "POKOJ ok" in txt)
     vysledok("panel: viditeľný nad obrazom", ok, "tlačidlá s textom, obraz 1:1 pod panelom, v pokoji nič" if ok else txt[-200:])
     obr, txt = snimka("stlac:otoc_vpravo", "panel")
@@ -396,7 +396,7 @@ def panel_nastrojov(rng):
     obr2, txt2 = snimka("napoveda", "esc")
     obr3, _ = snimka("stlac:napoveda", "klik:10,300")
     ok = (obr is not None and farba(obr, RAM, np.s_[:]) and not farba(obr2, RAM, np.s_[:]) and not farba(obr3, RAM, np.s_[:])
-          and np.array_equal(obr2[167:467, 200:600], a))
+          and np.array_equal(obr2[152:452, 200:600], a))
     vysledok("nápoveda klávesov (F1, ?, tlačidlo)", ok, "otvorí sa, zavrie Esc aj kliknutím" if ok else (txt + txt2)[-200:])
 
 
@@ -691,6 +691,183 @@ def katalog_v_okne(koren, katalog, hladaj):
     vysledok("bez dialógov je Otvoriť sivé", "DIALOG" not in txt, t)
 
 
+
+def xmp_vedla_fotky(rng):
+    """Hodnotenie a kľúčové slová v súbore XMP vedľa fotky – úprava na mieste, rozhodca ExifTool."""
+    import hashlib
+    import json
+    import shutil
+
+    et = os.environ.get("ORCHIDEA_EXIFTOOL", "").split() or ([shutil.which("exiftool")] if shutil.which("exiftool") else [])
+    if not et:
+        vysledok("XMP vedľa fotky", False, "rozhodca ExifTool chýba")
+        return
+    pr = os.path.join(PRAC, "xmp")
+    if os.path.isdir(pr):
+        shutil.rmtree(pr)
+    os.makedirs(pr)
+    darktable = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "formaty", "tests", "data", "xmp",
+                             "darktable.jpg.xmp")
+    pole = obraz(rng, 60, 80, 3, foto=True)
+
+    def foto(meno):
+        c = os.path.join(pr, meno)
+        Image.fromarray(pole).save(c, quality=85)
+        return c
+
+    def xmp(c, *arg):
+        r = subprocess.run([PROGRAM, "xmp", c, *arg], capture_output=True, text=True)
+        h = next((x[11:] for x in r.stdout.splitlines() if x.startswith("HODNOTENIE ")), None)
+        return r.returncode, h, [x[5:] for x in r.stdout.splitlines() if x.startswith("KLUC ")], r.stderr
+
+    def znacky(*subory):
+        out = subprocess.run(et + ["-j", "-struct", "-G1", "-n", "-XMP:all", *subory], capture_output=True, text=True).stdout
+        return json.loads(out)
+
+    def sha(c):
+        with open(c, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
+    def rozdiely(a, b):
+        return {k: (a.get(k), b.get(k)) for k in set(a) | set(b) if k != "SourceFile" and a.get(k) != b.get(k)}
+
+    # 1. súbor od darktable: zmena hodnotenia a kľúčových slov, všetko ostatné bajt po bajte
+    c = foto("dt.jpg")
+    with open(darktable, encoding="utf-8") as f:
+        povodny = f.read()
+    with open(c + ".xmp", "w", encoding="utf-8", newline="") as f:
+        f.write(povodny)
+    xmp(c, "hodnotenie", "4")
+    xmp(c, "odober", "kvet")
+    kod, h, k, err = xmp(c, "pridaj", "Štedrý & <večer>")
+    with open(c + ".xmp", encoding="utf-8", newline="") as f:
+        novy = f.read()
+    ocakavany = (povodny.replace('xmp:Rating="1"', 'xmp:Rating="4"', 1)
+                 .replace("\n     <rdf:li>kvet</rdf:li>", "", 1)
+                 .replace("<rdf:li>skleník</rdf:li>", "<rdf:li>skleník</rdf:li>\n     <rdf:li>Štedrý &amp; &lt;večer&gt;</rdf:li>", 1))
+    a, b = znacky(darktable, c + ".xmp")
+    roz = rozdiely(a, b)
+    ok = (kod == 0 and novy == ocakavany and set(roz) == {"XMP-xmp:Rating", "XMP-dc:Subject"}
+          and b["XMP-xmp:Rating"] == 4 and b["XMP-dc:Subject"] == ["skleník", "Štedrý & <večer>"])
+    vysledok("XMP od darktable: len hodnotenie a kľúčové slová", ok,
+             f"bajt po bajte podľa očakávania, ExifTool: {len(a) - 1} polí, zmenené len Rating a Subject" if ok else f"{roz} {err}")
+    # 2. súbor od ExifTool (viac opisov, hodnotenie ako prvok, xpacket, apostrofy)
+    c = foto("et.jpg")
+    subprocess.run(et + ["-q", "-o", c + ".xmp", "-XMP-dc:Title=Večer pri Dunaji", "-XMP-dc:Creator=Ja", "-XMP-dc:Subject=kvet",
+                         "-XMP-dc:Subject=strom", "-XMP-xmp:Rating=2", "-XMP-lr:HierarchicalSubject=Miesta|Slovensko",
+                         "-XMP-photoshop:City=Bratislava", "-XMP-exif:FNumber=2.8", "-XMP-iptcCore:Location=Hrad"], check=True)
+    pred = znacky(c + ".xmp")[0]
+    xmp(c, "hodnotenie", "5")
+    xmp(c, "odober", "kvet")
+    kod, h, k, err = xmp(c, "pridaj", "nové")
+    po = znacky(c + ".xmp")[0]
+    roz = rozdiely(pred, po)
+    ok = kod == 0 and set(roz) == {"XMP-xmp:Rating", "XMP-dc:Subject"} and po["XMP-dc:Subject"] == ["strom", "nové"] and po["XMP-xmp:Rating"] == 5
+    vysledok("XMP od ExifTool: všetky ostatné polia zachované", ok, f"{len(pred) - 1} polí, zmenené len Rating a Subject" if ok else f"{roz} {err}")
+    # 3. nový súbor: zápis a čítanie späť presne, druhý zápis bajt po bajte rovnaký
+    c = foto("novy.jpg")
+    slova = ["Štedrý večer", "a & <b>", "úvodzovky \"x\" 'y'", "😀 emoji", "kvet"]
+    xmp(c, "hodnotenie", "3")
+    for slovo in slova:
+        xmp(c, "pridaj", slovo)
+    s1 = sha(c + ".xmp")
+    xmp(c, "hodnotenie", "3")
+    for slovo in slova:
+        xmp(c, "pridaj", slovo)
+    kod, h, k, err = xmp(c, "citaj")
+    t = znacky(c + ".xmp")[0]
+    ok = (sha(c + ".xmp") == s1 and h == "3" and k == slova and t.get("XMP-xmp:Rating") == 3 and t.get("XMP-dc:Subject") == slova)
+    vysledok("XMP: zápis a čítanie späť presne", ok, "naše čítanie aj ExifTool zhodné, opakovaný zápis bajt po bajte rovnaký" if ok else f"{h} {k} {t}")
+    # 4. poradie čítania: fotka (len čítanie) → foto.xmp (iný program, len čítanie) → foto.jpg.xmp
+    c = foto("poradie.jpg")
+    subprocess.run(et + ["-q", "-overwrite_original", "-IPTC:Keywords=Vianoce", "-XMP-xmp:Rating=1", c], check=True)
+    kod, h, k, _ = xmp(c, "citaj")
+    ok1 = h == "1" and "Vianoce" in k
+    iny = os.path.join(pr, "poradie.xmp")
+    subprocess.run(et + ["-q", "-o", iny, "-XMP-xmp:Rating=2", "-XMP-dc:Subject=lr"], check=True)
+    kod, h, k, _ = xmp(c, "citaj")
+    ok2 = h == "2" and k == ["lr"]
+    s_foto, s_iny = sha(c), sha(iny)
+    kod, h, k, _ = xmp(c, "hodnotenie", "5")
+    ok3 = h == "5" and k == ["lr"] and sha(c) == s_foto and sha(iny) == s_iny and os.path.exists(c + ".xmp")
+    vysledok("XMP: poradie fotka → foto.xmp → foto.jpg.xmp", ok1 and ok2 and ok3,
+             "fotka a súbor iného programu sa len čítajú, zapisuje sa do foto.jpg.xmp" if ok1 and ok2 and ok3 else f"{ok1} {ok2} {ok3} {h} {k}")
+    # 5. bezpečný zápis: nový súbor premenovaním, po starom dočasnom súbore nič neostane
+    with open(c + ".xmp.orchidea-docasny", "w") as f:
+        f.write("zvyšok po výpadku")
+    pred_inode = os.stat(c + ".xmp").st_ino
+    kod, h, k, _ = xmp(c, "pridaj", "po výpadku")
+    ok = (kod == 0 and os.stat(c + ".xmp").st_ino != pred_inode and not os.path.exists(c + ".xmp.orchidea-docasny")
+          and "po výpadku" in k)
+    vysledok("XMP: zápis cez dočasný súbor a premenovanie", ok, "nový súbor (iný inode), dočasný súbor neostal" if ok else str(k))
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        s_pred = sha(c + ".xmp")
+        os.chmod(pr, 0o555)
+        try:
+            kod, h, k, err = xmp(c, "hodnotenie", "1")
+        finally:
+            os.chmod(pr, 0o755)
+        ok = kod != 0 and sha(c + ".xmp") == s_pred and not os.path.exists(c + ".xmp.orchidea-docasny")
+        vysledok("XMP: priečinok len na čítanie", ok, "chyba ohlásená, súbor nezmenený" if ok else f"{kod} {err}")
+    # 6. súbor, ktorému nerozumie, sa neprepíše
+    c = foto("zly.jpg")
+    with open(c + ".xmp", "w") as f:
+        f.write("<x:xmpmeta xmlns:x='adobe:ns:meta/'><nie-je-rdf/></x:xmpmeta>")
+    s_pred = sha(c + ".xmp")
+    kod, h, k, err = xmp(c, "hodnotenie", "2")
+    vysledok("XMP: nezrozumiteľný súbor sa neprepíše", kod != 0 and sha(c + ".xmp") == s_pred, err.strip()[-120:])
+    # 7. katalóg sa dá poskladať z XMP; zmena XMP iným programom sa pri obnove prečíta
+    kat_pr = os.path.join(pr, "katalog")
+    os.makedirs(kat_pr)
+    for i in range(20):
+        Image.fromarray(pole).save(os.path.join(kat_pr, f"f{i:02}.jpg"), quality=80)
+    for i in range(0, 20, 4):
+        xmp(os.path.join(kat_pr, f"f{i:02}.jpg"), "hodnotenie", "4")
+        xmp(os.path.join(kat_pr, f"f{i:02}.jpg"), "pridaj", "výber")
+    kat = os.path.join(pr, "herbar.txt")
+
+    def herbar_cmd(*arg):
+        return subprocess.run([PROGRAM, "herbar", kat, *arg], capture_output=True, text=True).stdout
+
+    herbar_cmd("pridaj", kat_pr)
+    n1 = herbar_cmd("hladaj", "hodnotenie>=4 kluc:vyber").count("ZAZNAM ")
+    os.remove(kat)
+    herbar_cmd("pridaj", kat_pr)
+    n2 = herbar_cmd("hladaj", "hodnotenie>=4 kluc:vyber").count("ZAZNAM ")
+    subprocess.run(et + ["-q", "-overwrite_original", "-XMP-xmp:Rating=1", os.path.join(kat_pr, "f00.jpg.xmp")], check=True)
+    o = herbar_cmd("obnov")
+    n3 = herbar_cmd("hladaj", "hodnotenie>=4").count("ZAZNAM ")
+    o2 = herbar_cmd("znova")
+    ok = n1 == 5 and n2 == 5 and "precitanych=1 " in o and n3 == 4 and "precitanych=20 " in o2
+    vysledok("katalóg fotografií: poskladaný znova zo súborov XMP", ok,
+             "5/5 po zmazaní katalógu, zmena XMP iným programom prečítaná pri obnove" if ok else f"{n1} {n2} {n3} {o} {o2}")
+    # 8. okno: Ctrl+číslo, Ctrl+K, × na kľúčovom slove, hviezdička v katalógu
+    c = foto("okno.jpg")
+    with open(c + ".xmp", "w", encoding="utf-8", newline="") as f:
+        f.write(povodny)
+    von = os.path.join(PRAC, "xmp_okno.png")
+    r = subprocess.run([PROGRAM, "snimka", c, "1000", "700", von, "hodnotenie:5", "ctrl-k", "pis:nové slovo", "enter",
+                        "stlac-odober:0"], capture_output=True, text=True)
+    t = znacky(c + ".xmp")[0]
+    a = znacky(darktable)[0]
+    roz = set(rozdiely(a, t))
+    ok = ("META 5 | skleník | nové slovo" in r.stdout and t.get("XMP-xmp:Rating") == 5
+          and t.get("XMP-dc:Subject") == ["skleník", "nové slovo"] and roz == {"XMP-xmp:Rating", "XMP-dc:Subject"}
+          and "POKOJ ok" in r.stdout)
+    vysledok("okno: hodnotenie, pridanie a odobratie kľúčového slova", ok, "zapísané do XMP, polia darktable zachované" if ok else r.stdout[-300:])
+    obr = np.asarray(Image.open(von).convert("RGB")).astype(int)
+    zlate = int(np.all(obr[34:] == [0xF2, 0xC1, 0x4E], axis=-1).sum())
+    vysledok("okno: hviezdičky v riadku hodnotenia", zlate > 100, f"{zlate} zlatých bodov")
+    r = subprocess.run([PROGRAM, "snimka", c, "1000", "700", von, f"katalog-subor:{kat}", "katalog", "pis:vyber", "hodnotenie:2"],
+                       capture_output=True, text=True)
+    n = herbar_cmd("hladaj", "hodnotenie=2 kluc:vyber").count("ZAZNAM ")
+    obr = np.asarray(Image.open(von).convert("RGB")).astype(int)
+    zlate = int(np.all(obr[74:600] == [0xF2, 0xC1, 0x4E], axis=-1).sum())
+    ok = n == 1 and "META 2 | výber" in r.stdout and zlate > 50
+    vysledok("katalóg v okne: hodnotenie vybranej fotky, hviezdičky v mriežke", ok,
+             "zapísané do XMP aj do katalógu" if ok else f"{n} {zlate} {r.stdout[-300:]}")
+
+
 rng = np.random.default_rng(2026)
 zmensenie(rng)
 davka_bez_straty(rng)
@@ -703,5 +880,6 @@ nahlady(rng)
 priestor_farby(rng)
 nahlady_brana()
 herbar(rng)
+xmp_vedla_fotky(rng)
 print(f"\n{'Všetko v poriadku' if not zlyhania else 'Zlyhania: ' + ', '.join(zlyhania)}")
 sys.exit(1 if zlyhania else 0)

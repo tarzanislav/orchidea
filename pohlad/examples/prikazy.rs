@@ -10,7 +10,9 @@
 //!   `dalsi predosly prvy posledny priblizit oddialit 1:1 prisposobit oznac rezim pas udaje otoc otocvlavo zrkadlo
 //!   orezat jas kontrast gama zmensit spat znova ulozit prezentacia pauza tik tahaj:dx,dy
 //!   koliesko:k,x,y delic:x`; po každom sa počká na prácu na pozadí; riadky `VYKRESLENI n ZOBUDENI n POKOJ ok|…`
-//! - `prikazy herbar <katalóg> pridaj <priečinok> [--bez-podpriecinkov]` / `obnov` / `hladaj <dotaz>` – katalóg
+//! - `prikazy xmp <fotka> citaj | hodnotenie <-1..5> | pridaj <slovo> | odober <slovo>` – hodnotenie a kľúčové
+//!   slová v súbore XMP vedľa fotky (`fotka.jpg.xmp`); vypíše `HODNOTENIE n` a riadky `KLUC slovo`
+//! - `prikazy herbar <katalóg> pridaj <priečinok> [--bez-podpriecinkov]` / `obnov` / `znova` / `hladaj <dotaz>` – katalóg
 //!   fotiek; `hladaj` vypíše riadok `ZAZNAM cesta | dátum | fotoaparát | kľúče` na každý nájdený súbor
 //! - `prikazy zmensi <vstup> <výstup.surove> <šírka> <výška>` – zmenšenie a surové vzorky (ako `formaty prevod`)
 
@@ -150,7 +152,8 @@ fn spusti(a: &[String]) -> Result<(), String> {
             let cisla = |t: &str| -> Vec<f32> { t.split(',').filter_map(|x| x.parse().ok()).collect() };
             let mut dialog = None;
             for povel in &a[6..] {
-                let v = match povel.split_once(':').map_or((povel.as_str(), ""), |(x, y)| (x, y)) {
+                let (meno, hodnota) = povel.split_once(':').map_or((povel.as_str(), ""), |(x, y)| (x, y));
+                let v = match (meno, hodnota) {
                     ("dalsi", _) => Vstup::Povel(Povel::Dalsi),
                     ("predosly", _) => Vstup::Povel(Povel::Predosly),
                     ("prvy", _) => Vstup::Povel(Povel::Prvy),
@@ -192,6 +195,18 @@ fn spusti(a: &[String]) -> Result<(), String> {
                         continue;
                     }
                     ("ctrl-o", _) => Vstup::Povel(Povel::Otvorit),
+                    ("ctrl-k", _) => Vstup::Povel(Povel::PridajKluc),
+                    ("hodnotenie", n) => Vstup::Povel(Povel::Hodnotenie(n.parse().map_err(|_| "hodnotenie: číslo")?)),
+                    ("stlac-hviezda" | "mysnad-hviezda" | "stlac-odober" | "stlac-pridaj", t) => {
+                        use orchidea_pohlad::panel::PrvokMeta;
+                        let prvok = match meno {
+                            "stlac-hviezda" | "mysnad-hviezda" => PrvokMeta::Hviezda(t.parse().map_err(|_| "hviezda: číslo")?),
+                            "stlac-odober" => PrvokMeta::Odober(t.parse().map_err(|_| "odober: číslo")?),
+                            _ => PrvokMeta::Pridaj,
+                        };
+                        let (x, y) = p.prvok_meta(prvok).ok_or(format!("{prvok:?} nie je v riadku hodnotenia"))?;
+                        if meno == "mysnad-hviezda" { Vstup::Mys { x, y } } else { Vstup::Klik { x, y } }
+                    }
                     // odpoveď na dialóg okna (ako keby človek vybral súbor alebo priečinok)
                     ("vyber", c) => {
                         dialog.take().ok_or("vyber: žiadny dialóg nečaká")?;
@@ -255,11 +270,38 @@ fn spusti(a: &[String]) -> Result<(), String> {
             let pokoj = !p.spracuj_pozadie() && !p.potrebuje_prekreslit() && zobudeni.load(Ordering::Relaxed) == pred;
             println!("VYKRESLENI {} ZOBUDENI {} POKOJ {}", p.vykresleni, pred, if pokoj { "ok" } else { "nie" });
             println!("TITULOK {}", p.titulok());
+            if let Some((h, k)) = p.hodnotenie_a_kluce() {
+                println!("META {} | {}", h.map_or("-".into(), |h| h.to_string()), k.join(" | "));
+            }
+            // zmeny katalógu na disk ako pri zatvorení okna
+            p.pri_zatvoreni();
             println!("CASOVAC {}", p.casovac().map_or("ziadny".into(), |ms| format!("{ms} ms")));
             let body: Vec<u8> = platno.body.iter().flat_map(|&f| [(f >> 16) as u8, (f >> 8) as u8, f as u8]).collect();
             let o = orchidea_formaty::Obraz::novy(w, h, orchidea_formaty::obraz::Model::Rgb, false, Vzorky::U8(body))
                 .map_err(|e| e.to_string())?;
             std::fs::write(&a[5], orchidea_formaty::zapis(&o, Format::Png).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+        }
+        Some("xmp") if a.len() >= 4 => {
+            use orchidea_pohlad::herbar::{ZmenaFotky, zapis_xmp, zaznam_suboru};
+            let foto = std::path::Path::new(&a[2]);
+            let l = Limity::default();
+            let hodnota = || a.get(4).cloned().ok_or("chýba hodnota".to_string());
+            let z = match a[3].as_str() {
+                "citaj" => zaznam_suboru(foto, &l),
+                "hodnotenie" => {
+                    let h: i8 = hodnota()?.parse().map_err(|_| "hodnotenie je číslo -1 až 5")?;
+                    zapis_xmp(foto, &ZmenaFotky::Hodnotenie(h), &l)
+                }
+                "pridaj" => zapis_xmp(foto, &ZmenaFotky::PridajKluc(hodnota()?), &l),
+                "odober" => zapis_xmp(foto, &ZmenaFotky::OdoberKluc(hodnota()?), &l),
+                x => return Err(format!("neznámy príkaz xmp {x}")),
+            }
+            .map_err(|e| e.to_string())?;
+            println!("HODNOTENIE {}", z.hodnotenie.map_or("-".into(), |h| h.to_string()));
+            for k in &z.kluce {
+                println!("KLUC {k}");
+            }
+            Ok(())
         }
         Some("herbar") if a.len() >= 4 => {
             use orchidea_pohlad::herbar::Herbar;
@@ -273,9 +315,13 @@ fn spusti(a: &[String]) -> Result<(), String> {
                     println!("OBNOVA precitanych={n} preskocenych={p} zmazanych={z} ms={}", start.elapsed().as_millis());
                     h.uloz(&katalog).map_err(|e| e.to_string())
                 }
-                "obnov" => {
+                "obnov" | "znova" => {
                     let start = Instant::now();
-                    let (n, p, z) = h.obnov(0, &Limity::default());
+                    let (n, p, z) = if a[3] == "znova" {
+                        h.poskladaj_znova(0, &Limity::default())
+                    } else {
+                        h.obnov(0, &Limity::default())
+                    };
                     println!("OBNOVA precitanych={n} preskocenych={p} zmazanych={z} ms={}", start.elapsed().as_millis());
                     h.uloz(&katalog).map_err(|e| e.to_string())
                 }

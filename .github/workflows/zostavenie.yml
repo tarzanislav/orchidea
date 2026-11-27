@@ -537,6 +537,13 @@ jobs:
           "kód: $($p.ExitCode)"
           if ($p.ExitCode -ne 0) { exit 1 }
           python -c "from PIL import Image; import numpy as np; o=np.asarray(Image.open('katalog.png').convert('RGB')).astype(int); f=len(np.unique(o[74:196].reshape(-1,3),axis=0)); c=np.all(o[34:74]==[0x5A,0x8D,0xEE],axis=-1).sum(); print('farieb v mriežke', f, 'čiara poľa hľadania', c); assert f > 300 and c > 100"
+      - name: Samotest hodnotenia a kľúčových slov – zápis do súboru XMP vedľa fotky
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath target\release\pohlad.exe -ArgumentList '--samotest','skusobne','xmp.png','hodnotenie:4','ctrl-k','pis:skúška','enter' -Wait -PassThru
+          "kód: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { exit 1 }
+          python -c "import glob; s=glob.glob('skusobne/*.xmp'); print('súbory XMP', s); t=open(s[0], encoding='utf-8').read(); print(t); assert len(s) == 1 and s[0].endswith('a.png.xmp') and 'xmp:Rating='+chr(34)+'4'+chr(34) in t and '<rdf:li>skúška</rdf:li>' in t and not glob.glob('skusobne/*docasny*')"
       - uses: actions/upload-artifact@v4
         with:
           name: pohlad-okno-snimka
@@ -545,6 +552,7 @@ jobs:
             prezentacia.png
             panel.png
             katalog.png
+            xmp.png
       - name: Balík na vyskúšanie (pohlad.exe, prikazy.exe, návod)
         shell: pwsh
         run: |

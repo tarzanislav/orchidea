@@ -41,6 +41,16 @@ Prehliadanie
   Ctrl+Z / Ctrl+Y   späť / znova
   Pri JPEG bez zmeny bodov (len otočenie, zrkadlenie, orezanie) sa ukladá bezstratovo – kvalita sa nestratí.
 
+Hodnotenie a kľúčové slová (riadok pod obrázkom)
+  Hviezdičky: kliknutie alebo Ctrl+1 … Ctrl+5; kliknutie na rovnakú hviezdičku alebo Ctrl+0 hodnotenie zruší.
+  Kľúčové slová: „+ Pridať“ alebo Ctrl+K, napíšte slovo, Enter uloží (Esc zruší); × slovo odoberie.
+  Zapisuje sa do súboru XMP vedľa fotky: foto.jpg → foto.jpg.xmp (rovnaký súbor používa darktable a digiKam).
+  Do samotnej fotky sa nezapisuje nič. Ak súbor XMP už existuje (napríklad od darktable), zmení sa v ňom len
+  hodnotenie a kľúčové slová – všetko ostatné ostane presne tak, ako bolo. Súbor XMP, ktorému program nerozumie,
+  sa neprepíše (ukáže sa chyba). Prečítajú sa aj hodnotenia a kľúčové slová vo fotke a v súbore foto.xmp
+  (napríklad od iného programu) – tie sa len čítajú.
+  Ten istý riadok je aj v katalógu – hodnotí sa vybraná fotka; hviezdičky sú vidieť aj pod náhľadmi.
+
 Katalóg fotografií (Herbár) – bez importu, fotky ostávajú, kde sú
   V okne: tlačidlo Katalóg alebo F3. Hore je pole Hľadať – stačí písať, výsledky sa ukazujú hneď ako náhľady.
   - Pridať priečinok: vyberiete priečinok, pridá sa aj s podpriečinkami (alebo priečinok pretiahnite do okna).
@@ -48,7 +58,10 @@ Katalóg fotografií (Herbár) – bez importu, fotky ostávajú, kde sú
   - Šípky vyberajú, Enter alebo kliknutie otvorí fotku; ďalej sa listuje vo výsledkoch.
     Tlačidlom Katalóg sa vrátite k výsledkom, Esc v katalógu vráti pôvodný priečinok.
   - Dolu je riadok s údajmi vybranej fotky (dátum, fotoaparát, rozmery, ISO, kľúčové slová, priečinok).
-  Súbor katalógu: %APPDATA%\ORCHIDEA\herbar.txt (do fotiek sa nič nezapisuje).
+  Súbor katalógu: %APPDATA%\ORCHIDEA\herbar.txt (do fotiek sa nič nezapisuje). Katalóg je len rýchly zoznam –
+  hodnotenia a kľúčové slová sú trvalo v súboroch XMP vedľa fotiek, takže sa dá kedykoľvek poskladať znova
+  (prikazy.exe herbar "%APPDATA%\ORCHIDEA\herbar.txt" znova). Pri otvorení katalógu sa na pozadí prečítajú
+  zmenené fotky a súbory XMP (aj zmeny z iných programov).
   Dotaz: slová (bez ohľadu na diakritiku), -slovo, fotoaparat:canon, objektiv:, kluc:, autor:, nazov:, popis:,
          format:jpeg, priecinok:, meno:, datum:2024-05, datum:2023-12..2024-05, sirka>4000, iso>=800,
          hodnotenie>=4, gps:ano

@@ -13,9 +13,9 @@
 //! - **Porovnanie:** obraz A sa označí (`Oznac`), aktuálny je B; režimy delený (posuvná deliaca čiara) a rozdiel
 //!   (|A − B| × 8), oba s rovnakým priblížením a posunom; PSNR a SSIM sa vypočítajú na pozadí.
 
-use crate::herbar::Herbar;
+use crate::herbar::{self, Herbar, Zaznam, ZmenaFotky};
 use crate::nahlady::{self, Polozka};
-use crate::panel;
+use crate::panel::{self, PrvokMeta};
 use crate::porovnanie;
 use crate::upravy::{self, Historia, Uprava};
 use orchidea_formaty::jpeg::bezstratovo::Transformacia;
@@ -84,6 +84,10 @@ pub enum Povel {
     KatalogObnov,
     /// Otvoriť obrázok dialógom okna.
     Otvorit,
+    /// Hodnotenie aktuálnej fotky (0 = bez hodnotenia, 1–5) – zapíše sa do súboru XMP vedľa fotky.
+    Hodnotenie(i8),
+    /// Pole na nové kľúčové slovo.
+    PridajKluc,
 }
 
 /// Žiadosť jadra na okno – systémový dialóg (jadro ho nevie ukázať samo).
@@ -274,6 +278,10 @@ enum Ziadost {
     Uloz(usize, u64),
     /// Práca s katalógom fotografií.
     Katalog(UlohaKatalogu),
+    /// Hodnotenie a kľúčové slová fotky (fotka + súbory XMP vedľa nej).
+    Meta(PathBuf),
+    /// Zápis do súboru XMP vedľa fotky.
+    ZapisXmp(PathBuf, ZmenaFotky),
 }
 
 /// Práca s katalógom na pozadí (súbor katalógu, ...).
@@ -289,6 +297,8 @@ enum Hotove {
     Snimka(usize, PathBuf, Result<Arc<Snimka>, String>),
     Nahlad(usize, PathBuf, Option<Arc<Snimka>>),
     Katalog(UlohaKatalogu, Result<(Herbar, Option<String>), String>),
+    Meta(PathBuf, Result<Zaznam, String>),
+    Zapisane(PathBuf, ZmenaFotky, Result<Zaznam, String>),
     Porovnanie(usize, usize, Result<porovnanie::Miery, String>),
     Upravena(usize, u64, Result<Arc<Snimka>, String>),
     Ulozene(usize, u64, Result<upravy::Ulozene, String>),
@@ -371,6 +381,15 @@ pub struct Prehliadac {
     katalog_sprava: Option<String>,
     /// Okno vie ukázať systémové dialógy.
     dialogy: bool,
+    /// Hodnotenie a kľúčové slová fotiek (fotka + súbory XMP vedľa nej), podľa cesty.
+    meta: HashMap<PathBuf, Zaznam>,
+    /// Chyba posledného zápisu do súboru XMP.
+    chyba_xmp: Option<String>,
+    /// Píše sa nové kľúčové slovo.
+    kluc_vstup: Option<String>,
+    pod_mysou_meta: Option<PrvokMeta>,
+    /// Katalóg v pamäti sa zmenil (uloží sa pri zatvorení katalógu alebo okna).
+    katalog_zmeneny: bool,
     ziadost_okna: Option<ZiadostOkna>,
 }
 
@@ -486,6 +505,14 @@ fn pracuj(
                 };
                 Hotove::Ulozene(i, g, r)
             }
+            Ziadost::Meta(c) => {
+                let r = herbar::zaznam_suboru(&c, &limity).map_err(|e| e.to_string());
+                Hotove::Meta(c, r)
+            }
+            Ziadost::ZapisXmp(c, z) => {
+                let r = herbar::zapis_xmp(&c, &z, &limity).map_err(|e| e.to_string());
+                Hotove::Zapisane(c, z, r)
+            }
         };
         if tx.send(v).is_err() {
             return;
@@ -562,11 +589,18 @@ impl Prehliadac {
             katalog_sprava: None,
             dialogy: false,
             ziadost_okna: None,
+            meta: HashMap::new(),
+            chyba_xmp: None,
+            kluc_vstup: None,
+            pod_mysou_meta: None,
+            katalog_zmeneny: false,
         }
     }
 
     /// Otvorí súbor (a jeho priečinok) alebo priečinok.
     pub fn otvor(&mut self, cesta: &Path) {
+        // relatívna cesta („foto.jpg“) by mala prázdny priečinok – vždy úplná cesta
+        let cesta = &std::path::absolute(cesta).unwrap_or_else(|_| cesta.to_path_buf());
         let (priecinok, vybrany) = if cesta.is_dir() {
             (cesta.to_path_buf(), None)
         } else {
@@ -610,7 +644,12 @@ impl Prehliadac {
             let chcem: Vec<Ziadost> =
                 (od..po).filter(|i| !self.nahlady.contains_key(i)).map(Ziadost::Nahlad).collect();
             if let Ok(mut f) = self.front.ziadosti.lock() {
-                f.0.retain(|z| matches!(z, Ziadost::Uprav(..) | Ziadost::Uloz(..) | Ziadost::Katalog(..)));
+                f.0.retain(|z| {
+                    matches!(
+                        z,
+                        Ziadost::Uprav(..) | Ziadost::Uloz(..) | Ziadost::Katalog(..) | Ziadost::ZapisXmp(..)
+                    )
+                });
                 self.cakajuce.retain(|z| f.0.contains(z));
                 for z in chcem {
                     f.0.push_back(z.clone());
@@ -621,6 +660,9 @@ impl Prehliadac {
             return;
         }
         let mut chcem = vec![Ziadost::Snimka(self.aktualny)];
+        if let Some(p) = self.polozky.get(self.aktualny) {
+            chcem.push(Ziadost::Meta(p.cesta.clone()));
+        }
         if let Some(a) = self.oznaceny {
             chcem.push(Ziadost::Snimka(a));
         }
@@ -655,14 +697,22 @@ impl Prehliadac {
             .filter(|z| match z {
                 Ziadost::Snimka(i) => !self.snimky.contains_key(i),
                 Ziadost::Nahlad(i) => !self.nahlady.contains_key(i),
-                Ziadost::Porovnanie(..) | Ziadost::Uprav(..) | Ziadost::Uloz(..) | Ziadost::Katalog(..) => {
-                    true
-                }
+                Ziadost::Meta(c) => !self.meta.contains_key(c),
+                Ziadost::Porovnanie(..)
+                | Ziadost::Uprav(..)
+                | Ziadost::Uloz(..)
+                | Ziadost::Katalog(..)
+                | Ziadost::ZapisXmp(..) => true,
             })
             .collect();
         if let Ok(mut f) = self.front.ziadosti.lock() {
             // úpravy a uloženie sa nezahadzujú
-            f.0.retain(|z| matches!(z, Ziadost::Uprav(..) | Ziadost::Uloz(..) | Ziadost::Katalog(..)));
+            f.0.retain(|z| {
+                matches!(
+                    z,
+                    Ziadost::Uprav(..) | Ziadost::Uloz(..) | Ziadost::Katalog(..) | Ziadost::ZapisXmp(..)
+                )
+            });
             self.cakajuce.retain(|z| f.0.contains(z));
             let mut videne = std::collections::HashSet::new();
             for z in chcem {
@@ -708,9 +758,19 @@ impl Prehliadac {
                     zmena |= self.pas || self.katalog;
                 }
                 Hotove::Katalog(u, r) => {
+                    let nacitane = matches!(u, UlohaKatalogu::Nacitaj(_));
                     self.cakajuce.remove(&Ziadost::Katalog(u));
                     match r {
                         Ok((h, sprava)) => {
+                            // po načítaní hneď obnova na pozadí (len zmenené fotky a súbory XMP, aj od iných programov)
+                            if nacitane
+                                && !h.priecinky.is_empty()
+                                && let Some(s) = self.katalog_subor.clone()
+                            {
+                                self.posli(Ziadost::Katalog(UlohaKatalogu::Obnov(s)));
+                            } else {
+                                self.katalog_zmeneny = false;
+                            }
                             self.herbar = Some(h);
                             self.katalog_sprava = sprava;
                             if self.katalog {
@@ -751,6 +811,38 @@ impl Prehliadac {
                         ),
                         Err(e) => format!("uloženie zlyhalo: {e}"),
                     });
+                    zmena = true;
+                }
+                Hotove::Meta(c, r) => {
+                    self.cakajuce.remove(&Ziadost::Meta(c.clone()));
+                    if let Ok(z) = r {
+                        // čakajúci zápis tej istej fotky má prednosť (zobrazenie ostane podľa zmeny)
+                        if !self.cakajuce.iter().any(|q| matches!(q, Ziadost::ZapisXmp(d, _) if *d == c)) {
+                            self.meta.insert(c.clone(), z);
+                        }
+                    }
+                    zmena |= self.polozky.get(self.aktualny).is_some_and(|p| p.cesta == c);
+                }
+                Hotove::Zapisane(c, zm, r) => {
+                    self.cakajuce.remove(&Ziadost::ZapisXmp(c.clone(), zm));
+                    match r {
+                        Ok(z) => {
+                            if let Some(h) = &mut self.herbar
+                                && h.aktualizuj(z.clone())
+                            {
+                                self.katalog_zmeneny = true;
+                            }
+                            if !self.cakajuce.iter().any(|q| matches!(q, Ziadost::ZapisXmp(d, _) if *d == c))
+                            {
+                                self.meta.insert(c.clone(), z);
+                            }
+                        }
+                        Err(e) => {
+                            self.chyba_xmp = Some(format!("nezapísané: {e}"));
+                            self.meta.remove(&c);
+                            self.posli(Ziadost::Meta(c.clone()));
+                        }
+                    }
                     zmena = true;
                 }
                 Hotove::Porovnanie(a, b, r) => {
@@ -805,7 +897,176 @@ impl Prehliadac {
     fn plocha(&self) -> (usize, usize) {
         let pas = if self.pas_viditelny() { PAS } else { 0 };
         let udaje = if self.udaje_viditelne() { 24 } else { 0 };
-        (self.sirka, self.vyska.saturating_sub(pas + udaje + self.hore()).max(1))
+        let meta = if self.meta_viditelna() && !self.katalog { panel::VYSKA_META } else { 0 };
+        (self.sirka, self.vyska.saturating_sub(pas + udaje + meta + self.hore()).max(1))
+    }
+
+    /// Riadok hodnotenia a kľúčových slov je vidieť (s panelom nástrojov, keď je vybraná fotka).
+    fn meta_viditelna(&self) -> bool {
+        self.panel_viditelny() && !self.polozky.is_empty()
+    }
+
+    /// Výška, na ktorej začína riadok hodnotenia.
+    fn y_meta(&self) -> usize {
+        if self.katalog {
+            let udaje = if self.udaje_viditelne() { 24 } else { 0 };
+            self.vyska.saturating_sub(udaje + panel::VYSKA_META)
+        } else {
+            self.hore() + self.plocha().1
+        }
+    }
+
+    fn v_meta(&self, y: f32) -> bool {
+        let y0 = self.y_meta() as f32;
+        self.meta_viditelna() && y >= y0 && y < y0 + panel::VYSKA_META as f32
+    }
+
+    /// Hodnotenie a kľúčové slová vybranej fotky (`None`, kým sa nenačítajú).
+    pub fn hodnotenie_a_kluce(&self) -> Option<(Option<i8>, Vec<String>)> {
+        let p = self.polozky.get(self.aktualny)?;
+        if let Some(z) = self.meta.get(&p.cesta) {
+            return Some((z.hodnotenie, z.kluce.clone()));
+        }
+        if self.katalog
+            && let (Some(h), Some(&i)) = (&self.herbar, self.zaznamy_vysledkov.get(self.aktualny))
+            && let Some(z) = h.zaznamy.get(i)
+            && z.cesta == p.cesta
+        {
+            return Some((z.hodnotenie, z.kluce.clone()));
+        }
+        None
+    }
+
+    /// Kľúčové slová na zobrazenie (vnútorné značky darktable „darktable|…“ sa neukazujú, ale ostávajú v súbore).
+    fn zobrazene_kluce(&self) -> Vec<String> {
+        self.hodnotenie_a_kluce()
+            .map(|(_, k)| k.into_iter().filter(|k| !k.starts_with("darktable|")).collect())
+            .unwrap_or_default()
+    }
+
+    fn rozlozenie_meta(&self) -> Vec<panel::UmiestnenieMeta> {
+        if !self.meta_viditelna() {
+            return Vec::new();
+        }
+        panel::rozloz_meta(&self.pismo, self.sirka, &self.zobrazene_kluce(), self.kluc_vstup.as_deref())
+    }
+
+    /// Stred prvku riadku hodnotenia (na skúšky a samotest okna).
+    pub fn prvok_meta(&self, prvok: PrvokMeta) -> Option<(f32, f32)> {
+        let y = self.y_meta() as f32 + panel::VYSKA_META as f32 / 2.0;
+        self.rozlozenie_meta().iter().find(|u| u.prvok == prvok).map(|u| (u.x + u.sirka / 2.0, y))
+    }
+
+    /// Zmena hodnotenia alebo kľúčových slov vybranej fotky: hneď sa ukáže, zápis beží na pozadí.
+    fn zmen(&mut self, z: ZmenaFotky) -> bool {
+        let Some(c) = self.polozky.get(self.aktualny).map(|p| p.cesta.clone()) else { return false };
+        let mut zaznam = self.meta.get(&c).cloned().or_else(|| {
+            let h = self.herbar.as_ref()?;
+            h.zaznamy.iter().find(|z| z.cesta == c).cloned()
+        });
+        if let Some(zz) = &mut zaznam {
+            match &z {
+                ZmenaFotky::Hodnotenie(h) => zz.hodnotenie = Some(*h),
+                ZmenaFotky::PridajKluc(k) if !zz.kluce.contains(k) => zz.kluce.push(k.clone()),
+                ZmenaFotky::PridajKluc(_) => {}
+                ZmenaFotky::OdoberKluc(k) => zz.kluce.retain(|x| x != k),
+            }
+            self.meta.insert(c.clone(), zz.clone());
+        }
+        self.chyba_xmp = None;
+        self.posli(Ziadost::ZapisXmp(c, z));
+        self.zmena = true;
+        true
+    }
+
+    /// Písanie nového kľúčového slova.
+    fn pis_kluc(&mut self, c: char) -> bool {
+        let Some(t) = &mut self.kluc_vstup else { return false };
+        match c {
+            '\u{8}' => {
+                t.pop();
+            }
+            '\r' | '\n' => {
+                let k = t.trim().to_string();
+                self.kluc_vstup = None;
+                self.zmena = true;
+                if !k.is_empty() {
+                    return self.zmen(ZmenaFotky::PridajKluc(k));
+                }
+            }
+            c if c.is_control() => return false,
+            c if t.chars().count() < 100 => t.push(c),
+            _ => return false,
+        }
+        self.zmena = true;
+        true
+    }
+
+    /// Vstupy riadku hodnotenia (`None` – vstup patrí inam).
+    fn vstup_meta(&mut self, v: &Vstup) -> Option<bool> {
+        match v {
+            Vstup::Znak(c) if self.kluc_vstup.is_some() => Some(self.pis_kluc(*c)),
+            Vstup::Povel(Povel::Hodnotenie(h)) => Some(
+                self.polozky.get(self.aktualny).is_some()
+                    && self.zmen(ZmenaFotky::Hodnotenie((*h).clamp(-1, 5))),
+            ),
+            Vstup::Povel(Povel::PridajKluc) => {
+                if !self.meta_viditelna() {
+                    return Some(false);
+                }
+                self.kluc_vstup = Some(String::new());
+                self.zmena = true;
+                Some(true)
+            }
+            Vstup::Mys { x, y } if self.v_meta(*y) => {
+                let nove = panel::na_bode_meta(&self.rozlozenie_meta(), *x);
+                let panel_zmena = self.pod_mysou.take().is_some();
+                if nove == self.pod_mysou_meta && !panel_zmena {
+                    return Some(false);
+                }
+                self.pod_mysou_meta = nove;
+                self.zmena = true;
+                Some(true)
+            }
+            Vstup::Klik { x, y } if self.v_meta(*y) && !self.napoveda => {
+                self.klik_v_paneli = true;
+                let hodnotenie = self.hodnotenie_a_kluce().and_then(|m| m.0);
+                let kluce = self.zobrazene_kluce();
+                match panel::na_bode_meta(&self.rozlozenie_meta(), *x) {
+                    Some(PrvokMeta::Hviezda(n)) => {
+                        let h = if hodnotenie == Some(n) { 0 } else { n };
+                        Some(self.zmen(ZmenaFotky::Hodnotenie(h)))
+                    }
+                    Some(PrvokMeta::Odober(i)) => match kluce.get(i) {
+                        Some(k) => Some(self.zmen(ZmenaFotky::OdoberKluc(k.clone()))),
+                        None => Some(false),
+                    },
+                    Some(PrvokMeta::Pridaj) => {
+                        self.kluc_vstup = Some(String::new());
+                        self.zmena = true;
+                        Some(true)
+                    }
+                    _ => Some(false),
+                }
+            }
+            Vstup::Klik { .. } if self.kluc_vstup.is_some() => {
+                // kliknutie mimo poľa zruší písanie a ide ďalej
+                self.kluc_vstup = None;
+                self.zmena = true;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Uloží katalóg, ak sa v pamäti zmenil (pri zatvorení katalógu alebo okna).
+    pub fn pri_zatvoreni(&mut self) {
+        if self.katalog_zmeneny
+            && let (Some(h), Some(s)) = (&self.herbar, &self.katalog_subor)
+            && h.uloz(s).is_ok()
+        {
+            self.katalog_zmeneny = false;
+        }
     }
 
     fn rozlozenie(&self) -> Vec<panel::Umiestnenie> {
@@ -833,14 +1094,15 @@ impl Prehliadac {
 
     /// Píše sa do poľa hľadania (okno má posielať znaky ako `Vstup::Znak`, nie ako povely)?
     pub fn pise(&self) -> bool {
-        self.katalog
+        self.katalog || self.kluc_vstup.is_some()
     }
 
     /// Mriežka katalógu: (x začiatku, y začiatku, stĺpcov, celých riadkov).
     fn mriezka(&self) -> (usize, usize, usize, usize) {
         let y0 = self.hore() + HLADANIE;
         let udaje = if self.udaje_viditelne() { 24 } else { 0 };
-        let h = self.vyska.saturating_sub(y0 + udaje);
+        let meta = if self.meta_viditelna() { panel::VYSKA_META } else { 0 };
+        let h = self.vyska.saturating_sub(y0 + udaje + meta);
         let stlpcov = (self.sirka / DLAZDICA_W).max(1);
         let x0 = self.sirka.saturating_sub(stlpcov * DLAZDICA_W) / 2;
         (x0, y0, stlpcov, (h / DLAZDICA_H).max(1))
@@ -932,6 +1194,7 @@ impl Prehliadac {
 
     /// Zavrie katalóg a vráti zoznam priečinka spred otvorenia.
     fn zavri_katalog(&mut self) {
+        self.pri_zatvoreni();
         self.katalog = false;
         self.pod_mysou = None;
         if let Some((polozky, aktualny, priecinok)) = self.predosle.take() {
@@ -976,6 +1239,7 @@ impl Prehliadac {
                     && (self.dialogy || self.priecinok_na_pridanie().is_some())
             }
             Povel::Otvorit => self.dialogy,
+            Povel::Hodnotenie(_) | Povel::PridajKluc => obraz || (self.katalog && !self.polozky.is_empty()),
             Povel::KatalogObnov => {
                 !self.katalog_pracuje() && self.herbar.as_ref().is_some_and(|h| !h.priecinky.is_empty())
             }
@@ -1001,6 +1265,10 @@ impl Prehliadac {
     pub fn esc(&mut self) -> bool {
         if self.napoveda {
             self.napoveda = false;
+            self.zmena = true;
+            true
+        } else if self.kluc_vstup.is_some() {
+            self.kluc_vstup = None;
             self.zmena = true;
             true
         } else if self.katalog {
@@ -1085,9 +1353,30 @@ impl Prehliadac {
 
     /// Spracuje vstup; vráti, či treba prekresliť.
     pub fn vstup(&mut self, v: Vstup) -> bool {
-        if self.katalog {
-            return self.vstup_katalogu(v);
+        let pred = self.polozky.get(self.aktualny).map(|p| p.cesta.clone());
+        let mut prekreslit = false;
+        if let Vstup::Mys { y, .. } = &v
+            && !self.v_meta(*y)
+            && self.pod_mysou_meta.take().is_some()
+        {
+            self.zmena = true;
+            prekreslit = true;
         }
+        let r = match self.vstup_meta(&v) {
+            Some(r) => r,
+            None if self.katalog => self.vstup_katalogu(v),
+            None => self.vstup_prehliadaca(v),
+        };
+        // iná fotka: písanie slova a chyba zápisu sa zrušia
+        if self.polozky.get(self.aktualny).map(|p| &p.cesta) != pred.as_ref() {
+            self.kluc_vstup = None;
+            self.chyba_xmp = None;
+            self.pod_mysou_meta = None;
+        }
+        r || prekreslit
+    }
+
+    fn vstup_prehliadaca(&mut self, v: Vstup) -> bool {
         let n = self.polozky.len();
         let povodny = self.aktualny;
         match v {
@@ -1095,6 +1384,16 @@ impl Prehliadac {
             Vstup::Otvor(c) => {
                 self.predosle = None;
                 self.zaznamy_vysledkov.clear();
+                // nové otvorenie: hodnotenia a kľúčové slová sa prečítajú znova (mohol ich zmeniť iný program)
+                let cakajuce: Vec<PathBuf> = self
+                    .cakajuce
+                    .iter()
+                    .filter_map(|q| match q {
+                        Ziadost::ZapisXmp(d, _) => Some(d.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                self.meta.retain(|c, _| cakajuce.contains(c));
                 self.otvor(&c);
             }
             Vstup::Tik => {
@@ -1304,6 +1603,7 @@ impl Prehliadac {
                 }
                 let (_, h) = self.plocha();
                 let h = h + self.hore();
+                let h = h + if self.meta_viditelna() { panel::VYSKA_META } else { 0 };
                 if self.pas_viditelny() && y >= (h + if self.udaje_viditelne() { 24 } else { 0 }) as f32 {
                     let (od, po) = self.viditelne_nahlady();
                     let (pod, _) = self.pozicia_pasu(od);
@@ -1585,8 +1885,13 @@ impl Prehliadac {
             let x = (w as f32 - self.pismo.sirka(t, 14.0, 1.0)) / 2.0;
             p.text(&self.pismo, t, x, (hore + h / 2) as f32 + 30.0, 14.0, 1.0, 0x9A9DA1);
         }
-        // riadok s údajmi
+        // riadok hodnotenia a kľúčových slov
         let mut y = h + hore;
+        if self.meta_viditelna() {
+            self.kresli_meta(p, y);
+            y += panel::VYSKA_META;
+        }
+        // riadok s údajmi
         if self.udaje_viditelne() {
             p.vypln(0, y as i32, self.sirka as i32, 24, 0x26282B);
             let t = self.text_udajov(b.as_deref(), a.as_deref());
@@ -1691,7 +1996,30 @@ impl Prehliadac {
                 .unwrap_or_default();
             let meno = self.pismo.skrat(&meno, DLAZDICA_W as f32 - 10.0, 11.0, 1.0);
             let mx = x as f32 + (DLAZDICA_W as f32 - self.pismo.sirka(&meno, 11.0, 1.0)) / 2.0;
-            p.text(&self.pismo, &meno, mx, (y + 8 + NAHLAD as i32 + 20) as f32, 11.0, 1.0, TEXT);
+            p.text(&self.pismo, &meno, mx, (y + 8 + NAHLAD as i32 + 18) as f32, 11.0, 1.0, TEXT);
+            // hviezdičky pod menom
+            let hodnotenie = self.meta.get(&self.polozky[i].cesta).map(|z| z.hodnotenie).or_else(|| {
+                let h = self.herbar.as_ref()?;
+                let &j = self.zaznamy_vysledkov.get(i)?;
+                h.zaznamy.get(j).map(|z| z.hodnotenie)
+            });
+            if let Some(Some(h)) = hodnotenie
+                && h > 0
+            {
+                let sx = x as f32 + DLAZDICA_W as f32 / 2.0 - h as f32 * 5.0 + 5.0;
+                for k in 0..h {
+                    panel::hviezda(
+                        p,
+                        sx + k as f32 * 10.0,
+                        (y + 8 + NAHLAD as i32 + 28) as f32,
+                        4.5,
+                        0xF2C14E,
+                    );
+                }
+            }
+        }
+        if self.meta_viditelna() && n > 0 {
+            self.kresli_meta(p, self.y_meta());
         }
         // riadok s údajmi o vybranej fotke
         if self.udaje_viditelne() {
@@ -1709,6 +2037,7 @@ impl Prehliadac {
             && let Some(z) = h.zaznamy.get(i)
             && !self.polozky.is_empty()
         {
+            let z = self.meta.get(&z.cesta).unwrap_or(z);
             t.push(z.cesta.file_name().map(|m| m.to_string_lossy().into_owned()).unwrap_or_default());
             if !z.datum.is_empty() {
                 t.push(z.datum.clone());
@@ -1740,6 +2069,23 @@ impl Prehliadac {
             t.push("Enter alebo kliknutie otvorí fotku · Esc zavrie katalóg".into());
         }
         t.join(" · ")
+    }
+
+    fn kresli_meta(&self, p: &mut Platno, y: usize) {
+        let u = self.rozlozenie_meta();
+        let hodnotenie = self.hodnotenie_a_kluce().and_then(|m| m.0);
+        panel::kresli_meta(
+            p,
+            &self.pismo,
+            y as i32,
+            &u,
+            hodnotenie,
+            self.pod_mysou_meta,
+            self.chyba_xmp.as_deref(),
+        );
+        if let Some(m) = self.pod_mysou_meta {
+            panel::kresli_tip_meta(p, &self.pismo, &u, m, y as i32, &panel::tip_meta(m, hodnotenie));
+        }
     }
 
     fn kresli_panel(&self, p: &mut Platno) {

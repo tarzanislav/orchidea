@@ -11,11 +11,17 @@
 //!   `datum:2024-05`, `datum:2024-05-01..2024-08-31`, čísla `sirka>4000`, `vyska<1000`, `iso>=800`,
 //!   `hodnotenie>=4`, `gps:ano`.
 //!
-//! Formát súboru: prvý riadok `ORCHIDEA-HERBAR 1`, riadky `P\t<priečinok>\t<0|1 podpriečinky>` a záznamy
-//! `Z\t…` (polia oddelené tabulátorom; `\t`, `\n`, `\\` sa zapisujú so spätnou lomkou).
+//! - **Hodnotenie a kľúčové slová:** trvalý záznam je súbor XMP vedľa fotky `foto.jpg.xmp` (ten istý, aký
+//!   používa darktable a digiKam); katalóg je len rýchly zoznam a dá sa z fotiek a súborov XMP kedykoľvek
+//!   poskladať znova. Do fotky sa nezapisuje nič. Čítanie (každé ďalšie prekryje predošlé, ak pole obsahuje):
+//!   fotka (Exif, IPTC, XMP) → `foto.xmp` (iné programy, len čítanie) → `foto.jpg.xmp`. Zápis len do
+//!   `foto.jpg.xmp` – úpravou na mieste (`formaty::xmp::uprav`), cez dočasný súbor a premenovanie.
+//!
+//! Formát súboru: prvý riadok `ORCHIDEA-HERBAR 2` (prečíta aj 1), riadky `P\t<priečinok>\t<0|1 podpriečinky>`
+//! a záznamy `Z\t…` (polia oddelené tabulátorom; `\t`, `\n`, `\\` sa zapisujú so spätnou lomkou).
 
 use orchidea_formaty::obraz::{Limity, Popis};
-use orchidea_formaty::{Format, exif};
+use orchidea_formaty::{Format, exif, xmp};
 use orchidea_jadro::{Chyba, Vysledok, paralel};
 use std::collections::HashMap;
 use std::io::Read;
@@ -47,7 +53,10 @@ pub struct Zaznam {
     pub nazov: String,
     pub popis: String,
     pub autor: String,
-    pub hodnotenie: Option<u8>,
+    /// −1 odmietnutá, 0 bez hodnotenia, 1–5 hviezdičky.
+    pub hodnotenie: Option<i8>,
+    /// Veľkosť a čas zmeny súborov XMP vedľa fotky (pri obnove sa prečíta znova aj pri zmene XMP).
+    pub xmp_stopa: String,
 }
 
 impl Zaznam {
@@ -102,46 +111,6 @@ pub fn normalizuj(t: &str) -> String {
 }
 
 // ---------------------------------------------------------------- metadáta → záznam
-
-fn hodnota_xml<'a>(xmp: &'a str, znacka: &str) -> Option<&'a str> {
-    // atribút  znacka="…"  alebo prvok  <znacka>…</znacka>
-    if let Some(i) = xmp.find(&format!("{znacka}=\"")) {
-        let z = i + znacka.len() + 2;
-        return xmp[z..].find('"').map(|k| &xmp[z..z + k]);
-    }
-    let otv = format!("<{znacka}");
-    let i = xmp.find(&otv)?;
-    let z = i + xmp[i..].find('>')? + 1;
-    let k = xmp[z..].find(&format!("</{znacka}>"))?;
-    Some(&xmp[z..z + k])
-}
-
-/// Položky `<rdf:li>` vnútri prvku (alebo text prvku, ak ich nemá).
-fn polozky_xml(xmp: &str, znacka: &str) -> Vec<String> {
-    let Some(vnutro) = hodnota_xml(xmp, znacka) else { return Vec::new() };
-    let mut v = Vec::new();
-    let mut zvysok = vnutro;
-    while let Some(i) = zvysok.find("<rdf:li") {
-        let Some(z) = zvysok[i..].find('>') else { break };
-        let z = i + z + 1;
-        let Some(k) = zvysok[z..].find("</rdf:li>") else { break };
-        v.push(xml_text(&zvysok[z..z + k]));
-        zvysok = &zvysok[z + k..];
-    }
-    if v.is_empty() && !vnutro.contains('<') && !vnutro.trim().is_empty() {
-        v.push(xml_text(vnutro));
-    }
-    v
-}
-
-fn xml_text(t: &str) -> String {
-    t.trim()
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
-}
 
 fn z_popisu(cesta: PathBuf, bajtov: u64, zmenene: u128, format: Format, p: &Popis) -> Zaznam {
     let mut z = Zaznam {
@@ -225,25 +194,24 @@ fn z_popisu(cesta: PathBuf, bajtov: u64, zmenene: u128, format: Format, p: &Popi
             z.datum = datum_iptc;
         }
     }
-    if let Some(x) = &p.metadata.xmp {
-        let x = String::from_utf8_lossy(x);
-        for k in polozky_xml(&x, "dc:subject") {
+    if let Some(x) = &p.metadata.xmp
+        && let Ok(u) = xmp::citaj(x)
+    {
+        for k in u.kluce.unwrap_or_default() {
             if !z.kluce.iter().any(|j| normalizuj(j) == normalizuj(&k)) {
                 z.kluce.push(k);
             }
         }
         if z.nazov.is_empty() {
-            z.nazov = polozky_xml(&x, "dc:title").into_iter().next().unwrap_or_default();
+            z.nazov = u.nazov.unwrap_or_default();
         }
         if z.popis.is_empty() {
-            z.popis = polozky_xml(&x, "dc:description").into_iter().next().unwrap_or_default();
+            z.popis = u.popis.unwrap_or_default();
         }
         if z.autor.is_empty() {
-            z.autor = polozky_xml(&x, "dc:creator").into_iter().next().unwrap_or_default();
+            z.autor = u.autor.unwrap_or_default();
         }
-        z.hodnotenie = hodnota_xml(&x, "xmp:Rating")
-            .and_then(|r| r.trim().parse::<i32>().ok())
-            .map(|r| r.clamp(0, 5) as u8);
+        z.hodnotenie = u.hodnotenie;
     }
     // dátum na tvar RRRR-MM-DD hh:mm:ss
     if z.datum.len() >= 10 {
@@ -256,6 +224,184 @@ fn z_popisu(cesta: PathBuf, bajtov: u64, zmenene: u128, format: Format, p: &Popi
         }
     }
     z
+}
+
+// ---------------------------------------------------------------- súbory XMP vedľa fotky
+
+/// Súbor XMP vedľa fotky, do ktorého sa zapisuje: `foto.jpg.xmp`.
+pub fn subor_xmp(foto: &Path) -> PathBuf {
+    let mut s = foto.as_os_str().to_owned();
+    s.push(".xmp");
+    PathBuf::from(s)
+}
+
+/// Súbory XMP, ktoré sa čítajú, v poradí od slabšieho: `foto.xmp` (iné programy), `foto.jpg.xmp`.
+fn subory_xmp(foto: &Path) -> Vec<PathBuf> {
+    let hlavny = subor_xmp(foto);
+    let iny = foto.with_extension("xmp");
+    if iny == hlavny || iny == foto { vec![hlavny] } else { vec![iny, hlavny] }
+}
+
+fn podpis(m: Option<(u64, u128)>) -> String {
+    m.map_or_else(|| "-".into(), |(b, t)| format!("{b}:{t}"))
+}
+
+fn velkost_a_cas(m: &std::fs::Metadata) -> (u64, u128) {
+    (m.len(), m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos()))
+}
+
+/// Stopa súborov XMP podľa mapy z prechodu priečinkov (bez ďalších volaní systému).
+fn stopa_z_mapy(foto: &Path, mapa: &HashMap<PathBuf, (u64, u128)>) -> String {
+    subory_xmp(foto).iter().map(|s| podpis(mapa.get(s).copied())).collect::<Vec<_>>().join(";")
+}
+
+/// Stopa súborov XMP podľa aktuálneho stavu na disku.
+fn stopa(foto: &Path) -> String {
+    subory_xmp(foto)
+        .iter()
+        .map(|s| podpis(std::fs::metadata(s).ok().filter(|m| m.is_file()).map(|m| velkost_a_cas(&m))))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+/// Prekryje hodnotenie, kľúčové slová, názov, popis a autora údajmi zo súborov XMP vedľa fotky (len čítanie).
+fn pouzi_xmp_vedla(z: &mut Zaznam) {
+    for s in subory_xmp(&z.cesta) {
+        let Ok(d) = std::fs::read(&s) else { continue };
+        let Ok(u) = xmp::citaj(&d) else { continue };
+        if let Some(h) = u.hodnotenie {
+            z.hodnotenie = Some(h);
+        }
+        if let Some(k) = u.kluce {
+            z.kluce = k;
+        }
+        if let Some(t) = u.nazov {
+            z.nazov = t;
+        }
+        if let Some(t) = u.popis {
+            z.popis = t;
+        }
+        if let Some(t) = u.autor {
+            z.autor = t;
+        }
+    }
+}
+
+fn precitaj(c: &Path, bajtov: u64, zmenene: u128, xmp_stopa: String, limity: &Limity) -> Option<Zaznam> {
+    let d = std::fs::read(c).ok()?;
+    let f = orchidea_formaty::rozpoznaj(&d)?;
+    let p = orchidea_formaty::citaj_popis(&d, limity).ok()?;
+    let mut z = z_popisu(c.to_path_buf(), bajtov, zmenene, f, &p);
+    z.xmp_stopa = xmp_stopa;
+    pouzi_xmp_vedla(&mut z);
+    Some(z)
+}
+
+/// Záznam jedného súboru (fotka + súbory XMP vedľa nej), napríklad pre práve zobrazenú fotku.
+pub fn zaznam_suboru(c: &Path, limity: &Limity) -> Vysledok<Zaznam> {
+    let m = std::fs::metadata(c)?;
+    let (bajtov, zmenene) = velkost_a_cas(&m);
+    precitaj(c, bajtov, zmenene, stopa(c), limity)
+        .ok_or_else(|| Chyba::PoskodeneData(format!("{}: nie je to čitateľný obrázok", c.display())))
+}
+
+/// Zmena hodnotenia alebo kľúčových slov jednej fotky.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ZmenaFotky {
+    /// −1 odmietnutá, 0 bez hodnotenia, 1–5.
+    Hodnotenie(i8),
+    PridajKluc(String),
+    OdoberKluc(String),
+}
+
+/// Zapíše zmenu do súboru XMP vedľa fotky (`foto.jpg.xmp`) a vráti nový záznam fotky.
+///
+/// Existujúci súbor sa upraví na mieste – polia iných programov ostanú bajt po bajte. Zápis: dočasný súbor
+/// v tom istom priečinku → zápis na disk (`sync`) → kontrola, že pôvodný súbor sa medzitým nezmenil →
+/// premenovanie na pôvodné meno. Výpadok prúdu tak nechá buď starý, alebo nový celý súbor.
+pub fn zapis_xmp(foto: &Path, zmena: &ZmenaFotky, limity: &Limity) -> Vysledok<Zaznam> {
+    let hlavny = subor_xmp(foto);
+    for _ in 0..3 {
+        let povodne = match std::fs::read(&hlavny) {
+            Ok(d) => Some(d),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(Chyba::VstupVystup(format!("{}: {e}", hlavny.display()))),
+        };
+        // aktuálne platné hodnoty (fotka + súbory XMP) – z nich sa počíta nový zoznam kľúčových slov
+        let teraz = zaznam_suboru(foto, limity)?;
+        let z = match zmena {
+            ZmenaFotky::Hodnotenie(h) => xmp::Zmena { hodnotenie: Some(*h), kluce: None },
+            ZmenaFotky::PridajKluc(k) => {
+                let k = k.trim().to_string();
+                let mut v = teraz.kluce.clone();
+                if k.is_empty() || v.contains(&k) {
+                    return Ok(teraz);
+                }
+                v.push(k);
+                xmp::Zmena { hodnotenie: None, kluce: Some(v) }
+            }
+            ZmenaFotky::OdoberKluc(k) => {
+                let mut v = teraz.kluce.clone();
+                v.retain(|x| x != k);
+                xmp::Zmena { hodnotenie: None, kluce: Some(v) }
+            }
+        };
+        let nove = match &povodne {
+            Some(d) => xmp::uprav(d, &z)?,
+            None => xmp::novy(&z)?,
+        };
+        if povodne.as_deref() == Some(&nove[..]) {
+            return Ok(teraz);
+        }
+        if bezpecne_zapis(&hlavny, &nove, povodne.as_deref())? {
+            return zaznam_suboru(foto, limity);
+        }
+        // súbor medzitým zmenil iný program – znova od začiatku s jeho novým obsahom
+    }
+    Err(Chyba::VstupVystup(format!("{}: súbor sa stále mení iným programom – nezapísané", hlavny.display())))
+}
+
+/// Zapíše cez dočasný súbor a premenovanie; `false`, ak sa cieľ medzitým zmenil (nič sa neprepíše).
+fn bezpecne_zapis(ciel: &Path, data: &[u8], povodne: Option<&[u8]>) -> Vysledok<bool> {
+    use std::io::Write;
+    let mut docasny = ciel.as_os_str().to_owned();
+    docasny.push(".orchidea-docasny");
+    let docasny = PathBuf::from(docasny);
+    let chyba = |e: std::io::Error| Chyba::VstupVystup(format!("{}: {e}", ciel.display()));
+    let zapis = || -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&docasny)?;
+        f.write_all(data)?;
+        f.sync_all()
+    };
+    if let Err(e) = zapis() {
+        let _ = std::fs::remove_file(&docasny);
+        return Err(chyba(e));
+    }
+    let teraz = match std::fs::read(ciel) {
+        Ok(d) => Some(d),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            let _ = std::fs::remove_file(&docasny);
+            return Err(chyba(e));
+        }
+    };
+    if teraz.as_deref() != povodne {
+        let _ = std::fs::remove_file(&docasny);
+        return Ok(false);
+    }
+    if let Err(e) = std::fs::rename(&docasny, ciel) {
+        let _ = std::fs::remove_file(&docasny);
+        return Err(chyba(e));
+    }
+    // aj záznam v priečinku na disk (Unix); vo Windows premenovanie zapisuje systém súborov sám
+    #[cfg(unix)]
+    if let Some(p) = ciel.parent() {
+        let p = if p.as_os_str().is_empty() { Path::new(".") } else { p };
+        if let Ok(d) = std::fs::File::open(p) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(true)
 }
 
 fn text_hladania(z: &Zaznam) -> String {
@@ -314,7 +460,7 @@ impl Herbar {
             Err(e) => return Err(Chyba::VstupVystup(e.to_string())),
         };
         let mut r = t.lines();
-        if r.next() != Some("ORCHIDEA-HERBAR 1") {
+        if !matches!(r.next(), Some("ORCHIDEA-HERBAR 1" | "ORCHIDEA-HERBAR 2")) {
             return Err(Chyba::PoskodeneData(
                 "katalóg fotografií (Herbár): neznámy formát súboru katalógu".into(),
             ));
@@ -351,6 +497,7 @@ impl Herbar {
                         popis: p[19].clone(),
                         autor: p[20].clone(),
                         hodnotenie: p[21].parse().ok(),
+                        xmp_stopa: p.get(22).cloned().unwrap_or_default(),
                     };
                     h.texty.push(text_hladania(&z));
                     h.zaznamy.push(z);
@@ -363,7 +510,7 @@ impl Herbar {
 
     /// Uloží katalóg (cez dočasný súbor – pri výpadku ostane starý).
     pub fn uloz(&self, cesta: &Path) -> Vysledok<()> {
-        let mut s = String::from("ORCHIDEA-HERBAR 1\n");
+        let mut s = String::from("ORCHIDEA-HERBAR 2\n");
         for (p, rek) in &self.priecinky {
             s += &format!("P\t{}\t{}\n", unik(&p.to_string_lossy()), *rek as u8);
         }
@@ -391,6 +538,7 @@ impl Herbar {
                 unik(&z.popis),
                 unik(&z.autor),
                 z.hodnotenie.map(|h| h.to_string()).unwrap_or_default(),
+                unik(&z.xmp_stopa),
             ];
             s += "Z\t";
             s += &polia.join("\t");
@@ -400,7 +548,13 @@ impl Herbar {
             std::fs::create_dir_all(p).map_err(|e| Chyba::VstupVystup(e.to_string()))?;
         }
         let docasny = cesta.with_extension("herbar-novy");
-        std::fs::write(&docasny, s).map_err(|e| Chyba::VstupVystup(e.to_string()))?;
+        let zapis = || -> std::io::Result<()> {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&docasny)?;
+            f.write_all(s.as_bytes())?;
+            f.sync_all()
+        };
+        zapis().map_err(|e| Chyba::VstupVystup(e.to_string()))?;
         std::fs::rename(&docasny, cesta).map_err(|e| Chyba::VstupVystup(e.to_string()))
     }
 
@@ -415,8 +569,9 @@ impl Herbar {
     /// preskočia, zmazané vypadnú. `vlakna` = 0 → polovica jadier. Vráti (prečítaných, preskočených, zmazaných).
     pub fn obnov(&mut self, vlakna: usize, limity: &Limity) -> (usize, usize, usize) {
         let mut subory = Vec::new();
+        let mut xmp_mapa = HashMap::new();
         for (p, rek) in self.priecinky.clone() {
-            zbieraj(&p, rek, &mut subory, 0);
+            zbieraj(&p, rek, &mut subory, &mut xmp_mapa, 0);
         }
         subory.sort();
         subory.dedup();
@@ -432,11 +587,14 @@ impl Herbar {
             };
             let zmenene =
                 m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+            let st = stopa_z_mapy(c, &xmp_mapa);
             match stare.get(c) {
-                Some(z) if z.bajtov == m.len() && z.zmenene == zmenene => nove.push(Some(z.clone())),
+                Some(z) if z.bajtov == m.len() && z.zmenene == zmenene && z.xmp_stopa == st => {
+                    nove.push(Some(z.clone()))
+                }
                 _ => {
                     nove.push(None);
-                    citat.push((i, m.len(), zmenene));
+                    citat.push((i, m.len(), zmenene, st));
                 }
             }
         }
@@ -448,12 +606,8 @@ impl Herbar {
         let precitane = paralel::mapuj_rozsah(citat.len(), 16, |rozsah| {
             rozsah
                 .map(|j| {
-                    let (i, bajtov, zmenene) = citat[j];
-                    let c = &subory[i];
-                    let d = std::fs::read(c).ok()?;
-                    let f = orchidea_formaty::rozpoznaj(&d)?;
-                    let p = orchidea_formaty::citaj_popis(&d, limity).ok()?;
-                    Some((i, z_popisu(c.clone(), bajtov, zmenene, f, &p)))
+                    let (i, bajtov, zmenene, st) = &citat[j];
+                    Some((*i, precitaj(&subory[*i], *bajtov, *zmenene, st.clone(), limity)?))
                 })
                 .collect::<Vec<_>>()
         });
@@ -466,6 +620,25 @@ impl Herbar {
         self.zaznamy = nove.into_iter().flatten().collect();
         self.texty = self.zaznamy.iter().map(text_hladania).collect();
         (precitanych, preskocenych, zmazanych)
+    }
+
+    /// Poskladá katalóg znova z fotiek a súborov XMP (zabudne všetko uložené okrem zoznamu priečinkov).
+    pub fn poskladaj_znova(&mut self, vlakna: usize, limity: &Limity) -> (usize, usize, usize) {
+        self.zaznamy.clear();
+        self.texty.clear();
+        self.obnov(vlakna, limity)
+    }
+
+    /// Nahradí záznam fotky (po zápise hodnotenia alebo kľúčových slov); `false`, ak fotka v katalógu nie je.
+    pub fn aktualizuj(&mut self, z: Zaznam) -> bool {
+        match self.zaznamy.iter().position(|x| x.cesta == z.cesta) {
+            Some(i) => {
+                self.texty[i] = text_hladania(&z);
+                self.zaznamy[i] = z;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Nájde záznamy podľa dotazu (poradie: dátum snímania, potom cesta).
@@ -486,14 +659,19 @@ impl Herbar {
     }
 }
 
-/// Obrázky v priečinku (podľa podpisu prvých bajtov), voliteľne s podpriečinkami.
-fn zbieraj(p: &Path, rek: bool, v: &mut Vec<PathBuf>, hlbka: usize) {
+/// Obrázky v priečinku (podľa podpisu prvých bajtov), voliteľne s podpriečinkami; popri tom veľkosť a čas
+/// zmeny súborov `.xmp` (bez ďalšieho volania systému – údaje sú v zázname priečinka).
+fn zbieraj(p: &Path, rek: bool, v: &mut Vec<PathBuf>, xmp: &mut HashMap<PathBuf, (u64, u128)>, hlbka: usize) {
     let Ok(citac) = std::fs::read_dir(p) else { return };
     for e in citac.flatten() {
         let Ok(typ) = e.file_type() else { continue };
         let c = e.path();
         if typ.is_dir() && rek && hlbka < 64 {
-            zbieraj(&c, rek, v, hlbka + 1);
+            zbieraj(&c, rek, v, xmp, hlbka + 1);
+        } else if typ.is_file() && c.extension().is_some_and(|p| p.eq_ignore_ascii_case("xmp")) {
+            if let Ok(m) = e.metadata() {
+                xmp.insert(c, velkost_a_cas(&m));
+            }
         } else if typ.is_file() {
             let mut h = [0u8; 32];
             let n = std::fs::File::open(&c).and_then(|mut f| f.read(&mut h)).unwrap_or(0);
@@ -677,5 +855,51 @@ mod skusky {
         let _ = std::fs::remove_file(&c);
         assert_eq!(n.priecinky, h.priecinky);
         assert_eq!(n.zaznamy, vec![z]);
+    }
+
+    #[test]
+    fn hodnotenie_a_kluce_do_xmp_vedla_fotky() {
+        use orchidea_formaty::obraz::{Model, Obraz, Vzorky};
+        let koren = if cfg!(target_family = "wasm") { PathBuf::from(".") } else { std::env::temp_dir() };
+        let cas = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let p = koren.join(format!("herbar_xmp_{cas}"));
+        std::fs::create_dir_all(&p).unwrap();
+        let foto = p.join("foto.png");
+        let o = Obraz::novy(4, 4, Model::Rgb, false, Vzorky::U8(vec![90; 48])).unwrap();
+        let png = orchidea_formaty::zapis(&o, Format::Png).unwrap();
+        std::fs::write(&foto, &png).unwrap();
+        let l = Limity::default();
+        // iný program: foto.xmp (len čítanie)
+        let iny =
+            xmp::novy(&xmp::Zmena { hodnotenie: Some(2), kluce: Some(vec!["od iného".into()]) }).unwrap();
+        std::fs::write(p.join("foto.xmp"), &iny).unwrap();
+        let z = zaznam_suboru(&foto, &l).unwrap();
+        assert_eq!((z.hodnotenie, z.kluce.clone()), (Some(2), vec!["od iného".to_string()]));
+        // zápis: vznikne foto.png.xmp s platnými hodnotami + zmenou; fotka ani foto.xmp sa nezmenia
+        let z = zapis_xmp(&foto, &ZmenaFotky::PridajKluc("kvet".into()), &l).unwrap();
+        assert_eq!(z.kluce, vec!["od iného".to_string(), "kvet".into()]);
+        let z = zapis_xmp(&foto, &ZmenaFotky::Hodnotenie(5), &l).unwrap();
+        assert_eq!(z.hodnotenie, Some(5));
+        let z = zapis_xmp(&foto, &ZmenaFotky::OdoberKluc("od iného".into()), &l).unwrap();
+        assert_eq!((z.hodnotenie, z.kluce.clone()), (Some(5), vec!["kvet".to_string()]));
+        assert_eq!(std::fs::read(&foto).unwrap(), png);
+        assert_eq!(std::fs::read(p.join("foto.xmp")).unwrap(), iny);
+        assert!(!p.join("foto.png.xmp.orchidea-docasny").exists());
+        // to isté znova nič nezapíše
+        let pred = std::fs::read(subor_xmp(&foto)).unwrap();
+        zapis_xmp(&foto, &ZmenaFotky::Hodnotenie(5), &l).unwrap();
+        assert_eq!(std::fs::read(subor_xmp(&foto)).unwrap(), pred);
+        // katalóg sa dá poskladať z XMP; zmena XMP iným programom sa pri obnove prečíta
+        let mut h = Herbar::novy();
+        h.pridaj_priecinok(&p, false);
+        assert_eq!(h.obnov(1, &l), (1, 0, 0));
+        assert_eq!(h.hladaj("hodnotenie>=5 kluc:kvet").len(), 1);
+        assert_eq!(h.obnov(1, &l), (0, 1, 0));
+        let ine = xmp::uprav(&pred, &xmp::Zmena { hodnotenie: Some(1), kluce: None }).unwrap();
+        std::fs::write(subor_xmp(&foto), [&ine[..], b"\n"].concat()).unwrap();
+        assert_eq!(h.obnov(1, &l), (1, 0, 0));
+        assert_eq!(h.zaznamy[0].hodnotenie, Some(1));
+        assert_eq!(h.poskladaj_znova(1, &l), (1, 0, 0));
+        let _ = std::fs::remove_dir_all(&p);
     }
 }
