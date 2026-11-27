@@ -12,6 +12,7 @@
 
 mod siet;
 mod sklad;
+mod zoznam;
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -227,6 +228,11 @@ fn main() {
         }
     }
     println!("Priečinok MERANIA: {}", priecinok.display());
+    // R254: zoznam zariadení (HERBÁR) – stále čísla podľa MAC adresy
+    println!("Zoznam zariadení ({}):", zoznam::SUBOR);
+    for z in sklad.zoznam.polozky() {
+        println!("  {:>2}  {}  {}", z.cislo, z.mac, z.nazov);
+    }
     match sklenik_korene::zber::nacitaj_kluc() {
         Some(_) => println!("Kľúč domácnosti: ✓"),
         None => {

@@ -24,6 +24,8 @@ pub struct Identita {
     pub zariadenie: String,
     pub meno: String,
     pub id: String,
+    /// R254: MAC adresa siete LAN – stály identifikátor zariadenia v zozname zariadení zberača (HERBÁR).
+    pub mac: String,
     pub verzia: String,
     pub beh: String,
 }
@@ -45,6 +47,7 @@ static STAV: Mutex<Stav> = Mutex::new(Stav {
         zariadenie: String::new(),
         meno: String::new(),
         id: String::new(),
+        mac: String::new(),
         verzia: String::new(),
         beh: String::new(),
     },
@@ -98,6 +101,7 @@ fn s_identitou(i: &Identita) -> Sprava {
         .s("zariadenie", &i.zariadenie)
         .s("meno", &i.meno)
         .s("id", &i.id)
+        .s("mac", &i.mac)
         .s("verzia", &i.verzia)
         .s("beh", &i.beh)
 }

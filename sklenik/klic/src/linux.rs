@@ -4393,20 +4393,30 @@ impl SledovanieEee {
 /// R247: kto posiela záznamy zberaču – model, meno zo Zapisovača, sériové číslo (inak MAC drôtovej siete),
 /// verzia karty a identita tohto štartu (boot_id jadra – nové meranie = nový priečinok u zberača).
 fn identita_zberaca(model: &str, n: &NastavenieZariadenia) -> crate::zber::Identita {
+    // R254: MAC adresa drôtovej siete (typ 1 = Ethernet, nie Wi-Fi, nie nulová); prednosť má eth*/en*
     let mac = || {
         let mut mena: Vec<String> = fs::read_dir("/sys/class/net")
             .ok()?
             .flatten()
             .map(|z| z.file_name().to_string_lossy().to_string())
-            .filter(|m| m != "lo" && !m.starts_with("wl"))
+            .filter(|m| {
+                m != "lo"
+                    && !m.starts_with("wl")
+                    && !Path::new(&format!("/sys/class/net/{m}/wireless")).exists()
+                    && citaj(format!("/sys/class/net/{m}/type")).as_deref() == Some("1")
+            })
             .collect();
-        mena.sort();
-        citaj(format!("/sys/class/net/{}/address", mena.first()?))
+        mena.sort_by_key(|m| (!m.starts_with('e'), m.clone()));
+        mena.iter()
+            .filter_map(|m| citaj(format!("/sys/class/net/{m}/address")))
+            .find(|a| a.len() == 17 && a != "00:00:00:00:00:00")
     };
+    let mac_lan = mac().unwrap_or_default();
     crate::zber::Identita {
         zariadenie: model.to_string(),
         meno: n.meno.clone().unwrap_or_default(),
-        id: zaznam::seriove_cislo().filter(|s| !s.is_empty() && s != "–").or_else(mac).unwrap_or_default(),
+        id: zaznam::seriove_cislo().filter(|s| !s.is_empty() && s != "–").unwrap_or_else(|| mac_lan.clone()),
+        mac: mac_lan,
         verzia: crate::VERZIA.rsplit(' ').next().unwrap_or(crate::VERZIA).to_string(),
         beh: citaj("/proc/sys/kernel/random/boot_id").unwrap_or_default(),
     }
