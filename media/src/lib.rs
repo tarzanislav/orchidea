@@ -25,6 +25,7 @@
 //! dekodéra), dekodéry [`pcm`] a [`flac`] a [`r5`] (rozhranie pre ORCHIDEA OS).
 #![forbid(unsafe_code)]
 
+pub mod ac3;
 pub mod cas;
 pub mod flac;
 pub mod flac_subor;

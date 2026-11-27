@@ -42,7 +42,7 @@ jobs:
       - name: Rozhodcovia (FFmpeg, MKVToolNix, metaflac)
         run: sh nastroje/balicky.sh ffmpeg mkvtoolnix flac python3-numpy
       - name: Zostavenie
-        run: cargo build --locked --release -p orchidea-media --example media_pakety --example media_hdmi --example media_opus --example media_mpa
+        run: cargo build --locked --release -p orchidea-media --example media_pakety --example media_hdmi --example media_opus --example media_mpa --example media_ac3
       - name: Porovnanie paketov s rozhodcom (a dekódovanie Ogg Opus/FLAC proti FFmpeg)
         shell: bash
         run: |
@@ -90,6 +90,22 @@ jobs:
         run: |
           echo "### Médiá – Opus, skúšobné vektory RFC 8251" >> "$GITHUB_STEP_SUMMARY"
           python3 media/nastroje/over_vektory.py target/release/examples/media_opus "$RUNNER_TEMP/vektory" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Skúšobné súbory FATE pre AC-3 (len údaje, bez kódu)
+        shell: bash
+        run: |
+          d="$RUNNER_TEMP/ac3-fate"; mkdir -p "$d"
+          rsync -a --include='*.ac3' --exclude='*' rsync://fate-suite.ffmpeg.org/fate-suite/ac3/ "$d/" || {
+            u=https://fate-suite.ffmpeg.org/ac3/
+            for f in $(curl -fsSL "$u" | grep -o 'href="[^"/]*\.ac3"' | sed 's/^href="//;s/"$//'); do
+              curl -fsSL "$u$f" -o "$d/$f"
+            done
+          } || true
+          ls -l "$d"
+      - name: AC-3 (L9) – presnosť proti FFmpeg bez ditheru, krátke bloky, dither, kontajnery, súbory FATE
+        shell: bash
+        run: |
+          echo "### Médiá – AC-3 (ATSC A/52:2018) proti rozhodcovi" >> "$GITHUB_STEP_SUMMARY"
+          python3 media/nastroje/over_ac3.py target/release/examples/media_ac3 target/release/examples/media_mpa "$RUNNER_TEMP/ac3" "$RUNNER_TEMP/ac3-fate" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Zvuk pre HDMI (R5b) – priechod IEC 61937 a PCM v poradí CTA-861
         shell: bash
         run: |

@@ -749,3 +749,232 @@ fn ogg_subory() {
         }
     }
 }
+
+/// Zapisovač bitov od najvyššieho (rámce AC-3 vo fuzzeri).
+struct ZapisBitov {
+    d: Vec<u8>,
+    bitov: usize,
+}
+
+impl ZapisBitov {
+    fn zapis(&mut self, hodnota: u32, n: u32) {
+        for i in (0..n).rev() {
+            if self.bitov.is_multiple_of(8) {
+                self.d.push(0);
+            }
+            if (hodnota >> i) & 1 != 0 {
+                *self.d.last_mut().expect("bajt") |= 0x80 >> (self.bitov & 7);
+            }
+            self.bitov += 1;
+        }
+    }
+}
+
+/// Syntakticky platný rámec AC-3 (A/52 tabuľky 5.1–5.3): náhodný režim kanálov, väzba, rematrix, stratégie
+/// exponentov, parametre rozdelenia bitov a delta. Pri `ticho` sú všetky SNR offsety nulové – bap = 0 (§7.2.2.1.1),
+/// mantisy nemajú bity a všetkých 6 blokov je platných; inak je platný blok 0 a ďalej náhodné bity.
+fn ramec_ac3(n: &mut Nahoda, ticho: bool) -> Vec<u8> {
+    let fscod = n.mensie_ako(3) as u32;
+    // tiché rámce (6 platných blokov) potrebujú miesto – vyššie toky
+    let frmsizecod = if ticho { 24 + n.mensie_ako(14) as u32 } else { n.mensie_ako(38) as u32 };
+    let acmod = n.mensie_ako(8) as u32;
+    let lfeon = n.mensie_ako(2) as u32;
+    let nfchans = [2usize, 1, 2, 3, 3, 4, 4, 5][acmod as usize];
+    // tabuľka 5.18: 48 kHz 2 slová na kb/s, 32 kHz 3, 44,1 kHz ⌊tok · 1536 / 16 / 44,1⌋ + nepárny kód
+    let tok = [32u32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640]
+        [frmsizecod as usize / 2];
+    let slov = match fscod {
+        0 => tok * 2,
+        1 => tok * 1536 * 10 / 16 / 441 + (frmsizecod & 1),
+        _ => tok * 3,
+    };
+    let mut w = ZapisBitov { d: Vec::new(), bitov: 0 };
+    w.zapis(0x0B77, 16);
+    w.zapis(0, 16);
+    w.zapis(fscod, 2);
+    w.zapis(frmsizecod, 6);
+    w.zapis(8, 5);
+    w.zapis(0, 3);
+    w.zapis(acmod, 3);
+    if acmod & 1 != 0 && acmod != 1 {
+        w.zapis(n.mensie_ako(3) as u32, 2);
+    }
+    if acmod & 4 != 0 {
+        w.zapis(n.mensie_ako(3) as u32, 2);
+    }
+    if acmod == 2 {
+        w.zapis(n.mensie_ako(4) as u32, 2);
+    }
+    w.zapis(lfeon, 1);
+    for _ in 0..if acmod == 0 { 2 } else { 1 } {
+        w.zapis(n.mensie_ako(32) as u32, 5);
+        w.zapis(0, 3); // compre, langcode, audprodie
+    }
+    w.zapis(0, 5); // copyrightb, origbs, timecod1e, timecod2e, addbsie
+    let (mut cplbegf, mut cplendf) = (0u32, 0u32);
+    for blk in 0..6 {
+        if blk > 0 && !ticho {
+            break;
+        }
+        for _ in 0..nfchans * 2 {
+            w.zapis(n.mensie_ako(2) as u32, 1); // blksw, dithflag
+        }
+        let dynrnge = n.mensie_ako(2) as u32;
+        w.zapis(dynrnge, 1);
+        if dynrnge == 1 {
+            w.zapis(n.mensie_ako(256) as u32, 8);
+        }
+        if acmod == 0 {
+            w.zapis(0, 1);
+        }
+        w.zapis(1, 1); // cplstre
+        let cplinu = acmod >= 2 && n.mensie_ako(2) == 1;
+        w.zapis(cplinu as u32, 1);
+        if cplinu {
+            for _ in 0..nfchans {
+                w.zapis(1, 1);
+            }
+            if acmod == 2 {
+                w.zapis(1, 1); // phsflginu
+            }
+            cplbegf = n.mensie_ako(8) as u32;
+            cplendf = cplbegf + n.mensie_ako(16 - cplbegf as u64) as u32;
+            w.zapis(cplbegf, 4);
+            w.zapis(cplendf, 4);
+            let mut ncplbnd = 1;
+            for _ in 1..3 + cplendf - cplbegf {
+                let b = n.mensie_ako(2) as u32;
+                ncplbnd += 1 - b;
+                w.zapis(b, 1);
+            }
+            for _ in 0..nfchans {
+                w.zapis(1, 1); // cplcoe
+                w.zapis(n.mensie_ako(4) as u32, 2);
+                for _ in 0..ncplbnd {
+                    w.zapis(n.mensie_ako(256) as u32, 8);
+                }
+            }
+            if acmod == 2 {
+                for _ in 0..ncplbnd {
+                    w.zapis(n.mensie_ako(2) as u32, 1);
+                }
+            }
+        }
+        if acmod == 2 {
+            w.zapis(1, 1); // rematstr
+            let pasiem = if !cplinu || cplbegf > 2 {
+                4
+            } else if cplbegf > 0 {
+                3
+            } else {
+                2
+            };
+            for _ in 0..pasiem {
+                w.zapis(n.mensie_ako(2) as u32, 1);
+            }
+        }
+        let strategia = |n: &mut Nahoda| 1 + n.mensie_ako(3) as u32;
+        let cplstrat = if cplinu { strategia(n) } else { 0 };
+        if cplinu {
+            w.zapis(cplstrat, 2);
+        }
+        let strat: Vec<u32> = (0..nfchans).map(|_| strategia(n)).collect();
+        for &s in &strat {
+            w.zapis(s, 2);
+        }
+        if lfeon == 1 {
+            w.zapis(1, 1);
+        }
+        let mut endmant = vec![37 + 12 * cplbegf as usize; nfchans];
+        if !cplinu {
+            for e in endmant.iter_mut() {
+                let chbwcod = n.mensie_ako(61) as usize;
+                w.zapis(chbwcod as u32, 6);
+                *e = (chbwcod + 12) * 3 + 37;
+            }
+        }
+        if cplinu {
+            w.zapis(n.mensie_ako(16) as u32, 4);
+            let skup = [0, 3, 6, 12][cplstrat as usize];
+            for _ in 0..(12 * (3 + cplendf - cplbegf) as usize) / skup {
+                w.zapis(62, 7); // tri rozdiely 0
+            }
+        }
+        for (ch, &s) in strat.iter().enumerate() {
+            w.zapis(n.mensie_ako(16) as u32, 4);
+            let e = endmant[ch];
+            let ngrps = match s {
+                1 => (e - 1) / 3,
+                2 => (e - 1 + 3) / 6,
+                _ => (e - 1 + 9) / 12,
+            };
+            for _ in 0..ngrps {
+                w.zapis(62, 7);
+            }
+            w.zapis(0, 2); // gainrng
+        }
+        if lfeon == 1 {
+            w.zapis(n.mensie_ako(16) as u32, 4);
+            w.zapis(62, 7);
+            w.zapis(62, 7);
+        }
+        w.zapis(1, 1); // baie
+        w.zapis(n.mensie_ako(2048) as u32, 11);
+        w.zapis(1, 1); // snroffste
+        let snr = |n: &mut Nahoda, bitov: u32| if ticho { 0 } else { n.mensie_ako(1 << bitov) as u32 };
+        let c = snr(n, 6);
+        w.zapis(c, 6);
+        for _ in 0..nfchans + cplinu as usize + lfeon as usize {
+            let f = snr(n, 4);
+            w.zapis(f, 4);
+            w.zapis(n.mensie_ako(8) as u32, 3);
+        }
+        if cplinu {
+            w.zapis(1, 1);
+            w.zapis(n.mensie_ako(64) as u32, 6);
+        }
+        let deltbaie = n.mensie_ako(2) as u32;
+        w.zapis(deltbaie, 1);
+        if deltbaie == 1 {
+            for _ in 0..nfchans + cplinu as usize {
+                w.zapis(1, 2); // nové údaje: jeden segment
+                w.zapis(0, 3);
+                w.zapis(n.mensie_ako(32) as u32, 5);
+                w.zapis(n.mensie_ako(16) as u32, 4);
+                w.zapis(n.mensie_ako(8) as u32, 3);
+            }
+        }
+        w.zapis(0, 1); // skiple
+    }
+    let mut d = w.d;
+    let dlzka = slov as usize * 2;
+    while d.len() < dlzka {
+        d.push(n.dalsie() as u8);
+    }
+    d.truncate(dlzka.max(8));
+    d
+}
+
+#[test]
+fn ac3_ramce() {
+    use orchidea_media::ac3::DekoderAc3;
+    let mut n = nahoda(23);
+    let mut dek = DekoderAc3::novy();
+    dek.kontrola_crc = false;
+    let (mut uspesnych, mut tichych) = (0, 0);
+    for i in 0..pocet_pokusov() {
+        let ticho = i % 2 == 0;
+        let zaklad = ramec_ac3(&mut n, ticho);
+        let d = if i % 4 < 2 { zaklad } else { zmutuj(&zaklad, &mut n) };
+        if let Ok(k) = dek.dekoduj_ramec(&d) {
+            assert!(k.iter().all(|kanal| kanal.len() == 1536 && kanal.iter().all(|v| v.is_finite())));
+            uspesnych += 1;
+            tichych += ticho as usize;
+        }
+        if i % 97 == 0 {
+            dek.reset();
+        }
+    }
+    // generátor musí naozaj vytvárať platné rámce (inak by fuzzer skúšal len odmietnutie hlavičky)
+    assert!(tichych * 5 > pocet_pokusov() / 4, "platných rámcov {uspesnych}, tichých {tichych}");
+}

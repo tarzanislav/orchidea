@@ -16,16 +16,16 @@ use orchidea_jadro::matematika;
 pub const PREKRYTIE: usize = 120;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Komplex {
-    re: f32,
-    im: f32,
+pub(crate) struct Komplex {
+    pub(crate) re: f32,
+    pub(crate) im: f32,
 }
 
 impl Komplex {
-    fn nasob(self, o: Komplex) -> Komplex {
+    pub(crate) fn nasob(self, o: Komplex) -> Komplex {
         Komplex { re: self.re * o.re - self.im * o.im, im: self.re * o.im + self.im * o.re }
     }
-    fn plus(self, o: Komplex) -> Komplex {
+    pub(crate) fn plus(self, o: Komplex) -> Komplex {
         Komplex { re: self.re + o.re, im: self.im + o.im }
     }
 }
@@ -36,14 +36,14 @@ fn jednotkovy(uhol: f64) -> Komplex {
 
 /// Plán FFT dĺžky `n` (n = 2^a · 3^b · 5^c): rozklad na základy a koreňe jednotky `e^(−2πik/n)`.
 #[derive(Clone, Debug)]
-struct PlanFft {
+pub(crate) struct PlanFft {
     n: usize,
     zaklady: Vec<usize>,
     korene: Vec<Komplex>,
 }
 
 impl PlanFft {
-    fn novy(n: usize) -> PlanFft {
+    pub(crate) fn novy(n: usize) -> PlanFft {
         let mut zaklady = Vec::new();
         let mut m = n;
         for r in [4, 2, 3, 5] {
@@ -58,7 +58,7 @@ impl PlanFft {
     }
 
     /// Dopredná FFT (decimácia v čase, rekurzívne): `von[k] = Σ_j vstup[j·krok] · e^(−2πijk/m)`.
-    fn fft(&self, vstup: &[Komplex], krok: usize, von: &mut [Komplex], uroven: usize) {
+    pub(crate) fn fft(&self, vstup: &[Komplex], krok: usize, von: &mut [Komplex], uroven: usize) {
         let m = von.len();
         if m == 1 {
             von[0] = vstup[0];
