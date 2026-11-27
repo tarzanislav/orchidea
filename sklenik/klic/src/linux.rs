@@ -3378,10 +3378,12 @@ pub fn spusti() {
                  30-minútové samomeranie",
             );
         }
-        // R244: rýchla skúška – záverečný záznam až po skúškach
+        // R244: rýchla skúška – záverečný záznam až po skúškach; R248: počas skúšok strážca naplno
+        let skusky_bezia = skusky.iter().any(|h| !h.is_finished());
         if let Some(m) = merania.as_mut() {
-            m.skusky_bezia(skusky.iter().any(|h| !h.is_finished()));
+            m.skusky_bezia(skusky_bezia);
         }
+        regulator.nastav_naplno(skusky_bezia);
         let merania_teraz = merania.as_mut().filter(|_| !vypnute);
         if let Some(m) = merania_teraz {
             if let Some(sprava) = m.dokonci() {

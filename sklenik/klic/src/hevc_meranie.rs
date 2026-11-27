@@ -287,6 +287,23 @@ pub fn popis_etap(cas: &[String]) -> Option<String> {
     Some(t.join(" · "))
 }
 
+/// R248: počet jadier procesora z `/sys/devices/system/cpu/possible` („0-3“ → 4), aj keď sú niektoré práve
+/// vypnuté (parkovanie jadier v pokoji, R161).
+fn jadra_procesora() -> Option<usize> {
+    let t = std::fs::read_to_string("/sys/devices/system/cpu/possible").ok()?;
+    let mut n = 0;
+    for kus in t.trim().split(',') {
+        n += match kus.split_once('-') {
+            Some((a, b)) => b.trim().parse::<usize>().ok()? - a.trim().parse::<usize>().ok()? + 1,
+            None => {
+                kus.trim().parse::<usize>().ok()?;
+                1
+            }
+        };
+    }
+    (n > 0).then_some(n)
+}
+
 pub fn spusti(
     strop_regulatora: f64,
     riadky: Arc<Mutex<Vec<String>>>,
@@ -315,7 +332,9 @@ pub fn spusti(
             pridaj("skúšobné toky chýbajú".into());
             return;
         }
-        let jadra = std::thread::available_parallelism().map_or(1, |n| n.get());
+        // R248: všetky jadrá procesora, nie len práve zapnuté (zaparkované jadrá zapne strážca naplno)
+        let jadra =
+            jadra_procesora().unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
         let vlakna: Vec<usize> = [1, 2, 4].into_iter().filter(|&n| n <= jadra.max(1)).collect();
         let strop_behu = strop_regulatora + 5.0;
         let takt = PevnyTakt::zapni();

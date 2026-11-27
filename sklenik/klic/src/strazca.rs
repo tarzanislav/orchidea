@@ -131,6 +131,8 @@ pub struct Regulator {
     necinny_s: f64,
     /// Úroveň pred zaparkovaním – keď príde práca, vráti sa na ňu hneď.
     pred_parkovanim: Option<usize>,
+    /// R248: skúšky bežia (video, meranie HEVC) – všetky jadrá a plný takt, kým to teplota dovolí.
+    naplno: bool,
 }
 
 /// Po koľkých sekundách nečinnosti sa jadrá zaparkujú.
@@ -160,7 +162,20 @@ impl Regulator {
             parkovanie: false,
             necinny_s: 0.0,
             pred_parkovanim: None,
+            naplno: false,
         }
+    }
+
+    /// R248: počas skúšok (video, meranie dekodéra HEVC) **naplno** – všetky jadrá, najvyššia úroveň, bez
+    /// parkovania – kým je teplota aspoň 2 °C pod cieľom; teplejšie sa reguluje ako obvykle. Odroid C4 27. 11.
+    /// (rýchla skúška R244): meranie HEVC začalo pri zaparkovaných jadrách – len 1 vlákno a takt 1000–1608 MHz.
+    pub fn nastav_naplno(&mut self, naplno: bool) {
+        if naplno && !self.naplno && self.posledna.is_none_or(|t| t < self.profil.ciel - 2.0) {
+            self.pred_parkovanim = None;
+            self.necinny_s = 0.0;
+            self.nastav(self.urovne.len() - 1);
+        }
+        self.naplno = naplno;
     }
 
     /// R161: parkovanie jadier v pokoji (TV krabičky). Nečinné, ale zapnuté jadrá stále žerú prúd únikom
@@ -249,7 +264,15 @@ impl Regulator {
             self.nastav(0);
             return self.uroven();
         }
+        // R248: skúšky – naplno, kým to teplota dovolí
+        if self.naplno && teplota < ciel - 2.0 && predikcia < strop - NUDZA_POD_STROPOM {
+            self.pred_parkovanim = None;
+            self.necinny_s = 0.0;
+            self.nastav(self.urovne.len() - 1);
+            return self.uroven();
+        }
         if self.parkovanie
+            && !self.naplno
             && let Some(v) = vytazenie
         {
             if v < NECINNOST {
@@ -416,6 +439,31 @@ mod skusky {
 
     fn simuluj(okolie: f64, zataz: impl Fn(f64) -> f64, sekund: u32) -> (f64, f64, Regulator, u32) {
         simuluj_dosku(Doska::rpi3(okolie), zataz, sekund)
+    }
+
+    #[test]
+    fn r248_naplno_pocas_skusok() {
+        let mut r = Regulator::novy(urovne(&[1_000_000, 1_908_000], 4), Profil { ciel: 60.0, strop: 70.0 });
+        r.nastav_parkovanie(true);
+        // nečinnosť 30 s → zaparkované
+        for _ in 0..30 {
+            r.krok_s_vytazenim(35.0, 1.0, Some(0.01));
+        }
+        assert!(r.zaparkovane());
+        r.nastav_naplno(true);
+        assert!(!r.zaparkovane());
+        assert_eq!(r.index(), r.pocet_urovni() - 1, "hneď naplno");
+        // aj pri nečinnosti medzi behmi sa nezaparkuje
+        for _ in 0..30 {
+            r.krok_s_vytazenim(36.0, 1.0, Some(0.01));
+        }
+        assert_eq!(r.index(), r.pocet_urovni() - 1);
+        // teplo nad cieľom – bežná regulácia (zníži)
+        for _ in 0..10 {
+            r.krok_s_vytazenim(63.0, 2.0, Some(1.0));
+        }
+        assert!(r.index() < r.pocet_urovni() - 1);
+        r.nastav_naplno(false);
     }
 
     #[test]
