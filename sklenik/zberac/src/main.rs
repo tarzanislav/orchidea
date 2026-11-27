@@ -145,19 +145,26 @@ fn predvoleny_priecinok() -> PathBuf {
     domov.join("Documents").join("ORCHIDEA").join("MERANIA")
 }
 
-/// Windows: zberač sa spustí sám po prihlásení (príkaz v priečinku Po spustení, minimalizované okno).
-fn zapni_spustanie() -> Option<PathBuf> {
+/// Príkaz v priečinku Po spustení (Windows).
+fn subor_spustania() -> Option<PathBuf> {
     if !cfg!(windows) {
         return None;
     }
+    Some(
+        PathBuf::from(std::env::var_os("APPDATA")?)
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("Startup")
+            .join("ORCHIDEA zberac.cmd"),
+    )
+}
+
+/// Windows: zberač sa spustí sám po prihlásení (príkaz v priečinku Po spustení, minimalizované okno).
+fn zapni_spustanie() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let p = PathBuf::from(std::env::var_os("APPDATA")?)
-        .join("Microsoft")
-        .join("Windows")
-        .join("Start Menu")
-        .join("Programs")
-        .join("Startup")
-        .join("ORCHIDEA zberac.cmd");
+    let p = subor_spustania()?;
     let text = format!("@echo off\r\nstart \"ORCHIDEA zberac\" /min \"{}\"\r\n", exe.display());
     if std::fs::read_to_string(&p).is_ok_and(|t| t == text) {
         return Some(p);
@@ -254,6 +261,9 @@ fn main() {
             None if cfg!(windows) => println!("Spúšťanie po prihlásení sa nepodarilo zapnúť."),
             None => {}
         }
+    } else if spustanie && subor_spustania().is_some_and(|p| p.exists()) {
+        // R264: nový zberač spustený z iného miesta – spúšťanie po prihlásení ukáže naň (nie na starý)
+        let _ = zapni_spustanie();
     }
     println!("Priečinok MERANIA: {}", priecinok.display());
     // R254: zoznam zariadení (HERBÁR) – stále čísla podľa MAC adresy

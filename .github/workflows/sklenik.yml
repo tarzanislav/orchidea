@@ -908,3 +908,30 @@ jobs:
             obraz/sklenik-rpi.img
             qemu-*.log
           if-no-files-found: warn
+
+  # R264: predbežné vydanie „aktualizacia-klic“ – balík systému v pamäti z behu, ktorý prešiel všetkými skúškami
+  # karty (štart v QEMU). Relácia A ho odtiaľ dá do priečinka MERANIA\_aktualizacia (artefakty CI sa bez
+  # prihlásenia stiahnuť nedajú); nahradí sa pri každom úspešnom behu na main.
+  vydanie-aktualizacie:
+    name: R264 – vydanie aktualizácie krabičiek (aktualizacia-klic)
+    needs: [obraz]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: aktualizacia-klic-aarch64
+          path: aktualizacia
+      - name: Predbežné vydanie (nahradí predošlé)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tar -czf aktualizacia-klic-aarch64.tar.gz -C aktualizacia klic-aarch64
+          gh release delete aktualizacia-klic --yes --cleanup-tag || true
+          gh release create aktualizacia-klic aktualizacia-klic-aarch64.tar.gz --prerelease --target "$GITHUB_SHA" \
+            --title "Aktualizácia krabičiek ORCHIDEA OS ${GITHUB_SHA::7}" \
+            --notes "R264 – systém v pamäti (KLÍČ, meranie HEVC, skúšobné toky) pre zberač meraní: priečinok klic-aarch64 patrí do MERANIA\\_aktualizacia. Jadro a popis hardvéru sa takto nemenia."
+          echo "### ✅ Vydanie aktualizacia-klic: ${GITHUB_SHA::7}" | tee -a "$GITHUB_STEP_SUMMARY"
