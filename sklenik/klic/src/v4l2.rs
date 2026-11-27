@@ -445,6 +445,8 @@ pub struct Vysledok {
     /// R225: ku každému výstupu najbližší vzor (index, počet odlišných bodov) – ukáže vynechané, zdvojené alebo
     /// prehodené snímky a posun, nielen „0/8 presne“
     pub poradie: Vec<(usize, usize, i64)>,
+    /// R246: výstupné buffre pripravené bez udalosti zmeny zdroja (dekodér ju do 1 s neohlásil)
+    pub bez_udalosti: bool,
 }
 
 impl Vysledok {
@@ -455,6 +457,9 @@ impl Vysledok {
         );
         if self.snimok != cakanych {
             t += &format!(" (dekódovaných {})", self.snimok);
+        }
+        if self.bez_udalosti {
+            t += " · výstupy bez udalosti zmeny zdroja (po 1 s, R246)";
         }
         if let Some(c) = &self.prva_chyba {
             t += &format!(" – prvá chyba: {c}");
@@ -512,6 +517,7 @@ pub fn skus(
     jednotky: &[Vec<u8>],
     cakane: &[Obraz],
     limit: Duration,
+    po_udalosti: bool,
 ) -> io::Result<Vysledok> {
     let subor = otvor(cesta)?;
     let fd = subor.as_raw_fd();
@@ -541,7 +547,13 @@ pub fn skus(
     let pocet_vstupov = ziadaj(fd, VSTUP, 2)?;
     let mut vstupy = mapuj(fd, VSTUP, pocet_vstupov, 1)?;
     let mut volne: Vec<u32> = (0..pocet_vstupov).collect();
-    let mut vystupy = Some(priprav_vystupy(fd)?);
+    // R246: výstupné buffre až po udalosti zmeny zdroja – postup normy V4L2 pre stavový dekodér (najprv tok,
+    // dekodér rozoberie hlavičky a ohlási rozmery a počet snímok, potom výstupy). Predtým boli pripravené vopred
+    // a pri malých snímkach (Intra 16×16 DC, 0,7–4 KB) dekodér zapísal 1. snímku ešte do starých buffrov, ktoré
+    // klient pri zmene zdroja uvoľnil → 1. snímka celá zlá (Odroid C4 27. 11., ostatné presné).
+    // `po_udalosti` = false: výstupy vopred ako doteraz (HEVC, kým B nedokončí koniec toku – jedna zmena naraz).
+    let mut vystupy: Option<Vystupy> = if po_udalosti { None } else { Some(priprav_vystupy(fd)?) };
+    let mut vstup_od: Option<Instant> = None;
 
     let start = Instant::now();
     let mut v = Vysledok::default();
@@ -572,22 +584,41 @@ pub fn skus(
                     break 'hlavna;
                 }
                 prud_vstupu = true;
+                vstup_od = Some(Instant::now());
             }
         }
-        // všetko odoslané → dekodér nech vydá aj zvyšné snímky
-        if dalsia == jednotky.len() && !zastaveny && prud_vstupu {
+        // R246: dekodér zmenu zdroja do 1 s neohlásil – výstupy aj tak (inak by skúška stála)
+        if vystupy.is_none() && vstup_od.is_some_and(|t| t.elapsed() >= Duration::from_secs(1)) {
+            match priprav_vystupy(fd) {
+                Ok(n) => {
+                    vystupy = Some(n);
+                    v.bez_udalosti = true;
+                }
+                Err(e) => {
+                    chyba = Some(e);
+                    break 'hlavna;
+                }
+            }
+        }
+        // všetko odoslané → dekodér nech vydá aj zvyšné snímky (R246: až keď beží aj výstup – inak ovládač
+        // príkaz STOP ignoruje a zvyšok by nevyprázdnil)
+        if dalsia == jednotky.len() && !zastaveny && prud_vstupu && vystupy.is_some() {
             let mut p = PrikazDekodera { prikaz: PRIKAZ_STOP, ..Default::default() };
             let _ = sys::ioctl_struct(fd, DECODER_CMD, &mut p);
             zastaveny = true;
         }
         let zostava = limit.saturating_sub(start.elapsed()).as_millis() as u64;
-        let r = match sys::cakaj_na(fd, 1 | 2 | 4, zostava.min(500)) {
+        let r = match sys::cakaj_na(fd, 1 | 2 | 4, zostava.min(if vystupy.is_none() { 50 } else { 500 })) {
             Ok(r) => r,
             Err(e) => {
                 chyba = Some(e);
                 break;
             }
         };
+        // R246: bez výstupu poll hlási chybu hneď (žiadny buffer v rade) – nečakať naprázdno v slučke
+        if vystupy.is_none() && r & 2 == 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         // udalosti: zmena zdroja (rozmery / počet snímok, ktoré dekodér potrebuje)
         if r & 2 != 0 {
             let mut u = Udalost {
@@ -605,9 +636,11 @@ pub fn skus(
             while sys::ioctl_raz(fd, DQEVENT, &mut u).is_ok() {
                 if u.typ == UDALOST_ZMENA_ZDROJA {
                     v.zmien += 1;
-                    let _ = prud(fd, VYSTUP, false);
-                    drop(vystupy.take());
-                    let _ = ziadaj(fd, VYSTUP, 0);
+                    if vystupy.is_some() {
+                        let _ = prud(fd, VYSTUP, false);
+                        drop(vystupy.take());
+                        let _ = ziadaj(fd, VYSTUP, 0);
+                    }
                     match priprav_vystupy(fd) {
                         Ok(n) => vystupy = Some(n),
                         Err(e) => {

@@ -825,7 +825,8 @@ fn spusti_skusku_videa(
                     // R225: pri H.264 aj ladiace hlásenia ovládača (časové značky, posuny v toku, DPB, orezanie,
                     // chyby dekódovania) – len počas skúšky
                     let ladenie = f == v4l2::H264 && ladenie_vdec(true);
-                    match v4l2::skus(&d.cesta, f, &toky, cakane, Duration::from_secs(10)) {
+                    // R246: H.264 s výstupmi až po zmene zdroja, HEVC zatiaľ po starom (B mení koniec toku)
+                    match v4l2::skus(&d.cesta, f, &toky, cakane, Duration::from_secs(10), f != v4l2::HEVC) {
                         Ok(v) => pridaj(format!("{meno} {sirka}×{vyska}: {}", v.popis(cakane.len()))),
                         Err(e) => pridaj(format!("{meno} {sirka}×{vyska}: chyba – {e}")),
                     }
@@ -854,7 +855,7 @@ fn spusti_skusku_videa(
                     cakane.len()
                 ));
                 let mut jadro = kmsg_od_konca();
-                match v4l2::skus(&d.cesta, v4l2::HEVC, &toky, &cakane, Duration::from_secs(20)) {
+                match v4l2::skus(&d.cesta, v4l2::HEVC, &toky, &cakane, Duration::from_secs(20), false) {
                     Ok(v) => pridaj(format!("HEVC skupiny 320×240: {}", v.popis(cakane.len()))),
                     Err(e) => pridaj(format!("HEVC skupiny 320×240: chyba – {e}")),
                 }
