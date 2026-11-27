@@ -178,6 +178,11 @@ pub fn radic_sd(koren: &Path, host: &str) -> Option<(Radic, bool)> {
 
 const SD_STROP: &str = "sys/module/mmc_core/parameters/sklenik_sd_max_khz";
 
+/// R240: je karta radiča v popise hardvéru nevymeniteľná (jadro ju nekontroluje každú sekundu)?
+pub fn sd_nevymenna(koren: &Path, host: &str) -> bool {
+    koren.join("sys/class/mmc_host").join(host).join("device/of_node/non-removable").exists()
+}
+
 /// R189: má jadro strop taktu karty SD (úprava jadra SKLENÍKA)?
 pub fn sd_strop_je(koren: &Path) -> bool {
     koren.join(SD_STROP).exists()
@@ -195,6 +200,8 @@ pub struct StrazSd {
     zlyhania: std::collections::HashMap<String, u32>,
     /// mmcN → 1 = skúša sa nižší takt, 2 = radič odpojený
     stupen: std::collections::HashMap<String, u8>,
+    /// R240: mmcN → čas posledného zlyhania (s od štartu) – nevymeniteľná karta hlási jedno spustenie dávkou
+    posledne: std::collections::HashMap<String, f64>,
     pub odpojene: Vec<Radic>,
     pub hlasenie: Option<String>,
 }
@@ -211,10 +218,31 @@ pub const SD_POMALY_KHZ: u32 = 25_000;
 
 impl StrazSd {
     /// Zapíše zlyhanie radiča; vráti krok, ak ich je dosť (`strop` = jadro má strop taktu).
+    #[cfg(test)]
     pub fn zlyhanie(&mut self, host: &str, strop: bool) -> Option<KrokSd> {
+        self.zlyhanie_karty(host, strop, false, 0.0)
+    }
+
+    /// R240: ako `zlyhanie`, s ohľadom na nevymeniteľnú kartu – jadro ju spúšťa len raz (pri pripojení radiča),
+    /// nie každú sekundu, a jedno spustenie hlási dávkou (až 4 frekvencie). Dávka (hlásenia do 5 s od
+    /// predošlého) = jedno zlyhanie a na krok stačí jedno.
+    pub fn zlyhanie_karty(
+        &mut self,
+        host: &str,
+        strop: bool,
+        nevymenna: bool,
+        teraz_s: f64,
+    ) -> Option<KrokSd> {
+        if nevymenna {
+            let predosle = self.posledne.insert(host.to_string(), teraz_s);
+            if predosle.is_some_and(|t| teraz_s - t < 5.0) {
+                return None;
+            }
+        }
+        let prah = if nevymenna { 1 } else { SD_ZLYHANI };
         let n = self.zlyhania.entry(host.to_string()).or_insert(0);
         *n += 1;
-        if *n < SD_ZLYHANI {
+        if *n < prah {
             return None;
         }
         *n = 0;
@@ -340,6 +368,37 @@ impl Spanok {
 #[cfg(all(test, unix))]
 mod skusky {
     use super::*;
+    #[test]
+    fn r240_nevymenna_karta_davka_je_jedno_zlyhanie() {
+        let mut z = StrazSd::default();
+        // jedno spustenie pri štarte: 4 hlásenia (400, 300, 200, 100 kHz) do 2 s → jeden krok
+        assert_eq!(z.zlyhanie_karty("mmc0", true, true, 3.0), Some(KrokSd::Pomalsie("mmc0".into())));
+        for t in [3.4, 3.9, 4.6] {
+            assert_eq!(z.zlyhanie_karty("mmc0", true, true, t), None);
+        }
+        // znovu pripojený radič zlyhá o chvíľu (ešte v dávke) – nič; neskoršie zlyhanie → odpojiť
+        assert_eq!(z.zlyhanie_karty("mmc0", true, true, 6.0), None);
+        assert_eq!(z.zlyhanie_karty("mmc0", true, true, 30.0), Some(KrokSd::Odpoj("mmc0".into())));
+        // vymeniteľná karta: po starom 5 hlásení
+        let mut v = StrazSd::default();
+        for _ in 0..SD_ZLYHANI - 1 {
+            assert_eq!(v.zlyhanie_karty("mmc1", true, false, 1.0), None);
+        }
+        assert_eq!(v.zlyhanie_karty("mmc1", true, false, 1.0), Some(KrokSd::Pomalsie("mmc1".into())));
+    }
+
+    #[test]
+    fn r240_nevymenna_podla_popisu() {
+        let d = std::env::temp_dir().join(format!("sklenik-nevym-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let uzol = d.join("sys/class/mmc_host/mmc0/device/of_node");
+        fs::create_dir_all(&uzol).unwrap();
+        assert!(!sd_nevymenna(&d, "mmc0"));
+        fs::write(uzol.join("non-removable"), b"").unwrap();
+        assert!(sd_nevymenna(&d, "mmc0"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
     use std::os::unix::fs::symlink;
 
     struct Strom(PathBuf);

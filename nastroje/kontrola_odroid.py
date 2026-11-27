@@ -234,6 +234,13 @@ def main() -> int:
                 f"{subor}: SD karta najviac {hz // 1_000_000 if hz else '?'} MHz – bez chýb CRC (R238)",
                 f"{subor}: SD karta až {hz} Hz – pri 50 MHz chyby CRC (R238)",
             )
+            nevym = uzol_vlastnost(dtb, "mmc@ffe05000", "non-removable") is not None
+            cd = uzol_vlastnost(dtb, "mmc@ffe05000", "cd-gpios") is not None
+            over(
+                nevym and not cd,
+                f"{subor}: SD karta nevymeniteľná – jadro ju neskúša každú sekundu (R240)",
+                f"{subor}: SD karta {'s cd-gpios' if cd else 'vymeniteľná'} – jadro ju skúša každú sekundu (R240)",
+            )
         if bez_wifi:
             stav = uzol_vlastnost(dtb, "mmc@ffe03000", "status")
             over(

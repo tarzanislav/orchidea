@@ -2506,7 +2506,12 @@ pub fn spusti() {
         if pid1 && !skuska {
             for host in std::mem::take(&mut kmsg.sd_zlyhania) {
                 let strop = radice::sd_strop_je(Path::new("/"));
-                let Some(krok) = straz_sd.zlyhanie(&host, strop) else { continue };
+                // R240: nevymeniteľná karta (Odroid) – jadro ju spúšťa raz, dávku hlásení berie ako jedno zlyhanie
+                let nevymenna = radice::sd_nevymenna(Path::new("/"), &host);
+                let Some(krok) = straz_sd.zlyhanie_karty(&host, strop, nevymenna, uptime().unwrap_or(0.0))
+                else {
+                    continue;
+                };
                 let Some((rd, _)) = radice::radic_sd(Path::new("/"), &host) else { continue };
                 let text = match krok {
                     radice::KrokSd::Pomalsie(_) => {

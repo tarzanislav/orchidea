@@ -628,6 +628,13 @@ jobs:
           f=boot/dtb/amlogic/meson-sm1-odroid-c4.dtb
           fdtput -t u "$f" /soc/mmc@ffe05000 max-frequency 25000000
           echo "$f: karta SD najviac $(fdtget "$f" /soc/mmc@ffe05000 max-frequency) Hz (R238)"
+          # R240: karta SD nevymeniteľná – ovládač pinov Amlogic nevie z GPIO prerušenie (chýba to_irq), preto
+          # jadro kartu skúšalo každú sekundu (CMD13, radič 1,1 budenia/s). Odroid 27. 11. na TV: v reproduktoroch
+          # „dvakrát rýchlo každú sekundu“; X96 (radič odpojený) ticho. Karta je zavádzací nosič – za behu sa
+          # nevyberá; KLÍČ pri zlyhaní spustenia skúsi radič znova (R189).
+          fdtput -d "$f" /soc/mmc@ffe05000 cd-gpios
+          fdtput "$f" /soc/mmc@ffe05000 non-removable
+          fdtget "$f" /soc/mmc@ffe05000 non-removable >/dev/null && echo "$f: karta SD nevymeniteľná (R240)"
           # R117: X96 Max Plus – popis referenčnej dosky krabičiek S905X3 (X96 Air) s menom krabičky; Wi-Fi
           # (mmc@ffe03000) bez napájania – zatiaľ ju nepodporujeme a v plastovej krabičke by len hriala (R112)
           for d in meson-sm1-x96-air-gbit:"Amediatech X96 Max Plus" meson-sm1-x96-air:"Amediatech X96 Max Plus (Ethernet 100 Mb/s)"; do
