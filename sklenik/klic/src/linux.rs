@@ -87,8 +87,19 @@ pub(crate) fn vyklad_predosleho(riadky: &[String]) -> Option<String> {
     if riadky.is_empty() {
         return None;
     }
-    let panika =
-        riadky.iter().any(|r| r.starts_with("dmesg") && (r.contains("Kernel panic") || r.contains("panic")));
+    // R239: aj riadky konzoly – detektor zaseknutia (R238) píše „hard LOCKUP“, „soft lockup“, „hung_task“
+    let zaseknutie =
+        riadky.iter().filter(|r| r.starts_with("console") || r.starts_with("dmesg")).find_map(|r| {
+            let t = r.split_once(": ").map_or(r.as_str(), |(_, t)| t);
+            ["hard LOCKUP", "soft lockup", "blocked for more than", "hung_task", "Kernel panic"]
+                .iter()
+                .any(|k| t.contains(k))
+                .then(|| t.to_string())
+        });
+    let panika = zaseknutie.is_some()
+        || riadky
+            .iter()
+            .any(|r| r.starts_with("dmesg") && (r.contains("Kernel panic") || r.contains("panic")));
     let posledny = riadky
         .iter()
         .rev()
@@ -101,7 +112,9 @@ pub(crate) fn vyklad_predosleho(riadky: &[String]) -> Option<String> {
         .filter(|r| r.starts_with("pmsg"))
         .map(|r| r.split_once(": ").map_or(r.as_str(), |(_, t)| t))
         .find(|t| t.contains("] tep: "));
-    let mut t = if panika {
+    let mut t = if let Some(z) = &zaseknutie {
+        format!("pred reštartom jadro zachytilo zaseknutie: {z}")
+    } else if panika {
         "pred reštartom panika jadra (výpis zásobníka vyššie)".to_string()
     } else {
         "pred reštartom bez paniky jadra – zamrznutie, ktoré ukončil strážny časovač".to_string()
@@ -760,6 +773,14 @@ fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex
                 let (dc_toky, dc_cakane) = video::h264_dc(sirka, vyska, 8);
                 for (f, meno, toky, cakane, druh) in [
                     (v4l2::H264, "H.264", video::h264_pcm(&snimky), &snimky, "bloky PCM"),
+                    // R239: len príznak filtra iný – pri PCM filter nič nemení (FFmpeg: bitovo zhodné)
+                    (
+                        v4l2::H264,
+                        "H.264 s filtrom",
+                        video::h264_pcm_odblokovanie(&snimky, true),
+                        &snimky,
+                        "bloky PCM, odblokovanie zapnuté – pri PCM nič nezmení",
+                    ),
                     (v4l2::H264, "H.264 bez PCM", dc_toky, &dc_cakane, "Intra 16×16 s DC"),
                     (v4l2::HEVC, "HEVC", video::hevc_pcm(&snimky), &snimky, "bloky PCM"),
                 ] {
@@ -794,44 +815,8 @@ fn spusti_skusku_videa(skusat: bool, spustaci: Option<String>, riadky: Arc<Mutex
                     }
                 }
             }
-            // R237: H.264 na SM1 – pri každej snímke chybné spodné riadky makroblokov (26. 11.: 12.–15. riadok,
-            // aj s vypnutým odblokovaním). Pokus: tie isté snímky s pokusnými zápismi do registrov dekodéra pred
-            // jeho spustením (hodiny podblokov, výstup cez MDEC) – ktorý zápis chybu odstráni, ukáže príčinu.
-            const POKUSY_VDEC1: [(&str, &str); 4] = [
-                ("hodiny všetkých podblokov (DOS_GCLK_EN0)", "fc04=ffffffff"),
-                ("+ hodiny MDEC (GCLK_EN)", "fc04=ffffffff,260c=ffffffff"),
-                ("+ MDEC_PIC_DC_MUX_CTRL bit 31", "fc04=ffffffff,2634|80000000"),
-                ("MDEC_PIC_DC_MUX_CTRL bez bitu 31", "2634&80000000"),
-            ];
-            let parameter = Path::new("/sys/module/meson_vdec/parameters/sklenik_zapisy");
-            if d.vie(v4l2::H264) && parameter.exists() {
-                let obrazy: Vec<video::Obraz> = (0..8).map(|n| video::vzor(320, 240, n)).collect();
-                let toky = video::h264_pcm(&obrazy);
-                for (popis, zapisy) in POKUSY_VDEC1 {
-                    if fs::write(parameter, zapisy).is_err() {
-                        pridaj("H.264 pokusy (R237): parameter sa nedá nastaviť".into());
-                        break;
-                    }
-                    let mut jadro = kmsg_od_konca();
-                    match v4l2::skus(&d.cesta, v4l2::H264, &toky, &obrazy, Duration::from_secs(10)) {
-                        Ok(v) => pridaj(format!(
-                            "H.264 pokus R237 – {popis} [{zapisy}]: {}",
-                            v.popis(obrazy.len())
-                        )),
-                        Err(e) => pridaj(format!("H.264 pokus R237 – {popis} [{zapisy}]: chyba – {e}")),
-                    }
-                    for r in jadro
-                        .as_mut()
-                        .map(kmsg_nove)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|r| r.contains("R237"))
-                    {
-                        pridaj(format!("  jadro: {r}"));
-                    }
-                }
-                let _ = fs::write(parameter, "");
-            }
+            // R237 (pokusné zápisy do registrov VDEC_1) vyvrátené 27. 11. na Odroide: hodiny podblokov, GCLK_EN ani
+            // MDEC_PIC_DC_MUX_CTRL chybu nezmenili. Parameter jadra sklenik_zapisy ostáva na ďalšie pokusy.
             // R177: HEVC so skupinami snímok – P-snímky kopírujú predošlú snímku cez referenciu (RPS, zoznam L0,
             // kompenzácia pohybu, vektory, správa snímok); časovanie 25 snímok/s – dekodér znižuje takt
             if d.vie(v4l2::HEVC) {
@@ -998,6 +983,28 @@ fn cislo_mhz(khz: u32) -> String {
 
 /// R231: kontrolky, ktoré blikajú časovačom („tep srdca“ na Odroide C4, „timer“, „activity“), budia procesor
 /// niekoľkokrát za sekundu – namiesto blikania svietia trvalo (zariadenie stále ukazuje, že je zapnuté).
+/// R239: kontrolky, ktoré R231 rozsvietil trvalo – po skončení merania krátko blikajú.
+static POKOJNE_KONTROLKY: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// R239: meranie hotové → kontrolka krátko blikne každé 2 s (spúšťač timer, 1 budenie za sekundu). Aj pri zhasnutom
+/// obraze (Odroid 27. 11.: vlastník nevedel, či je HOTOVÉ) je vidieť, že meranie skončilo a krabička žije.
+fn blikaj_po_merani() -> Vec<String> {
+    let cesty = POKOJNE_KONTROLKY.lock().map(|v| v.clone()).unwrap_or_default();
+    cesty
+        .iter()
+        .map(|p| {
+            let ok = fs::write(p.join("trigger"), "timer").is_ok()
+                && fs::write(p.join("delay_on"), "100").is_ok()
+                && fs::write(p.join("delay_off"), "1900").is_ok();
+            format!(
+                "{}: {}",
+                p.file_name().map(|m| m.to_string_lossy().into_owned()).unwrap_or_default(),
+                if ok { "meranie hotové – krátko blikne každé 2 s" } else { "nedá sa zmeniť" }
+            )
+        })
+        .collect()
+}
+
 fn pokojne_kontrolky() -> Vec<String> {
     let mut v = Vec::new();
     for z in fs::read_dir("/sys/class/leds").into_iter().flatten().flatten() {
@@ -1013,6 +1020,9 @@ fn pokojne_kontrolky() -> Vec<String> {
         let jas = citaj(p.join("max_brightness")).unwrap_or_else(|| "1".into());
         let ok =
             fs::write(p.join("trigger"), "none").is_ok() && fs::write(p.join("brightness"), &jas).is_ok();
+        if ok && let Ok(mut z) = POKOJNE_KONTROLKY.lock() {
+            z.push(p.clone());
+        }
         v.push(format!(
             "{}: {spustac} → {}",
             z.file_name().to_string_lossy(),
@@ -1918,6 +1928,9 @@ pub fn spusti() {
     )> = None;
     let mut krokov = 0u32;
     let mut tep_posledny: Option<Instant> = None;
+    let mut kontrolky_merania_hotove = false;
+    // R239: strom USB spí až od 20. s – zariadenia zapojené pri štarte sa stihnú ohlásiť
+    let mut usb_strom_po_starte = false;
     // R99: hardvérový strážny časovač – ak sa KLÍČ zasekne na 15 s, doska sa sama reštartuje
     // v emulátore QEMU sa časovač nespráva ako na doske (reštartuje hneď) – v skúške sa vynechá
     let mut strazny = if pid1 && skuska {
@@ -1978,7 +1991,17 @@ pub fn spusti() {
     // R178: nepoužité radiče kariet odpojené od ovládača; R167: hlboký spánok jadier
     let mut radice_odpojene: Vec<radice::Radic> = Vec::new();
     let mut radice_stav: Option<bool> = None;
-    let mut spanok_jadier = SpanokJadier::Vypnuty;
+    // R239: Odroid C4 – jadro z hlbokého spánku nevstane: 24., 26. a 27. 11. zakaždým zamrzol do minúty po
+    // zapnutí; 27. 11. detektor jadra: „Watchdog detected hard LOCKUP on cpu 3“ 22 s po zapnutí (firmvér BL31
+    // Odroidu jadro nezobudí). X96 (iný firmvér) zostáva pod poistkou.
+    let mut spanok_jadier = if model.contains("ODROID-C4") {
+        SpanokJadier::Zakazany(
+            "vypnutý na Odroid C4 – jadro z neho nevstane (3× zamrzol, jadro 3 neprebudené – hard LOCKUP; R239)"
+                .into(),
+        )
+    } else {
+        SpanokJadier::Vypnuty
+    };
     // R184: dlhý test hardvéru – záťaž, jej počty, najvyššia teplota a vypnutie po teste
     let stat_zataze = Arc::new(StatZataze::default());
     let mut zataznik: Option<Zataznik> = None;
@@ -2434,7 +2457,7 @@ pub fn spusti() {
                 if tv && periferie_teraz == Some(true) {
                     usb_nastavene =
                         chlad::nastav_spanok_usb(Path::new("/"), !usb_spanok_zakazany, USB_SPANOK_MS);
-                    if novinka(&nastavenie, "usb_strom") {
+                    if novinka(&nastavenie, "usb_strom") && usb_strom_po_starte {
                         usb_strom = chlad::nastav_spanok_usb_stromu(Path::new("/"), true);
                     }
                 }
@@ -2557,6 +2580,26 @@ pub fn spusti() {
                 for k in pokojne_kontrolky() {
                     hlas(&format!("kontrolka (R231): {k}"));
                 }
+            }
+        }
+        // R239: strom USB smie spať od 20. s po štarte
+        if !usb_strom_po_starte && hore >= 20.0 {
+            usb_strom_po_starte = true;
+            if tv && periferie_teraz == Some(true) && novinka(&nastavenie, "usb_strom") {
+                usb_strom = chlad::nastav_spanok_usb_stromu(Path::new("/"), true);
+                usb_strom_od = chlad::cas_spanku_usb_stromu(Path::new("/"));
+                usb_zbernica_od = chlad::cas_spanku_zbernice_usb(Path::new("/"));
+                usb_koren_od = chlad::cas_spanku_korenov_usb(Path::new("/"));
+            }
+        }
+        // R239: meranie hotové → kontrolka bliká (vidno aj pri zhasnutom obraze)
+        if pid1
+            && !kontrolky_merania_hotove
+            && merania.as_ref().is_some_and(|m| matches!(m.stav(), obrazovka::Samomeranie::Hotove { .. }))
+        {
+            kontrolky_merania_hotove = true;
+            for k in blikaj_po_merani() {
+                hlas(&format!("kontrolka (R239): {k}"));
             }
         }
         // R227: RPi s vc4 – menej čítaní popisu monitora (budenia I2C)
@@ -3025,7 +3068,9 @@ pub fn spusti() {
                     chlad::nastav_spanok_usb(Path::new("/"), p && !usb_spanok_zakazany, USB_SPANOK_MS);
                 // R191: celý strom USB (klávesnica, myš, čip siete, rozbočovače) spí, keď sa nič nedeje
                 if novinka(&nastavenie, "usb_strom") {
-                    usb_strom = chlad::nastav_spanok_usb_stromu(Path::new("/"), p);
+                    // R239: Odroid 27. 11. – USB kľúč za rozbočovačom VL817 sa pri štarte vôbec neohlásil; strom
+                    // USB spal od 1,6 s. Rozbočovače smú spať až od 20. s (potom ich prebudí nové zariadenie).
+                    usb_strom = chlad::nastav_spanok_usb_stromu(Path::new("/"), p && usb_strom_po_starte);
                     usb_strom_od = if p { chlad::cas_spanku_usb_stromu(Path::new("/")) } else { None };
                     usb_zbernica_od = if p { chlad::cas_spanku_zbernice_usb(Path::new("/")) } else { None };
                     usb_koren_od = if p { chlad::cas_spanku_korenov_usb(Path::new("/")) } else { None };
@@ -4508,11 +4553,21 @@ mod skusky {
         .collect();
         let v = vyklad_predosleho(&riadky).expect("výklad");
         assert!(v.contains("bez paniky"), "{v}");
+        // R239: Odroid 27. 11. – detektor jadra zachytil neprebudené jadro
+        let mut s_detektorom = riadky.clone();
+        s_detektorom.insert(
+            1,
+            "console-ramoops-0: [ 8143.102451] watchdog: CPU2: Watchdog detected hard LOCKUP on cpu 3".into(),
+        );
+        let d = vyklad_predosleho(&s_detektorom).expect("výklad");
+        assert!(d.contains("zachytilo zaseknutie") && d.contains("hard LOCKUP on cpu 3"), "{d}");
+        assert!(d.contains("hneď po zapnutí hlbokého spánku"), "{d}");
         assert!(v.contains("hneď po zapnutí hlbokého spánku"), "{v}");
         assert!(v.contains("posledný tep: [2:14:20]"), "{v}");
         let mut s_panikou = riadky.clone();
         s_panikou.push("dmesg-ramoops-0: Kernel panic - not syncing: hung_task: blocked tasks".into());
-        assert!(vyklad_predosleho(&s_panikou).expect("výklad").contains("panika jadra"));
+        let pv = vyklad_predosleho(&s_panikou).expect("výklad");
+        assert!(pv.contains("zachytilo zaseknutie") && pv.contains("hung_task"), "{pv}");
         assert!(vyklad_predosleho(&[]).is_none());
     }
 

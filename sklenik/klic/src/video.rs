@@ -268,6 +268,15 @@ fn h264_sps_pps(sirka: usize, vyska: usize) -> (Bity, Bity) {
 /// Tok H.264 (Annex B) zo snímok – po jednej prístupovej jednotke na snímku (prvá má aj SPS a PPS). Každá
 /// snímka je IDR, všetky makrobloky I_PCM. Rozmery musia byť násobkom 16.
 pub fn h264_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
+    h264_pcm_odblokovanie(snimky, false)
+}
+
+/// R239: tie isté bloky PCM, len s **zapnutým odblokovaním** (disable_deblocking_filter_idc = 0, posuny 0).
+/// Pri I_PCM je QP 0 (norma 8.7.2.2) → α = 0 → filter nezmení ani jeden bod, výstup musí byť presne vstup.
+/// Líši sa teda len príznak filtra – na SM1 overí hypotézu, že chybné spodné 4 riadky každého radu makroblokov
+/// (26. 11.: aj pri vypnutom filtri, žiadny z registrových pokusov R237 nepomohol) spôsobuje práve vypnutý filter:
+/// skutočné videá ho majú takmer vždy zapnutý.
+pub fn h264_pcm_odblokovanie(snimky: &[Obraz], odblokovanie: bool) -> Vec<Vec<u8>> {
     let (sirka, vyska) = (snimky[0].sirka, snimky[0].vyska);
     assert!(sirka % 16 == 0 && vyska % 16 == 0);
     let (sps, pps) = h264_sps_pps(sirka, vyska);
@@ -290,7 +299,13 @@ pub fn h264_pcm(snimky: &[Obraz]) -> Vec<Vec<u8>> {
             rez.u(1, 0); // no_output_of_prior_pics_flag
             rez.u(1, 0); // long_term_reference_flag
             rez.se(0); // slice_qp_delta
-            rez.ue(1); // disable_deblocking_filter_idc – filter vypnutý
+            if odblokovanie {
+                rez.ue(0); // disable_deblocking_filter_idc – filter zapnutý (pri PCM nič nezmení)
+                rez.se(0); // slice_alpha_c0_offset_div2
+                rez.se(0); // slice_beta_offset_div2
+            } else {
+                rez.ue(1); // disable_deblocking_filter_idc – filter vypnutý
+            }
             let mut vzorky = Vec::with_capacity(384);
             for my in (0..vyska).step_by(16) {
                 for mx in (0..sirka).step_by(16) {
@@ -903,6 +918,8 @@ mod testy {
             std::env::var("SKLENIK_VIDEO").unwrap_or_else(|_| std::env::temp_dir().display().to_string());
         let snimky: Vec<Obraz> = (0..3).map(|n| vzor(320, 240, n)).collect();
         std::fs::write(format!("{dir}/pcm.h264"), h264_pcm(&snimky).concat()).unwrap();
+        std::fs::write(format!("{dir}/pcm_filter.h264"), h264_pcm_odblokovanie(&snimky, true).concat())
+            .unwrap();
         std::fs::write(format!("{dir}/pcm.hevc"), hevc_pcm(&snimky).concat()).unwrap();
         let mut yuv = Vec::new();
         for o in &snimky {

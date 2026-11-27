@@ -568,6 +568,11 @@ pub fn identifikacia() -> String {
         if !rozhrania.is_empty() {
             popis += &format!(" · rozhrania: {}", rozhrania.join(", "));
         }
+        // R239: stav portov rozbočovača – či port zariadenie vôbec vidí (Odroid 27. 11.: USB kľúč sa neohlásil)
+        let porty = porty_rozbocovaca(&z, m);
+        if !porty.is_empty() {
+            popis += &format!(" · porty: {}", porty.join(", "));
+        }
         riadok(&mut t, popis);
     }
     // monitor (EDID cez grafický ovládač; na RPi s firmvérovou obrazovkou EDID v jadre nie je)
@@ -1025,8 +1030,53 @@ impl Riadenie {
     }
 }
 
+/// R239: porty rozbočovača USB s ich stavom z jadra („not attached“, „configured“, „suspended“ …), napr. „1 not
+/// attached“. Bez atribútu `state` (staršie jadro) len typ pripojenia.
+fn porty_rozbocovaca(zariadenie: &Path, meno: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    for r in fs::read_dir(zariadenie).into_iter().flatten().flatten() {
+        if !r.file_name().to_string_lossy().starts_with(&format!("{meno}:")) {
+            continue;
+        }
+        for p in fs::read_dir(r.path()).into_iter().flatten().flatten() {
+            let nazov = p.file_name().to_string_lossy().into_owned();
+            let Some((_, cislo)) = nazov.rsplit_once("-port") else { continue };
+            let stav = fs::read_to_string(p.path().join("state"))
+                .or_else(|_| fs::read_to_string(p.path().join("connect_type")))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| "?".into());
+            v.push((cislo.parse::<u32>().unwrap_or(0), format!("{cislo} {stav}")));
+        }
+    }
+    v.sort();
+    v.into_iter().map(|(_, s)| s).collect()
+}
+
 #[cfg(test)]
 mod testy_r221 {
+    #[test]
+    fn r239_porty_rozbocovaca() {
+        let d = std::env::temp_dir().join(format!("sklenik-porty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let hub = d.join("1-1");
+        for (port, stav) in
+            [("1-1-port2", "configured"), ("1-1-port1", "not attached"), ("1-1-port10", "suspended")]
+        {
+            let p = hub.join("1-1:1.0").join(port);
+            fs::create_dir_all(&p).unwrap();
+            fs::write(p.join("state"), format!("{stav}\n")).unwrap();
+        }
+        // bez atribútu state – typ pripojenia
+        let p = hub.join("1-1:1.0").join("1-1-port3");
+        fs::create_dir_all(&p).unwrap();
+        fs::write(p.join("connect_type"), "unknown\n").unwrap();
+        assert_eq!(
+            porty_rozbocovaca(&hub, "1-1"),
+            vec!["1 not attached", "2 configured", "3 unknown", "10 suspended"]
+        );
+        let _ = fs::remove_dir_all(&d);
+    }
+
     use super::*;
 
     #[test]

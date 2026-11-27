@@ -688,11 +688,25 @@ pub fn skus(
                                 format!("r{r}={p}")
                             })
                             .collect();
+                        // R239: ukážka prvého chybného riadka jasu – 8 bodov od prvého rozdielu (čakané → prišlo)
+                        let ukazka = (0..c.vyska.min(y.len() / c.sirka.max(1)))
+                            .find_map(|r| {
+                                let (zr, sr) = (
+                                    &c.y[r * c.sirka..(r + 1) * c.sirka],
+                                    &y[r * c.sirka..(r + 1) * c.sirka],
+                                );
+                                let st = (0..c.sirka).find(|&i| zr[i] != sr[i])?;
+                                let k = (st + 8).min(c.sirka);
+                                let cisla =
+                                    |v: &[u8]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+                                Some(format!("r{r} s{st}: {} → {}", cisla(&zr[st..k]), cisla(&sr[st..k])))
+                            })
+                            .unwrap_or_default();
                         v.prva_chyba = prva.map(|(rov, r, s, a, b)| {
                             format!(
                                 "snímka {} {rov} riadok {r} stĺpec {s}: {a} → {b} ({chyb} bodov; Y priemer {priemer:.0}, \
                                  nuly {nuly:.0} %, 255 {plne:.0} %, presných riadkov zhora {riadkov_ok}; chybné riadky \
-                                 makroblokov Y {zle_y}, Cb {zle_cb}; pôvod riadkov (táto = s{}) {}; riadok Y {} B, UV {} B)",
+                                 makroblokov Y {zle_y}, Cb {zle_cb}; pôvod riadkov (táto = s{}) {}; ukážka {ukazka}; riadok Y {} B, UV {} B)",
                                 v.snimok + 1,
                                 v.snimok + 1,
                                 povod.join(" "),
