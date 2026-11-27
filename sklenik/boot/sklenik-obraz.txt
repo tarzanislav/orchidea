@@ -10,8 +10,11 @@ dtoverlay=vc4-kms-v3d
 dtoverlay=vc4-kms-v3d
 [pi3]
 dtoverlay=vc4-kms-v3d
+# R260: RPi 4, 400, CM4 – vlastné prekrytie pre BCM2711. Firmvér by meno „vc4-kms-v3d“ premenoval na
+# „vc4-kms-v3d-pi4“ len cez overlay_map.dtb, ktorý karta nemá (nesie len prekrytia menované tu) – 27. 11. RPi 400
+# preto bežal s obrazom od firmvéru 640×480, bez vlastného ovládača a bez zvuku HDMI.
 [pi4]
-dtoverlay=vc4-kms-v3d
+dtoverlay=vc4-kms-v3d-pi4
 [pi5]
 dtoverlay=vc4-kms-v3d-pi5
 [all]
