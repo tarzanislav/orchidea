@@ -12,6 +12,9 @@ on:
       - "zariadenie/**"
       - "teplo/**"
       - "jadro/**"
+      # R264: program merania HEVC je v systéme v pamäti – zmena dekodéra sa dostane do krabičiek aktualizáciou
+      - "hevc/**"
+      - "hevc-dekoder/**"
       - "nastroje/kontrola_merania.py"
       - "Cargo.toml"
       - "Cargo.lock"
