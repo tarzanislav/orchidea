@@ -4,11 +4,16 @@
 //! Časť 1: rozbor bitového toku – hlavička (tabuľka 2), CRC (tabuľka 3), vedľajšie informácie (tabuľka 4), zásobník
 //! bitov (`main_data_begin`), škálovacie faktory (tabuľka 5, tabuľky 15 a 16) a Huffmanovo dekódovanie (tabuľka 6,
 //! [S] §4.3.4, tabuľky 24–41). Dôkaz správnosti: každá granula spotrebuje presne `part2_3_length` bitov.
+//!
+//! Časť 2: rekonštrukcia (`rekonstrukcia` – spätná kvantizácia, stereo, preradenie) a hybridná banka filtrov
+//! (`synteza` – alias, IMDCT, okná, prekrytie, polyfázová syntéza s oknom D[i]). Dôkaz: presnosť podľa
+//! ISO/IEC 11172-4 proti nezávislému rozhodcovi.
 
 #![allow(clippy::needless_range_loop)]
 
-// PRETAB a ALIAS_C použije časť 2 (požiadavka, stereo, IMDCT)
-#[allow(clippy::unreadable_literal, dead_code)]
+mod rekonstrukcia;
+mod synteza;
+#[allow(clippy::unreadable_literal, clippy::excessive_precision)]
 mod tabulky;
 
 use orchidea_jadro::{Chyba, Vysledok};
@@ -380,15 +385,30 @@ pub struct StatistikaMpa {
     pub ms: u64,
     pub intenzita: u64,
     pub nedostatok_zasobnika: u64,
+    /// granuly spojeného sterea s rôznym typom bloku v kanáloch (norma to zakazuje) – stereo sa nepoužije
+    pub stereo_nezhoda: u64,
+    /// pásma a okná dekódované intenzitným stereom
+    pub intenzitne_pasma: u64,
 }
 
-/// Dekodér vrstvy III (zatiaľ po Huffmanovo dekódovanie).
+/// Rozobraná granula jedného kanála: vedľajšie informácie, škálovacie faktory a kvantované spektrum.
+#[derive(Clone, Debug)]
+pub struct RozobranaGranula {
+    pub granula: Granula,
+    pub skalovacie: Skalovacie,
+    pub is: [i32; 576],
+}
+
+/// Dekodér vrstvy III MPEG-1.
 #[derive(Clone, Debug, Default)]
 pub struct DekoderMpa {
     zasobnik: Vec<u8>,
     statistika: StatistikaMpa,
-    pub posledne: Vec<[i32; 576]>,
+    /// posledný rozobraný rámec: `[gr·nch + ch]` (prázdne pri nedostatku zásobníka bitov)
+    pub posledne: Vec<RozobranaGranula>,
     skalovacie: [Skalovacie; 2],
+    synteza: [synteza::StavSyntezy; 2],
+    hlavicka: Option<Hlavicka>,
 }
 
 impl DekoderMpa {
@@ -400,6 +420,87 @@ impl DekoderMpa {
         self.statistika
     }
 
+    /// Po posune: zásobník bitov a stav banky filtrov sa vymažú (predbeh dekódovania to dorovná).
+    pub fn reset(&mut self) {
+        self.zasobnik.clear();
+        self.skalovacie = [Skalovacie::default(); 2];
+        for s in &mut self.synteza {
+            s.reset();
+        }
+    }
+
+    /// Hlavička posledného rozobraného rámca.
+    pub fn hlavicka(&self) -> Option<Hlavicka> {
+        self.hlavicka
+    }
+
+    /// Dekóduje rámec vrstvy III MPEG-1: 1152 vzoriek na kanál v rozsahu ±1,0 (`[kanál][vzorka]`).
+    /// Pri nedostatku zásobníka bitov (začiatok toku po posune) dá ticho a banka filtrov pokračuje.
+    pub fn dekoduj_ramec(&mut self, ramec: &[u8]) -> Vysledok<Vec<Vec<f32>>> {
+        self.rozober_ramec(ramec)?;
+        let h = self.hlavicka.ok_or_else(|| Chyba::PoskodeneData("MPEG audio: hlavička".into()))?;
+        let nch = h.kanalov();
+        let mut von = vec![vec![0f32; 1152]; nch];
+        for gr in 0..2 {
+            let mut xr = [[0f32; 576]; 2];
+            let mut bloky = [synteza::Blok { typ: 0, zmiesany: false }; 2];
+            if self.posledne.len() == 2 * nch {
+                for ch in 0..nch {
+                    let r = &self.posledne[gr * nch + ch];
+                    rekonstrukcia::kvantizacia(
+                        &r.is,
+                        &r.granula,
+                        &r.skalovacie,
+                        h.index_frekvencie,
+                        &mut xr[ch],
+                    );
+                    bloky[ch] = synteza::Blok {
+                        typ: if r.granula.prepinanie { r.granula.typ_bloku } else { 0 },
+                        zmiesany: r.granula.prepinanie && r.granula.zmiesany,
+                    };
+                }
+                let (ms, intenzita) =
+                    (h.rezim == 1 && h.rozsirenie & 2 != 0, h.rezim == 1 && h.rozsirenie & 1 != 0);
+                if nch == 2 && (ms || intenzita) {
+                    let (gl, gp) = (&self.posledne[gr * 2].granula, &self.posledne[gr * 2 + 1].granula);
+                    if bloky[0] != bloky[1] || gl.prepinanie != gp.prepinanie {
+                        self.statistika.stereo_nezhoda += 1;
+                    } else {
+                        let p = &self.posledne[gr * 2 + 1];
+                        let [l, pr] = &mut xr;
+                        self.statistika.intenzitne_pasma += rekonstrukcia::stereo(
+                            l,
+                            pr,
+                            &p.is,
+                            &p.granula,
+                            &p.skalovacie,
+                            h.index_frekvencie,
+                            ms,
+                            intenzita,
+                        ) as u64;
+                    }
+                }
+                for ch in 0..nch {
+                    rekonstrukcia::preradenie(
+                        &mut xr[ch],
+                        &self.posledne[gr * nch + ch].granula,
+                        h.index_frekvencie,
+                    );
+                }
+            }
+            for ch in 0..nch {
+                synteza::alias(&mut xr[ch], bloky[ch]);
+                let mut pasma = [[0f32; 32]; 18];
+                self.synteza[ch].hybrid(&xr[ch], bloky[ch], &mut pasma);
+                for t in 0..18 {
+                    let z = gr * 576 + 32 * t;
+                    self.synteza[ch].polyfaza(&pasma[t], &mut von[ch][z..z + 32]);
+                }
+            }
+        }
+        Ok(von)
+    }
+
     /// Rozoberie rámec vrstvy III MPEG-1: kvantované spektrum `posledne[gr·nch + ch]`.
     pub fn rozober_ramec(&mut self, ramec: &[u8]) -> Vysledok<()> {
         let h =
@@ -408,6 +509,7 @@ impl DekoderMpa {
             return Err(Chyba::MimoRozsahu("MPEG audio: zatiaľ len vrstva III MPEG-1".into()));
         }
         let nch = h.kanalov();
+        self.hlavicka = Some(h);
         let zac_vi = 4 + if h.crc { 2 } else { 0 };
         let dlzka_vi = if nch == 1 { 17 } else { 32 };
         let telo = ramec
@@ -425,7 +527,7 @@ impl DekoderMpa {
             if n > 4096 {
                 self.zasobnik.drain(..n - 4096);
             }
-            self.posledne = vec![[0; 576]; 2 * nch];
+            self.posledne.clear();
             return Ok(());
         }
         let zaciatok = self.zasobnik.len() - vi.main_data_begin;
@@ -472,7 +574,7 @@ impl DekoderMpa {
                 st.scalefac_scale += g.scalefac_scale as u64;
                 st.linbits += g.tabulky.iter().any(|&t| tabulky::HUFF_TABULKY[t as usize].2 > 0) as u64;
                 st.tabulka_b += g.count1_tabulka as u64;
-                vysl.push(is);
+                vysl.push(RozobranaGranula { granula: g, skalovacie: sf, is });
             }
         }
         self.posledne = vysl;

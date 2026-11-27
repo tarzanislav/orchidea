@@ -52,12 +52,24 @@ jobs:
         run: |
           echo "### Médiá – dekodér Opus proti libopus" >> "$GITHUB_STEP_SUMMARY"
           python3 media/nastroje/over_opus.py target/release/examples/media_opus "$RUNNER_TEMP/opus" | tee -a "$GITHUB_STEP_SUMMARY"
-      - name: MPEG audio (L8) – rozbor vrstvy III, spotreba part2_3_length v každej granule (LAME, Shine)
+      - name: Skúšobné toky ISO/IEC 11172-4 pre vrstvu III (sada FATE – len údaje, bez kódu)
+        shell: bash
+        run: |
+          d="$RUNNER_TEMP/mp3-iso"; mkdir -p "$d"
+          rsync -a --include='*.bit' --include='*.pcm' --exclude='*' \
+            rsync://fate-suite.ffmpeg.org/fate-suite/mp3-conformance/ "$d/" || {
+            u=https://fate-suite.ffmpeg.org/mp3-conformance/
+            for f in $(curl -fsSL "$u" | grep -o 'href="[^"/]*\.\(bit\|pcm\)"' | sed 's/^href="//;s/"$//'); do
+              curl -fsSL "$u$f" -o "$d/$f"
+            done
+          }
+          ls -l "$d"
+      - name: MPEG audio (L8) – vrstva III, spotreba bitov a presnosť ISO/IEC 11172-4 (LAME, Shine, toky ISO)
         shell: bash
         run: |
           cargo build --release -p orchidea-media --example media_mpa
-          echo "### Médiá – MPEG audio vrstva III (rozbor bitového toku)" >> "$GITHUB_STEP_SUMMARY"
-          python3 media/nastroje/over_mpa.py target/release/examples/media_mpa "$RUNNER_TEMP/mpa" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### Médiá – MPEG audio vrstva III (spotreba bitov, presnosť 11172-4)" >> "$GITHUB_STEP_SUMMARY"
+          python3 media/nastroje/over_mpa.py target/release/examples/media_mpa "$RUNNER_TEMP/mpa" "$RUNNER_TEMP/mp3-iso" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Pakety Opus pri neúspechu (na rozbor)
         if: failure()
         uses: actions/upload-artifact@v4

@@ -587,6 +587,13 @@ fn mpa_vrstva3() {
             (rezim << 6) | ((n.dalsie() % 4) as u8) << 4,
         ];
         p.extend(bajty(&mut n, 1500));
-        let _ = d.rozober_ramec(&p);
+        // celé dekódovanie: rozbor, spätná kvantizácia, stereo, preradenie, banka filtrov – žiadny pád,
+        // výstup vždy konečný (aj pri nezmyselných ziskoch a polohách intenzity)
+        if let Ok(pcm) = d.dekoduj_ramec(&p) {
+            assert!(pcm.iter().all(|k| k.len() == 1152 && k.iter().all(|v| v.is_finite())));
+        }
+        if i % 97 == 0 {
+            d.reset();
+        }
     }
 }

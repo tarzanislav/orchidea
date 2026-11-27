@@ -154,6 +154,25 @@ def main():
     c = [float(m.group(1)) for r in telo_tabulky(s, 60) if (m := re.fullmatch(r"\d (-?[0-9.]+)", r))]
     assert len(c) == 8
     von.append(f"/// [S] tabuľka 60 – koeficienty c[i] redukcie aliasu.\npub(crate) static ALIAS_C: [f64; 8] = [{', '.join(map(str, c))}];")
+    # okno syntézy D[i] – [S] príloha „I. Tables“, prvý zoznam bez nadpisu (text [S] §4.3.12.6 naň odkazuje ako na
+    # „Table 22“, tá má však iný obsah); v norme 11172-3 je to tabuľka 3-B.3 „Coefficients Di of the synthesis window“
+    surovy = "\n".join(s)
+    okno = {}
+    for m in re.finditer(r"D\[\s*(\d+)\]\s*=\s*(-?)\s*(\d+),(\d+)", surovy):
+        i, hodnota = int(m.group(1)), f"{m.group(2)}{m.group(3)}.{m.group(4)}"
+        assert okno.get(i, hodnota) == hodnota, f"D[{i}] dvakrát s inou hodnotou"
+        okno[i] = hodnota
+    assert sorted(okno) == list(range(512)), f"okno D: {len(okno)} z 512 koeficientov"
+    d = [float(okno[i]) for i in range(512)]
+    # kontroly: každá hodnota je násobok 2^-16 zaokrúhlený na 9 desatinných miest; D[512-i] = -D[i] okrem i = 64k,
+    # kde D[512-i] = D[i]; vrchol v strede (D[256])
+    assert all(abs(round(v * 65536) / 65536 - v) <= 5.1e-10 for v in d), "okno D: hodnota nie je násobok 2^-16"
+    for i in range(1, 512):
+        assert d[512 - i] == (d[i] if i % 64 == 0 else -d[i]), f"okno D: súmernosť pri {i}"
+    assert max(range(512), key=lambda i: d[i]) == 256
+    von.append("/// Okno syntézy D[i] – [S] príloha I (zoznam bez nadpisu; text ho volá „Table 22“) = 11172-3 tabuľka 3-B.3.")
+    von.append("/// Hodnoty presne z textu; kontroly v generátore: násobky 2^-16, súmernosť D[512 − i] = ∓D[i], vrchol D[256].")
+    von.append(f"pub(crate) static OKNO_D: [f64; 512] = [{', '.join(okno[i] for i in range(512))}];")
     # slen1, slen2 (tabuľka 16) – porovnanie s CD 11172-3 (2.4.3.4, scalefac_compress)
     slen = [tuple(map(int, m.groups()[1:])) for r in telo_tabulky(s, 16)
             if (m := re.fullmatch(r"(\d+) (\d) (\d)", r))][:16]
