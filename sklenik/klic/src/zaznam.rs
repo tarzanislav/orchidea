@@ -585,6 +585,12 @@ pub fn identifikacia() -> String {
         }
         riadok(&mut t, popis);
     }
+    // R256: stav portov priamo z radiča xHCI (debugfs, register PORTSC): napájanie, pripojenie, stav linky
+    // (U0 = USB 3.0 beží, RxDetect = protistrana USB 3.0 nezistená, Polling/Compliance/Inactive = linka sa
+    // nedohodla) a rýchlosť – rozlíši zlý kontakt, nezapojený pár USB 3.0 a zlyhané dohodnutie linky
+    for r in portsc_xhci(Path::new("/sys/kernel/debug/usb/xhci")) {
+        riadok(&mut t, r);
+    }
     // monitor (EDID cez grafický ovládač; na RPi s firmvérovou obrazovkou EDID v jadre nie je)
     let mut monitor = false;
     for z in fs::read_dir("/sys/class/drm").into_iter().flatten().flatten() {
@@ -1080,8 +1086,13 @@ impl Riadenie {
 /// attached“. Bez atribútu `state` (staršie jadro) len typ pripojenia.
 fn porty_rozbocovaca(zariadenie: &Path, meno: &str) -> Vec<String> {
     let mut v = Vec::new();
+    // R256: koreňový rozbočovač `usbN` má rozhranie `N-0:1.0` (porty `usbN-portM`), ostatné `meno:1.0`
+    let predpona = match meno.strip_prefix("usb") {
+        Some(n) if n.chars().all(|c| c.is_ascii_digit()) => format!("{n}-0:"),
+        _ => format!("{meno}:"),
+    };
     for r in fs::read_dir(zariadenie).into_iter().flatten().flatten() {
-        if !r.file_name().to_string_lossy().starts_with(&format!("{meno}:")) {
+        if !r.file_name().to_string_lossy().starts_with(&predpona) {
             continue;
         }
         for p in fs::read_dir(r.path()).into_iter().flatten().flatten() {
@@ -1091,11 +1102,82 @@ fn porty_rozbocovaca(zariadenie: &Path, meno: &str) -> Vec<String> {
                 .or_else(|_| fs::read_to_string(p.path().join("connect_type")))
                 .map(|s| s.trim().to_string())
                 .unwrap_or_else(|_| "?".into());
-            v.push((cislo.parse::<u32>().unwrap_or(0), format!("{cislo} {stav}")));
+            // R256: dvojica portu USB 2.0 a USB 3.0 toho istého konektora (X96 27. 11.: kľúč v modrom porte len
+            // pri 480 Mb/s – je port USB 3.0 vôbec spárovaný s konektorom?)
+            let dvojica = fs::read_link(p.path().join("peer"))
+                .ok()
+                .and_then(|c| c.file_name().map(|n| format!(" ↔ {}", n.to_string_lossy())))
+                .unwrap_or_default();
+            v.push((cislo.parse::<u32>().unwrap_or(0), format!("{cislo} {stav}{dvojica}")));
         }
     }
     v.sort();
     v.into_iter().map(|(_, s)| s).collect()
+}
+
+/// R256: riadky „radič xHCI …: port NN – PORTSC“ zo stromu debugfs `usb/xhci/<radič>/ports/portNN/portsc`.
+fn portsc_xhci(koren: &Path) -> Vec<String> {
+    let mut v = Vec::new();
+    let mut radice: Vec<_> = fs::read_dir(koren).into_iter().flatten().flatten().map(|z| z.path()).collect();
+    radice.sort();
+    for r in radice {
+        let mut porty: Vec<_> =
+            fs::read_dir(r.join("ports")).into_iter().flatten().flatten().map(|z| z.path()).collect();
+        porty.sort();
+        for p in porty {
+            let Ok(stav) = fs::read_to_string(p.join("portsc")) else { continue };
+            v.push(format!(
+                "radič USB {} {}: {}",
+                r.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                stav.split_whitespace().collect::<Vec<_>>().join(" ")
+            ));
+        }
+    }
+    v
+}
+
+#[cfg(test)]
+mod testy_r256 {
+    use super::*;
+
+    #[test]
+    fn r256_porty_korena_a_portsc() {
+        let d = std::env::temp_dir().join(format!("sklenik-r256-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        // koreňový rozbočovač usb1 s dvojicou portu usb2-port1
+        let rh = d.join("usb1").join("1-0:1.0");
+        let p2 = rh.join("usb1-port2");
+        fs::create_dir_all(&p2).unwrap();
+        fs::write(p2.join("state"), "configured\n").unwrap();
+        let p3 = d.join("usb2").join("2-0:1.0").join("usb2-port1");
+        fs::create_dir_all(&p3).unwrap();
+        std::os::unix::fs::symlink(&p3, p2.join("peer")).unwrap();
+        let p1 = rh.join("usb1-port1");
+        fs::create_dir_all(&p1).unwrap();
+        fs::write(p1.join("state"), "not attached\n").unwrap();
+        assert_eq!(
+            porty_rozbocovaca(&d.join("usb1"), "usb1"),
+            vec!["1 not attached".to_string(), "2 configured ↔ usb2-port1".to_string()]
+        );
+        // PORTSC z debugfs
+        let x = d.join("xhci").join("xhci-hcd.0.auto").join("ports");
+        for (port, text) in [
+            ("port02", "Powered Not-connected Disabled Link:RxDetect PortSpeed:0 Change: Wake: WCE WOE\n"),
+            ("port01", "Powered Connected Enabled Link:U0 PortSpeed:3 Change: Wake:\n"),
+        ] {
+            fs::create_dir_all(x.join(port)).unwrap();
+            fs::write(x.join(port).join("portsc"), text).unwrap();
+        }
+        let r = portsc_xhci(&d.join("xhci"));
+        assert_eq!(r.len(), 2);
+        assert_eq!(
+            r[0],
+            "radič USB xhci-hcd.0.auto port01: Powered Connected Enabled Link:U0 PortSpeed:3 Change: Wake:"
+        );
+        assert!(r[1].contains("Link:RxDetect"));
+        let _ = fs::remove_dir_all(&d);
+    }
 }
 
 #[cfg(test)]

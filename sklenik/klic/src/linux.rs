@@ -3842,9 +3842,9 @@ pub fn spusti() {
                     }
                     // R183: čo sa dialo s obrazom a HDMI a čo robil KLÍČ – na hľadanie chyby
                     dovetok += &nadpis(if minuta == 0 {
-                        "OBRAZ, HDMI A KLÍČ OD ŠTARTU (R183)"
+                        "OBRAZ, HDMI, USB A KLÍČ OD ŠTARTU (R183, R256)"
                     } else {
-                        "OBRAZ, HDMI A KLÍČ – NOVÉ (R183)"
+                        "OBRAZ, HDMI, USB A KLÍČ – NOVÉ (R183, R256)"
                     });
                     for v in kmsg.obraz_nenahlasene() {
                         dovetok += &format!("  {v}{NL}");
@@ -3893,7 +3893,7 @@ pub fn spusti() {
                                 profil.strop
                             );
                             dovetok += &format!(
-                                "  dekodér videa: časť VIDEO · obraz, HDMI a CEC: riadky CEC a časť OBRAZ, HDMI A KLÍČ · spánok jadier: riadok R167{NL}"
+                                "  dekodér videa: časť VIDEO · obraz, HDMI a CEC: riadky CEC a časť OBRAZ, HDMI, USB A KLÍČ · spánok jadier: riadok R167{NL}"
                             );
                         }
                         if pokus {
@@ -4666,7 +4666,12 @@ fn hlasenie_obrazu(zaznam: &str) -> Option<String> {
     let o_obraze = ["drm", "hdmi", "cec", "vpu", "fbcon", "fb0", "vdec", "dw-hdmi", "canvas", "edid"]
         .iter()
         .any(|k| male.contains(k));
-    if !(o_obraze || text.starts_with("KLÍČ")) {
+    // R256: pripojenie zariadení USB a radič xHCI („usb 1-2: new high-speed USB device …“, „Host supports USB 3.0“)
+    // – ukáže, či sa zariadenie v porte USB 3.0 skúšalo pripojiť rýchlosťou SuperSpeed
+    let o_usb = (male.starts_with("usb ") && (male.contains("new ") || male.contains("reset")))
+        || male.starts_with("usb usb")
+        || male.starts_with("xhci-hcd");
+    if !(o_obraze || o_usb || text.starts_with("KLÍČ")) {
         return None;
     }
     let text: String = text.chars().take(dlzka_riadka_jadra(text)).collect();
@@ -4774,7 +4779,19 @@ mod skusky {
         let iny = format!("6,1,2,-;meson-drm: {}", "b".repeat(300));
         assert!(hlasenie_obrazu(&iny).is_some_and(|t| t.chars().count() < 230));
         assert!(hlasenie_obrazu("6,10,3039000,-;KL\\xc3\\x8d\\xc4\\x8c: takt").is_some());
-        assert!(hlasenie_obrazu("6,11,3039000,-;usb 1-2: new device").is_none());
+        // R256: pripojenie USB áno (rýchlosť pri pripojení), podrobnosti o zariadení nie
+        assert!(
+            hlasenie_obrazu("6,11,3039000,-;usb 1-2: new high-speed USB device number 2 using xhci-hcd")
+                .is_some()
+        );
+        assert!(
+            hlasenie_obrazu("6,12,3039000,-;xhci-hcd xhci-hcd.0.auto: Host supports USB 3.0 SuperSpeed")
+                .is_some()
+        );
+        assert!(hlasenie_obrazu("6,13,3039000,-;usb 1-2: Product: Ultra").is_none());
+        assert!(
+            hlasenie_obrazu("6,14,3039000,-;usb-storage 1-2:1.0: USB Mass Storage device detected").is_none()
+        );
     }
 
     #[test]
