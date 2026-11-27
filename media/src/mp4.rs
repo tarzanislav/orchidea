@@ -18,6 +18,7 @@ use crate::stopa::{
     CisloPcm, DruhStopy, FarbaVidea, Kodek, ParametreVidea, ParametreZvuku, PopisPcm, PoradieBajtov, Stopa,
 };
 use crate::zdroj::{Citac, ZdrojBajtov};
+use crate::znacky::{self, Znacky};
 use crate::zvuk::RozlozenieKanalov;
 use orchidea_jadro::{Chyba, Vysledok};
 use std::collections::VecDeque;
@@ -332,6 +333,7 @@ pub struct Mp4<Z> {
     p_fragmentov: u64,
     fronta: VecDeque<VzorkaFragmentu>,
     koniec: u64,
+    znacky: Option<Znacky>,
 }
 
 impl<Z: ZdrojBajtov> Mp4<Z> {
@@ -349,6 +351,7 @@ impl<Z: ZdrojBajtov> Mp4<Z> {
             p_fragmentov: 0,
             fronta: VecDeque::new(),
             koniec,
+            znacky: None,
         };
         let mut p = 0u64;
         let mut moov = None;
@@ -432,6 +435,10 @@ impl<Z: ZdrojBajtov> Mp4<Z> {
                         self.trvanie_ns = zakladna_z_frekvencie(mierka as u64)
                             .and_then(|z| na_ns(i64::try_from(trvanie).ok()?, z));
                     }
+                }
+                // značky iTunes/QuickTime (`udta/meta/ilst`) – chyba v nich nevadí
+                b"udta" => {
+                    self.znacky = znacky::mp4_udta(o).filter(|z| !z.je_prazdne());
                 }
                 b"mvex" => {
                     self.fragmentovane = true;
@@ -1047,6 +1054,10 @@ fn popis_zvuku(typ: [u8; 4], o: &[u8], stopa: &mut Stopa, stav: &mut StavStopy) 
 }
 
 impl<Z: ZdrojBajtov> Kontajner for Mp4<Z> {
+    fn znacky(&self) -> Option<&Znacky> {
+        self.znacky.as_ref()
+    }
+
     fn format(&self) -> FormatKontajnera {
         self.format
     }

@@ -44,6 +44,7 @@ pub mod ramce;
 pub mod stopa;
 pub mod ts;
 pub mod zdroj;
+pub mod znacky;
 pub mod zvuk;
 
 pub use hdmi::{CestaZvuku, PrevodnikZvuku, VolbyZvuku};

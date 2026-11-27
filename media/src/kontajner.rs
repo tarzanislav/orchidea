@@ -114,6 +114,11 @@ pub trait Kontajner: std::fmt::Debug {
 
     /// Posun na čas v ns (časová os média); vráti čas prvého kľúčového paketu, od ktorého čítanie pokračuje.
     fn posun(&mut self, ciel_ns: i64, sposob: Posun) -> Vysledok<i64>;
+
+    /// Značky súboru (názov, interpret, album, ReplayGain …), ak ich formát má a súbor ich obsahuje.
+    fn znacky(&self) -> Option<&crate::znacky::Znacky> {
+        None
+    }
 }
 
 /// Otvorí kontajner podľa obsahu zdroja.

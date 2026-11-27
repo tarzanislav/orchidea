@@ -19,6 +19,7 @@ use crate::paket::Paket;
 use crate::ramce::{HlavickaRamca, mpeg_audio, mpeg_audio_tok};
 use crate::stopa::{Kodek, ParametreZvuku, Stopa};
 use crate::zdroj::{Citac, ZdrojBajtov};
+use crate::znacky::{self, Znacky};
 use crate::zvuk::RozlozenieKanalov;
 use orchidea_jadro::{Chyba, Vysledok};
 
@@ -131,6 +132,7 @@ pub struct SuborMpa<Z> {
     /// číslo vzorky (surovej) na začiatku rámca na `p`
     vzorka: u64,
     prerusenie: bool,
+    znacky: Option<Znacky>,
 }
 
 fn rozlozenie(kanalov: u8) -> RozlozenieKanalov {
@@ -138,11 +140,15 @@ fn rozlozenie(kanalov: u8) -> RozlozenieKanalov {
 }
 
 impl<Z: ZdrojBajtov> SuborMpa<Z> {
-    pub fn otvor(zdroj: Z, _limity: Limity) -> Vysledok<SuborMpa<Z>> {
+    pub fn otvor(zdroj: Z, limity: Limity) -> Vysledok<SuborMpa<Z>> {
         let mut c = Citac::novy(zdroj, Citac::<Z>::PREDVOLENA_DAVKA);
         let dlzka = c.dlzka();
         let mut koniec = dlzka;
+        // značky: ID3v2 (začiatok) má prednosť pred APEv2 a ID3v1 (koniec)
+        let mut na_konci = Znacky::nove();
+        let mut id3v1 = None;
         if koniec >= 128 && c.bajty(koniec - 128, 3)? == b"TAG" {
+            id3v1 = znacky::id3v1(c.bajty(koniec - 128, 128)?);
             koniec -= 128;
         }
         // APEv2: päta 32 B „APETAGEX“, veľkosť značky (bez hlavičky) na posune 12, vlajka hlavičky v bite 31
@@ -150,7 +156,16 @@ impl<Z: ZdrojBajtov> SuborMpa<Z> {
             let p = c.bajty(koniec - 32, 32)?.to_vec();
             let velkost = u32::from_le_bytes([p[12], p[13], p[14], p[15]]) as u64;
             let s_hlavickou = u32::from_le_bytes([p[20], p[21], p[22], p[23]]) & (1 << 31) != 0;
+            if velkost <= koniec.min(limity.prvok)
+                && let Ok(d) = c.presne(koniec - velkost, velkost as usize)
+                && let Some((z, _)) = znacky::apev2(d)
+            {
+                na_konci.dopln(z);
+            }
             koniec = koniec.saturating_sub(velkost + if s_hlavickou { 32 } else { 0 });
+        }
+        if let Some(z) = id3v1 {
+            na_konci.dopln(z);
         }
         let hlava = c.bajty(0, 10)?.to_vec();
         let za_id3 = if hlava.len() >= 10 && &hlava[..3] == b"ID3" {
@@ -159,6 +174,14 @@ impl<Z: ZdrojBajtov> SuborMpa<Z> {
         } else {
             0
         };
+        let mut vsetky = Znacky::nove();
+        if za_id3 > 0
+            && let Ok(d) = c.presne(0, za_id3.min(limity.prvok).min(koniec) as usize)
+            && let Some((z, _)) = znacky::id3v2(d)
+        {
+            vsetky.dopln(z);
+        }
+        vsetky.dopln(na_konci);
         let mut s = SuborMpa {
             c,
             stopy: Vec::new(),
@@ -173,6 +196,7 @@ impl<Z: ZdrojBajtov> SuborMpa<Z> {
             p: 0,
             vzorka: 0,
             prerusenie: true,
+            znacky: (!vsetky.je_prazdne()).then_some(vsetky),
         };
         let (q, h) = s
             .hladaj_ramec(za_id3, koniec.min(za_id3.saturating_add(NAJVIAC_HLADANIA)))?
@@ -284,6 +308,10 @@ impl<Z: ZdrojBajtov> SuborMpa<Z> {
 }
 
 impl<Z: ZdrojBajtov> Kontajner for SuborMpa<Z> {
+    fn znacky(&self) -> Option<&Znacky> {
+        self.znacky.as_ref()
+    }
+
     fn format(&self) -> FormatKontajnera {
         FormatKontajnera::MpegAudio
     }

@@ -1,7 +1,8 @@
 //! **Súbor FLAC** (`.flac`) ako kontajner – RFC 9639, kap. 6–9 (etapa L2).
 //!
 //! - Pred „fLaC“ smie byť značka ID3v2 (časté v hudobných knižniciach), na konci ID3v1 („TAG“, 128 B).
-//! - Bloky metadát: STREAMINFO, SEEKTABLE; ostatné sa preskočia (značky a obrázky prečíta neskôr knižnica).
+//! - Bloky metadát: STREAMINFO, SEEKTABLE, VORBIS_COMMENT (značky; aj ID3v2 a ID3v1, ak ich súbor má); ostatné
+//!   (obrázky) sa preskočia.
 //! - **Hranica rámca:** rámec končí tam, kde začína ďalšia platná hlavička (CRC-8) **a** CRC-16 doterajších
 //!   bajtov je 0 – náhodná zhoda bajtov synchronizácie v údajoch rámca tak nerozdelí rámec zle.
 //! - Súbor bez „fLaC“ (začína rámcom alebo neparsovateľnými údajmi) sa prečíta od prvého platného rámca.
@@ -14,6 +15,7 @@ use crate::limity::Limity;
 use crate::paket::Paket;
 use crate::stopa::{Kodek, ParametreZvuku, Stopa};
 use crate::zdroj::{Citac, ZdrojBajtov};
+use crate::znacky::{self, Znacky};
 use orchidea_jadro::{Chyba, Vysledok};
 
 /// Koľko bajtov najviac prehľadať pri hľadaní prvého alebo ďalšieho rámca.
@@ -35,6 +37,7 @@ pub struct FlacSubor<Z> {
     najviac_ramec: usize,
     p: u64,
     prerusenie: bool,
+    znacky: Option<Znacky>,
 }
 
 /// Preskočí značku ID3v2 na začiatku (veľkosť v 4 × 7 bitoch, voliteľná päta).
@@ -55,6 +58,20 @@ impl<Z: ZdrojBajtov> FlacSubor<Z> {
             koniec -= 128;
         }
         let mut p = za_id3v2(c.bajty(0, 10)?);
+        // značky: VORBIS_COMMENT; ID3v2 na začiatku a ID3v1 na konci (niektoré zapisovače) ich doplnia
+        let mut znacky: Option<Znacky> = None;
+        let mut ine_znacky = Znacky::nove();
+        if p > 0
+            && let Ok(d) = c.presne(0, p.min(limity.prvok) as usize)
+            && let Some((z, _)) = znacky::id3v2(d)
+        {
+            ine_znacky.dopln(z);
+        }
+        if koniec < dlzka
+            && let Some(z) = znacky::id3v1(c.bajty(koniec, 128)?)
+        {
+            ine_znacky.dopln(z);
+        }
         let mut si = None;
         let mut body = Vec::new();
         let mut konfiguracia = Vec::new();
@@ -83,6 +100,7 @@ impl<Z: ZdrojBajtov> FlacSubor<Z> {
                             }
                         }
                     }
+                    4 if znacky.is_none() => znacky = znacky::vorbis_comment(&telo),
                     127 => break, // neplatný typ – ďalej len hľadanie rámcov
                     _ => {}
                 }
@@ -93,6 +111,9 @@ impl<Z: ZdrojBajtov> FlacSubor<Z> {
             }
         }
         body.sort_unstable();
+        let mut znacky = znacky.unwrap_or_default();
+        znacky.dopln(ine_znacky);
+        let znacky = (!znacky.je_prazdne()).then_some(znacky);
         // najväčšej dĺžke rámca zo STREAMINFO sa neverí (poškodené súbory ju majú zlú) – hľadanie konca
         // číta po kusoch, takže veľký strop nestojí nič navyše
         let najviac_ramec = (limity.paket as usize).min(16 << 20);
@@ -107,6 +128,7 @@ impl<Z: ZdrojBajtov> FlacSubor<Z> {
             najviac_ramec,
             p,
             prerusenie: true,
+            znacky,
         };
         // prvý platný rámec (súbor bez fLaC alebo s neparsovateľnými údajmi pred rámcami)
         let (q, h) = f
@@ -207,6 +229,10 @@ impl<Z: ZdrojBajtov> FlacSubor<Z> {
 }
 
 impl<Z: ZdrojBajtov> Kontajner for FlacSubor<Z> {
+    fn znacky(&self) -> Option<&Znacky> {
+        self.znacky.as_ref()
+    }
+
     fn format(&self) -> FormatKontajnera {
         FormatKontajnera::Flac
     }

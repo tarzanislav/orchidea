@@ -16,6 +16,7 @@ use crate::stopa::{
     CisloPcm, DruhStopy, FarbaVidea, Kodek, ParametreVidea, ParametreZvuku, PopisPcm, PoradieBajtov, Stopa,
 };
 use crate::zdroj::{Citac, ZdrojBajtov};
+use crate::znacky::Znacky;
 use crate::zvuk::RozlozenieKanalov;
 use orchidea_jadro::{Chyba, Vysledok, Zlomok};
 use std::collections::VecDeque;
@@ -35,6 +36,7 @@ mod id {
     pub const INFO: u32 = 0x1549_A966;
     pub const TIMESTAMP_SCALE: u32 = 0x2AD7B1;
     pub const DURATION: u32 = 0x4489;
+    pub const TITLE: u32 = 0x7BA9;
     pub const TRACKS: u32 = 0x1654_AE6B;
     pub const TRACK_ENTRY: u32 = 0xAE;
     pub const TRACK_NUMBER: u32 = 0xD7;
@@ -86,6 +88,12 @@ mod id {
     pub const CUE_CLUSTER_POSITION: u32 = 0xF1;
     pub const CHAPTERS: u32 = 0x1043_A770;
     pub const TAGS: u32 = 0x1254_C367;
+    pub const TAG: u32 = 0x7373;
+    pub const TARGETS: u32 = 0x63C0;
+    pub const TARGET_TYPE_VALUE: u32 = 0x68CA;
+    pub const SIMPLE_TAG: u32 = 0x67C8;
+    pub const TAG_NAME: u32 = 0x45A3;
+    pub const TAG_STRING: u32 = 0x4487;
     pub const ATTACHMENTS: u32 = 0x1941_A469;
 }
 
@@ -298,6 +306,7 @@ pub struct Mkv<Z> {
     p: u64,
     zhluk: Option<Zhluk>,
     fronta: VecDeque<Paket>,
+    znacky: Option<Znacky>,
 }
 
 /// Výsledok čítania prvku zo súboru.
@@ -325,6 +334,7 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
             p: 0,
             zhluk: None,
             fronta: VecDeque::new(),
+            znacky: None,
         };
         m.otvor_hlavicky()?;
         Ok(m)
@@ -408,7 +418,7 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
 
     /// Prejde prvky najvyššej úrovne segmentu po prvý zhluk; chýbajúce Info, Tracks a Cues dočíta cez SeekHead.
     fn prechod_segmentu(&mut self) -> Vysledok<()> {
-        let (mut info, mut tracks, mut cues) = (false, false, false);
+        let (mut info, mut tracks, mut cues, mut znacky) = (false, false, false, false);
         let mut odkazy: Vec<(u32, u64)> = Vec::new();
         let mut p = self.segment;
         let mut prejdenych = 0;
@@ -444,6 +454,13 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
                     self.citaj_cues(&d)?;
                     cues = true;
                 }
+                id::TAGS => {
+                    // chyba v značkách nebráni prehrávaniu
+                    if let Ok(d) = self.obsah(p, h, self.limity.prvok) {
+                        self.citaj_znacky(&d);
+                    }
+                    znacky = true;
+                }
                 _ => {}
             }
             let Some(v) = h.velkost else { break };
@@ -454,6 +471,7 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
                 id::INFO => info,
                 id::TRACKS => tracks,
                 id::CUES => cues,
+                id::TAGS => znacky,
                 _ => true,
             };
             if hotovo {
@@ -475,6 +493,12 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
                     self.citaj_stopy(&d)?;
                     tracks = true;
                 }
+                id::TAGS => {
+                    if let Ok(d) = self.obsah(p, h, self.limity.prvok) {
+                        self.citaj_znacky(&d);
+                    }
+                    znacky = true;
+                }
                 _ => {
                     // Cues na konci súboru: chyba v nich nebráni prehrávaniu (posun pôjde delením intervalu)
                     if let Ok(d) = self.obsah(p, h, self.limity.prvok.max(self.limity.index)) {
@@ -494,6 +518,55 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
         Ok(())
     }
 
+    /// Značky (RFC 9559 – Tags, Tag, Targets, SimpleTag): TagName a TagString priamych SimpleTag každej Tag
+    /// (vnorené SimpleTag sú doplnky k nadradenej položke). `REPLAYGAIN_GAIN`/`REPLAYGAIN_PEAK`
+    /// (`matroska_tags.xml`) sa podľa TargetTypeValue (≥ 50 album, inak skladba) prevedú na kľúče ReplayGain.
+    fn citaj_znacky(&mut self, d: &[u8]) {
+        let mut z = self.znacky.take().unwrap_or_default();
+        for prvok in prvky(d) {
+            let Ok((i, tag)) = prvok else { break };
+            if i != id::TAG {
+                continue;
+            }
+            let mut uroven = 50u64;
+            let mut jednoduche = Vec::new();
+            for p in prvky(tag) {
+                let Ok((i, o)) = p else { break };
+                match i {
+                    id::TARGETS => {
+                        for q in prvky(o) {
+                            if let Ok((id::TARGET_TYPE_VALUE, v)) = q {
+                                uroven = uint(v).unwrap_or(50);
+                            }
+                        }
+                    }
+                    id::SIMPLE_TAG => jednoduche.push(o),
+                    _ => {}
+                }
+            }
+            for st in jednoduche {
+                let (mut meno, mut hodnota) = (None, None);
+                for q in prvky(st) {
+                    match q {
+                        Ok((id::TAG_NAME, v)) => meno = Some(text(v)),
+                        Ok((id::TAG_STRING, v)) => hodnota = Some(text(v)),
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+                let (Some(meno), Some(hodnota)) = (meno, hodnota) else { continue };
+                let cast = if uroven >= 50 { "ALBUM" } else { "TRACK" };
+                let meno = match meno.to_ascii_uppercase().as_str() {
+                    "REPLAYGAIN_GAIN" => format!("REPLAYGAIN_{cast}_GAIN"),
+                    "REPLAYGAIN_PEAK" => format!("REPLAYGAIN_{cast}_PEAK"),
+                    _ => meno,
+                };
+                z.pridaj(&meno, &hodnota);
+            }
+        }
+        self.znacky = (!z.je_prazdne()).then_some(z);
+    }
+
     fn citaj_info(&mut self, d: &[u8]) -> Vysledok<()> {
         let mut trvanie = None;
         for prvok in prvky(d) {
@@ -506,6 +579,8 @@ impl<Z: ZdrojBajtov> Mkv<Z> {
                     self.ns_na_tik = s;
                 }
                 id::DURATION => trvanie = Some(float(d)?),
+                // názov segmentu (RFC 9559 Info\Title) – značka TITLE pred značkami z Tags
+                id::TITLE => self.znacky.get_or_insert_default().pridaj("TITLE", &text(d)),
                 _ => {}
             }
         }
@@ -955,6 +1030,10 @@ fn lacing(telo: &[u8], druh: u8) -> Vysledok<Vec<&[u8]>> {
 }
 
 impl<Z: ZdrojBajtov> Kontajner for Mkv<Z> {
+    fn znacky(&self) -> Option<&Znacky> {
+        self.znacky.as_ref()
+    }
+
     fn format(&self) -> FormatKontajnera {
         self.format
     }

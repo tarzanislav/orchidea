@@ -4,6 +4,7 @@ name: Médiá – kontajnery, FLAC, rozhodca a dlhý fuzzer (LÝRA)
 # - rozhodca: FFmpeg a mkvmerge zapíšu skúšobné súbory, ffprobe vypíše pakety; naša čítačka musí dať
 #   bit po bite tie isté pakety (čas, kľúčovosť, veľkosť, MD5 obsahu),
 # - FLAC: MD5 dekódovania sa rovná MD5 v STREAMINFO (sada IETF CELLAR, kodéry flac a FFmpeg),
+# - značky a ReplayGain (ID3v1, ID3v2.2–2.4, APEv2, Vorbis comment, Matroska, MP4) proti ffprobe,
 # - dlhý fuzzer čítačiek a dekodérov (R211) s viacerými semienkami.
 on:
   push:
@@ -38,8 +39,8 @@ jobs:
       - uses: actions/checkout@v5
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
-      - name: Rozhodcovia (FFmpeg, MKVToolNix)
-        run: sh nastroje/balicky.sh ffmpeg mkvtoolnix python3-numpy
+      - name: Rozhodcovia (FFmpeg, MKVToolNix, metaflac)
+        run: sh nastroje/balicky.sh ffmpeg mkvtoolnix flac python3-numpy
       - name: Zostavenie
         run: cargo build --locked --release -p orchidea-media --example media_pakety --example media_hdmi --example media_opus
       - name: Porovnanie paketov s rozhodcom
@@ -94,6 +95,12 @@ jobs:
         run: |
           echo "### Médiá – zvuk pre HDMI proti rozhodcovi" >> "$GITHUB_STEP_SUMMARY"
           python3 media/nastroje/over_hdmi.py target/release/examples/media_hdmi "$RUNNER_TEMP/hdmi" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Značky a ReplayGain (LÝRA) – ID3v1, ID3v2.2–2.4, APEv2, Vorbis comment, Matroska, MP4 proti ffprobe
+        shell: bash
+        run: |
+          cargo build --locked --release -p orchidea-media --example media_znacky
+          echo "### Médiá – značky a ReplayGain" >> "$GITHUB_STEP_SUMMARY"
+          python3 media/nastroje/over_znacky.py target/release/examples/media_znacky "$RUNNER_TEMP/znacky" | tee -a "$GITHUB_STEP_SUMMARY"
 
   flac:
     name: Médiá – FLAC bitovo presne (sada IETF, kodéry flac a FFmpeg)
