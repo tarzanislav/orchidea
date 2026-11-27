@@ -41,6 +41,8 @@ unsafe extern "C" {
     fn munmap(adresa: *mut c_void, dlzka: usize) -> c_int;
     fn syscall(cislo: std::ffi::c_long, ...) -> std::ffi::c_long;
     fn prctl(volba: c_int, ...) -> c_int;
+    fn fcntl(fd: c_int, prikaz: c_int, ...) -> c_int;
+    fn posix_fadvise(fd: c_int, posun: i64, dlzka: i64, rada: c_int) -> c_int;
 }
 
 /// `struct pollfd`
@@ -51,6 +53,8 @@ struct PollFd {
     vratene: i16,
 }
 
+/// R264: len na čítanie – hľadanie aktualizácie nič nezapíše (ani príznak „použitý“ oddielu FAT).
+pub const MS_RDONLY: c_ulong = 1;
 pub const MS_NOSUID: c_ulong = 2;
 pub const MS_NODEV: c_ulong = 4;
 pub const MS_NOEXEC: c_ulong = 8;
@@ -383,14 +387,54 @@ pub fn pripni_na_jadro(jadro: usize) -> io::Result<()> {
 
 /// Hardvérový strážny časovač (R99): ak ho KLÍČ do `sekund` nenakŕmi, doska sa sama reštartuje.
 pub fn otvor_strazny_casovac(sekund: c_int) -> io::Result<std::fs::File> {
-    use std::os::fd::AsRawFd;
     let f = std::fs::OpenOptions::new().write(true).open("/dev/watchdog")?;
+    nastav_strazny_casovac(&f, sekund)?;
+    Ok(f)
+}
+
+/// Čas strážneho časovača otvoreného `f` (R264: aj prevzatého po spustení novej verzie KLÍČA).
+pub fn nastav_strazny_casovac(f: &std::fs::File, sekund: c_int) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
     let mut t = sekund;
     // SAFETY: ukazovateľ na c_int, žije počas volania; deskriptor patrí f.
     if unsafe { ioctl(f.as_raw_fd(), WDIOC_SETTIMEOUT, &mut t as *mut c_int) } < 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(f)
+    Ok(())
+}
+
+/// R264: má deskriptor prežiť spustenie iného programu (exec)? Strážny časovač sa takto odovzdá novej verzii
+/// KLÍČA – zariadenie /dev/watchdog sa nedá otvoriť dvakrát a zavretý bez „V“ by dosku reštartoval.
+pub fn dedi_pri_exec(fd: c_int, dedi: bool) -> io::Result<()> {
+    const F_SETFD: c_int = 2;
+    const FD_CLOEXEC: c_int = 1;
+    // SAFETY: fcntl s číselným argumentom, deskriptor kontroluje jadro (neplatný → EBADF).
+    if unsafe { fcntl(fd, F_SETFD, if dedi { 0 } else { FD_CLOEXEC }) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// R264: súbor zdedený cez exec podľa čísla deskriptora (`None`, ak taký deskriptor nie je otvorený).
+pub fn zdedeny_subor(fd: c_int) -> Option<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    const F_GETFD: c_int = 1;
+    // SAFETY: F_GETFD len overí, že deskriptor je otvorený.
+    if fd < 3 || unsafe { fcntl(fd, F_GETFD) } < 0 {
+        return None;
+    }
+    // SAFETY: deskriptor je otvorený a odovzdaný práve tomuto programu (premenná prostredia od štartéra);
+    // nikto iný ho nevlastní.
+    Some(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+/// R264: zahodí stránky súboru z vyrovnávacej pamäte (po `sync_all`) – ďalšie čítanie ide z karty, takže
+/// overenie odtlačku po zápise naozaj overí kartu.
+pub fn zabudni_v_pamati(f: &std::fs::File) {
+    use std::os::fd::AsRawFd;
+    const POSIX_FADV_DONTNEED: c_int = 4;
+    // SAFETY: obyčajné volanie s platným deskriptorom; výsledok je len rada jadru.
+    unsafe { posix_fadvise(f.as_raw_fd(), 0, 0, POSIX_FADV_DONTNEED) };
 }
 
 /// Stav úsporného režimu Ethernetu (EEE): (zapnutý, práve aktívny so súperom na druhej strane kábla).

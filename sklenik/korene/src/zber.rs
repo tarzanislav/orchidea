@@ -115,11 +115,37 @@ pub fn odpoved(kluc: &[u8; 32], nonce_poziadavky: &[u8; 12], text: &str) -> Vec<
 
 /// Overí odpoveď zberača na požiadavku s `nonce` a vráti jej text.
 pub fn over_odpoved(kluc: &[u8; 32], nonce_poziadavky: &[u8; 12], ramec: &[u8]) -> Result<String, String> {
+    String::from_utf8(over_odpoved_bajty(kluc, nonce_poziadavky, ramec)?)
+        .map_err(|_| "odpoveď nie je text".into())
+}
+
+/// Overí odpoveď zberača na požiadavku s `nonce` a vráti jej bajty (R264: kusy súborov aktualizácie).
+pub fn over_odpoved_bajty(
+    kluc: &[u8; 32],
+    nonce_poziadavky: &[u8; 12],
+    ramec: &[u8],
+) -> Result<Vec<u8>, String> {
     let (nonce, data) = rozbal(&kluc_odpovede(kluc), ramec)?;
     if &nonce != nonce_poziadavky {
         return Err("odpoveď patrí inej požiadavke".into());
     }
-    String::from_utf8(data).map_err(|_| "odpoveď nie je text".into())
+    Ok(data)
+}
+
+/// R264: odpoveď s bajtmi – prvý bajt `+` (údaje nasledujú) alebo `-` (za ním text chyby).
+pub fn odpoved_bajty(kluc: &[u8; 32], nonce_poziadavky: &[u8; 12], data: Result<&[u8], &str>) -> Vec<u8> {
+    let mut v = Vec::new();
+    match data {
+        Ok(d) => {
+            v.push(b'+');
+            v.extend_from_slice(d);
+        }
+        Err(e) => {
+            v.push(b'-');
+            v.extend_from_slice(e.as_bytes());
+        }
+    }
+    zabal(&kluc_odpovede(kluc), nonce_poziadavky, &v)
 }
 
 /// Správa v rámci: polia `kľúč=hodnota` (UTF-8, bez nových riadkov) a obsah (bajty).
@@ -295,6 +321,31 @@ pub fn posli(
     t.write_all(&zabal(kluc, nonce, &sprava.do_bajtov())).map_err(|e| format!("odoslanie: {e}"))?;
     let r = citaj_ramec(&mut t).map_err(|e| format!("odpoveď: {e}"))?;
     over_odpoved(kluc, nonce, &r)
+}
+
+/// R264: požiadavka, na ktorú zberač odpovie bajtmi ([`odpoved_bajty`]) – popis balíka alebo kus súboru.
+pub fn poziadaj(
+    adresa: std::net::SocketAddr,
+    kluc: &[u8; 32],
+    nonce: &[u8; 12],
+    sprava: &Sprava,
+    cakaj: std::time::Duration,
+) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    let mut t = std::net::TcpStream::connect_timeout(&adresa, cakaj).map_err(|e| format!("spojenie: {e}"))?;
+    let _ = t.set_read_timeout(Some(cakaj));
+    let _ = t.set_write_timeout(Some(cakaj));
+    t.write_all(&zabal(kluc, nonce, &sprava.do_bajtov())).map_err(|e| format!("odoslanie: {e}"))?;
+    let r = citaj_ramec(&mut t).map_err(|e| format!("odpoveď: {e}"))?;
+    let mut d = over_odpoved_bajty(kluc, nonce, &r)?;
+    match d.first() {
+        Some(b'+') => {
+            d.remove(0);
+            Ok(d)
+        }
+        Some(b'-') => Err(format!("zberač: {}", String::from_utf8_lossy(&d[1..]))),
+        _ => Err("zberač: odpoveď bez značky + / -".into()),
+    }
 }
 
 #[cfg(test)]

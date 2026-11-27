@@ -59,12 +59,53 @@ static STAV: Mutex<Stav> = Mutex::new(Stav {
 });
 static NOVE: Condvar = Condvar::new();
 static TREBA_SIET: AtomicBool = AtomicBool::new(false);
+/// R264: práve sa sťahuje aktualizácia – sieť nesmie zaspať.
+static PRENOS_AKTUALIZACIE: AtomicBool = AtomicBool::new(false);
 /// R253: koniec merania už išiel spolu s posledným záznamom – samostatná správa HOTOVÉ netreba.
 static KONIEC_POSLANY: AtomicBool = AtomicBool::new(false);
 
 /// Potrebuje zberač práve teraz sieť? (správca chladu podľa toho nechá čip siete zapnutý / zobudí ho)
 pub fn treba_siet() -> bool {
-    TREBA_SIET.load(Ordering::Relaxed)
+    TREBA_SIET.load(Ordering::Relaxed) || PRENOS_AKTUALIZACIE.load(Ordering::Relaxed)
+}
+
+/// R264: začiatok a koniec sťahovania aktualizácie (sieť ostane zobudená).
+pub fn prenos_aktualizacie(bezi: bool) {
+    PRENOS_AKTUALIZACIE.store(bezi, Ordering::Relaxed);
+}
+
+/// R264: rad správ je prázdny (zberač má všetko, aj HOTOVÉ) – krabička smie reštartovať do novej verzie.
+pub fn rad_prazdny() -> bool {
+    STAV.lock().map(|s| s.rad.is_empty()).unwrap_or(true)
+}
+
+/// R264: identita krabičky pre žiadosti o aktualizáciu.
+pub fn identita_spravy() -> Sprava {
+    let i = STAV.lock().map(|s| s.identita.clone()).unwrap_or_default();
+    s_identitou(&i)
+}
+
+/// R264: udalosť aktualizácie pre zberača (riadok v okne a v `_prehlad.txt`).
+pub fn hlasenie(text: &str) {
+    let i = match STAV.lock() {
+        Ok(s) if s.kluc.is_some() => s.identita.clone(),
+        _ => return,
+    };
+    do_radu(s_identitou(&i).s("ziadost", "hlasenie").s("text", text));
+}
+
+/// R264: žiadosť, na ktorú zberač odpovie bajtmi (popis balíka, kus súboru). Zberač musí byť už nájdený.
+pub fn poziadaj(sprava: Sprava) -> Result<Vec<u8>, String> {
+    let (kluc, adresa, mac) = {
+        let s = STAV.lock().map_err(|_| "zámok")?;
+        (s.kluc.ok_or("bez kľúča")?, s.zberac.ok_or("zberač ešte nie je nájdený")?, s.identita.mac.clone())
+    };
+    let mut sprava = sprava;
+    if !mac.is_empty() {
+        doplni_mac(&mut sprava, &mac);
+    }
+    let n = nonce().ok_or("bez náhodných čísel (/dev/urandom)")?;
+    zber::poziadaj(adresa, &kluc, &n, &sprava, Duration::from_secs(30))
 }
 
 /// Zapne odosielanie (raz, keď je známe nastavenie s kľúčom domácnosti).
@@ -104,6 +145,11 @@ fn s_identitou(i: &Identita) -> Sprava {
         .s("mac", &i.mac)
         .s("verzia", &i.verzia)
         .s("beh", &i.beh)
+        // R264: krabička vie prijať aktualizáciu po sieti
+        .s("aktualizacia", "1")
+        .s("arch", crate::aktualizacia::arch())
+        .s("cas", &crate::aktualizacia::cas().to_string())
+        .s("klic", &crate::aktualizacia::popis_rezimu())
 }
 
 /// Záznam zapísaný na kartu (súbor `subor` v priečinku MERANIA, pripojený text `obsah`). R253: `posledny` –
@@ -201,16 +247,28 @@ fn nonce() -> Option<[u8; 12]> {
 fn vlakno() {
     let _ = crate::sys::nizka_priorita();
     let mut pauza = Duration::ZERO;
+    // R264: nová verzia na skúške sa ozve hneď; po meraní sa krabička pýta na novú verziu každých 5 min
+    let mut dalsia_otazka = Instant::now();
     loop {
         // čaká na správu (alebo na koniec pauzy po neúspechu)
         {
             let Ok(mut s) = STAV.lock() else { return };
             let od = Instant::now();
             while s.rad.is_empty() || od.elapsed() < pauza {
-                let zvysok = if s.rad.is_empty() {
-                    Duration::from_secs(3600)
-                } else {
+                let pytat = crate::aktualizacia::pytat_sa();
+                if s.rad.is_empty() && pytat && Instant::now() >= dalsia_otazka {
+                    let i = s.identita.clone();
+                    s.rad.push_back(s_identitou(&i).s("ziadost", "ponuka"));
+                    dalsia_otazka = Instant::now() + crate::aktualizacia::KONTROLA_PONUKY;
+                    continue;
+                }
+                let zvysok = if !s.rad.is_empty() {
                     pauza.saturating_sub(od.elapsed())
+                } else if pytat {
+                    dalsia_otazka.saturating_duration_since(Instant::now()).max(Duration::from_secs(1))
+                } else {
+                    // stav sa môže zmeniť (meranie dobehne) – pozrieť sa aspoň raz za minútu
+                    Duration::from_secs(60)
                 };
                 s = match NOVE.wait_timeout(s, zvysok) {
                     Ok((g, _)) => g,
@@ -225,6 +283,8 @@ fn vlakno() {
             Ok(()) if prazdny => {
                 pauza = Duration::ZERO;
                 TREBA_SIET.store(false, Ordering::Relaxed);
+                // R264: zberač má všetko – ak čaká nová verzia a meranie dobehlo, reštart
+                crate::aktualizacia::restartuj_ak_mozno();
             }
             Ok(()) => pauza = Duration::ZERO,
             Err(e) => {
@@ -294,12 +354,14 @@ fn posli_rad() -> Result<(), String> {
         }
         let n = nonce().ok_or("bez náhodných čísel (/dev/urandom)")?;
         match zber::posli(a, &kluc, &n, &sprava, Duration::from_secs(15)) {
-            Ok(o) if o == "ok" => {
+            // R264: novší zberač môže za „ok“ pridať ponuku aktualizácie („ok nova=<verzia>“)
+            Ok(o) if o == "ok" || o.starts_with("ok ") => {
                 if let Ok(mut s) = STAV.lock() {
                     s.rad.pop_front();
                     s.odoslanych += 1;
                     s.posledna_chyba = None;
                 }
+                crate::aktualizacia::po_odpovedi(&o);
             }
             Ok(o) => return Err(format!("zberač: {o}")),
             Err(e) => {

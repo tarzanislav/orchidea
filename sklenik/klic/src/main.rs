@@ -76,6 +76,9 @@ mod hevc_meranie;
 // R247: záznamy merania pre zberač meraní (LOVEC ZBERAČ) v miestnej sieti
 #[cfg(target_os = "linux")]
 mod zber;
+// R264: aktualizácia systému v pamäti po sieti (štartér, skúška, návrat)
+#[cfg(target_os = "linux")]
+mod aktualizacia;
 #[cfg(target_os = "linux")]
 mod zvuk;
 // R230: cesta zvuku na kartách ASoC s prepínačmi (Amlogic)

@@ -1664,7 +1664,20 @@ pub fn spusti() {
     let start = Instant::now();
     let pid1 = std::process::id() == 1;
     if pid1 {
-        pripoj_systemove();
+        let nova_verzia = crate::aktualizacia::spusteny_starterom();
+        if !nova_verzia {
+            pripoj_systemove();
+        }
+        // R264: štartér – overená aktualizácia z karty sa spustí hneď (exec); nová verzia prevezme strážny časovač
+        if nova_verzia {
+            crate::aktualizacia::prevezmi_strazcu();
+            crate::aktualizacia::zacni_skusku();
+        } else if !citaj("/proc/cmdline")
+            .is_some_and(|c| c.split_whitespace().any(|x| x == "sklenik.skuska=1"))
+        {
+            crate::aktualizacia::startuj();
+        }
+        hlas(&format!("KLÍČ (R264): {}", crate::aktualizacia::popis_rezimu()));
         // R216: čo sa dialo pred predošlým (nečakaným) reštartom
         let predosly = predosly_start();
         if !Path::new("/dev/pmsg0").exists() {
@@ -1994,7 +2007,8 @@ pub fn spusti() {
         hlas("strážny časovač: v skúške vynechaný");
         None
     } else if pid1 {
-        match sys::otvor_strazny_casovac(15) {
+        // R264: po aktualizácii prevzatý od štartéra (zariadenie sa nedá otvoriť dvakrát)
+        match crate::aktualizacia::strazny_casovac(15) {
             Ok(f) => {
                 hlas(&format!(
                     "strážny časovač: 15 s ({})",
@@ -2663,6 +2677,10 @@ pub fn spusti() {
             zber_ohlaseny = true;
             match n.zberac {
                 Some(k) => {
+                    // R264: aktualizácia sa ukladá na disk, z ktorého krabička štartovala (nastavenie)
+                    crate::aktualizacia::nastav_spustaci(
+                        nastavenie.as_ref().map(|(c, _)| c.trim_start_matches("/dev/").to_string()),
+                    );
                     crate::zber::zapni(k, identita_zberaca(&model, n));
                     hlas("zberač meraní (R247): zapnutý – záznamy pôjdu aj do počítača v miestnej sieti");
                 }
@@ -2699,6 +2717,8 @@ pub fn spusti() {
             }
             // R247: zberaču aj správu o konci merania
             crate::zber::hotove();
+            // R264: po meraní smie krabička reštartovať do novej verzie a pýta sa na ponuky
+            crate::aktualizacia::meranie_hotove();
         }
         // R227: RPi s vc4 – menej čítaní popisu monitora (budenia I2C)
         if pid1

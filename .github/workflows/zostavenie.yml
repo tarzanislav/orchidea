@@ -229,7 +229,17 @@ jobs:
       - name: Prekladač podľa rust-toolchain.toml
         run: rustup toolchain install && rustup show
       - name: Zostavenie
-        run: cargo build --locked --release -p sklenik-sadic -p sklenik-zberac
+        shell: bash
+        run: |
+          # R264: čas commitu – zberač sa nikdy neaktualizuje na starší
+          export ORCHIDEA_CAS="$(git show -s --format=%ct HEAD)"
+          cargo build --locked --release -p sklenik-sadic -p sklenik-zberac
+      - name: R264 – balík samoaktualizácie zberača (zberac-windows-x86_64)
+        shell: bash
+        run: |
+          b=aktualizacia/zberac-windows-x86_64
+          mkdir -p "$b" && cp target/release/orchidea-zberac.exe "$b/"
+          target/release/orchidea-zberac.exe --balik "$b" zberac windows-x86_64 "${GITHUB_SHA::7}" "$(git show -s --format=%ct HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Zberač meraní – prenos cez slučku IPv6 vo Windows (R247)
         run: cargo test --locked --release -p sklenik-zberac -p sklenik-korene
       - name: Zápis, poistky, overenie, záloha a obnova na virtuálnom disku
@@ -432,6 +442,10 @@ jobs:
           path: |
             target/release/sadic.exe
             target/release/orchidea-zberac.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aktualizacia-zberac-windows
+          path: aktualizacia
 
   formaty:
     name: Obrazové formáty – nezávislé overenie a dlhý fuzzer (R211)

@@ -11,6 +11,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod aktualizacia;
 mod pole;
 pub mod zber;
 

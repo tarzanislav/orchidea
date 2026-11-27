@@ -8,8 +8,12 @@
 //! vytvorí ORCHIDEA Zapisovač pri prvom zápise karty – zberač ho číta pri každom spojení.
 //!
 //! Príkazy: `orchidea-zberac` · `orchidea-zberac --priecinok <cesta>` · `--bez-spustania` (nezapne spúšťanie po
-//! prihlásení) · `--adresa <ipv6> --porty <hladanie> <prenos>` (skúšky).
+//! prihlásení) · `--adresa <ipv6> --porty <hladanie> <prenos>` (skúšky) · `--balik <priečinok> <druh> <procesor>
+//! <verzia> <čas>` (R264: zapíše `popis.txt` balíka aktualizácie – nástroj CI).
+//!
+//! R264: aktualizácie krabičiek a samotného zberača z podpriečinka `_aktualizacia` (pozri [`aktualizacia`]).
 
+mod aktualizacia;
 mod siet;
 mod sklad;
 mod zoznam;
@@ -166,6 +170,29 @@ fn main() {
     #[cfg(windows)]
     windows::vypni_rychlu_upravu();
     let arg: Vec<String> = std::env::args().skip(1).collect();
+    // R264: zostavenie balíka aktualizácie (CI)
+    if arg.first().map(String::as_str) == Some("--balik") {
+        let [_, priecinok, druh, arch, verzia, cas] = &arg[..] else {
+            eprintln!("použitie: orchidea-zberac --balik <priečinok> <druh> <procesor> <verzia> <čas>");
+            std::process::exit(1);
+        };
+        match sklenik_korene::aktualizacia::zbal_priecinok(
+            std::path::Path::new(priecinok),
+            druh,
+            arch,
+            verzia,
+            cas.parse().unwrap_or(0),
+        ) {
+            Ok(b) => {
+                print!("{}", b.do_textu());
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("balík sa nepodarilo zostaviť: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
     let mut n = siet::Nastavenie::default();
     let mut priecinok = None;
     let mut spustanie = true;
@@ -213,6 +240,7 @@ fn main() {
     if let Err(e) = uloz_priecinok(&priecinok) {
         eprintln!("nastavenie sa nepodarilo uložiť: {e}");
     }
+    let ponuky = aktualizacia::Ponuky::novy(&priecinok);
     let sklad = match sklad::Sklad::novy(&priecinok) {
         Ok(s) => s,
         Err(e) => {
@@ -239,12 +267,40 @@ fn main() {
             println!("Kľúč domácnosti ešte nie je – vznikne pri prvom zápise karty v ORCHIDEA Zapisovači.")
         }
     }
+    let hlas = Arc::new(hlasatel());
     let z = Arc::new(siet::Zberac {
         sklad,
+        ponuky,
         kluc: Box::new(sklenik_korene::zber::nacitaj_kluc),
         cas,
-        hlas: Box::new(hlasatel()),
+        hlas: Box::new({
+            let h = hlas.clone();
+            move |t: &str| h(t)
+        }),
     });
+    // R264 (F3): zberač sa sám vymení za novší z _aktualizacia (kontrola pri štarte a každú minútu)
+    {
+        let z = z.clone();
+        let _ = std::thread::Builder::new().name("samoaktualizacia".into()).spawn(move || {
+            let mut posledne = String::new();
+            loop {
+                if let Some(t) = aktualizacia::vymen_sa(&z.ponuky, &*hlas)
+                    && t != posledne
+                {
+                    hlas(&t);
+                    posledne = t;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        });
+    }
+    match aktualizacia::vlastny_cas() {
+        0 => {}
+        c => println!(
+            "Aktualizácie (R264): krabičky aj zberač z priečinka {}\\ (zostavenie {c})",
+            aktualizacia::PRIECINOK
+        ),
+    }
     match siet::spusti(z, &n) {
         Ok((h, p)) => println!(
             "Čakám na krabičky v miestnej sieti (hľadanie UDP {h}, prenos TCP {p}). Okno môžete minimalizovať."
@@ -264,8 +320,19 @@ fn main() {
 mod skusky {
     use super::*;
     use sklenik_korene::zber::{self, Sprava};
-    use std::net::{Ipv6Addr, SocketAddr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::time::Duration;
+
+    /// Zberač na slučke: IPv6, kde nie je, IPv4 (kontajnery bez IPv6). Vráti (adresa, porty) alebo None.
+    fn na_slucke(z: Arc<siet::Zberac>) -> Option<(IpAddr, u16, u16)> {
+        for a in [IpAddr::V6(Ipv6Addr::LOCALHOST), IpAddr::V4(Ipv4Addr::LOCALHOST)] {
+            let n = siet::Nastavenie { port_hladania: 0, port_prenosu: 0, adresa: a };
+            if let Ok((h, p)) = siet::spusti(z.clone(), &n) {
+                return Some((a, h, p));
+            }
+        }
+        None
+    }
 
     /// Dočasný priečinok skúšky – vo WebAssembly (WASI) v pracovnom priečinku (temp_dir a process::id tam nie sú).
     fn docasny(meno: &str) -> std::path::PathBuf {
@@ -294,16 +361,16 @@ mod skusky {
         let kluc = [5u8; 32];
         let z = Arc::new(siet::Zberac {
             sklad: sklad::Sklad::novy(&d).unwrap(),
+            ponuky: aktualizacia::Ponuky::novy(&d),
             kluc: Box::new(move || Some(kluc)),
             cas: || (2026, 11, 27, 17, 6, 0),
             hlas: Box::new(|_| {}),
         });
-        let n = siet::Nastavenie { port_hladania: 0, port_prenosu: 0, adresa: Ipv6Addr::LOCALHOST };
-        let Ok((h, p)) = siet::spusti(z, &n) else {
-            eprintln!("IPv6 slučka nie je dostupná – skúška vynechaná");
+        let Some((a, h, p)) = na_slucke(z) else {
+            eprintln!("slučka nie je dostupná – skúška vynechaná");
             return;
         };
-        let ciel = SocketAddr::from((Ipv6Addr::LOCALHOST, h));
+        let ciel = SocketAddr::from((a, h));
         let adresa = zber::najdi(ciel, "odroid-tv", Duration::from_secs(3)).unwrap();
         assert_eq!(adresa.port(), p);
         let sprava = |zaznam: &str, obsah: &str| {
@@ -328,6 +395,88 @@ mod skusky {
         let m = d.join("hardkernel-odroid-c4 (odroid-tv)").join("2026-11-27 17-06 abc1234 – odroid-tv");
         assert_eq!(std::fs::read_to_string(m.join("01-Hardkernel-ODROID-C4-SD.txt")).unwrap(), "z0\nz3\n");
         assert!(m.join("HOTOVE.txt").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R264: zberač ponúkne novšiu verziu v odpovedi „ok“, krabička stiahne popis a súbory po kusoch (kód
+    /// krabičky z KORENÍ) a dostane presne tie isté bajty; tá istá verzia sa už neponúkne; stará krabička
+    /// (bez `aktualizacia=1`) dostane len „ok“.
+    #[test]
+    fn r264_aktualizacia_cez_slucku() {
+        use sklenik_korene::aktualizacia as balik;
+        let d = docasny("zberac-aktualizacia");
+        let kluc = [9u8; 32];
+        let ponuky = aktualizacia::Ponuky::novy(&d);
+        let b = ponuky.priecinok("klic", "aarch64").unwrap();
+        std::fs::create_dir_all(b.join("usr").join("bin")).unwrap();
+        let klic: Vec<u8> = (0..(balik::KUS_B * 2 + 777)).map(|i| (i * 7 % 251) as u8).collect();
+        std::fs::write(b.join("init"), &klic).unwrap();
+        std::fs::write(b.join("usr").join("bin").join("hevc_meranie"), b"HEVC").unwrap();
+        balik::zbal_priecinok(&b, "klic", "aarch64", "f00d123", 2_000).unwrap();
+        let z = Arc::new(siet::Zberac {
+            sklad: sklad::Sklad::novy(&d).unwrap(),
+            ponuky,
+            kluc: Box::new(move || Some(kluc)),
+            cas: || (2026, 11, 27, 23, 30, 0),
+            hlas: Box::new(|_| {}),
+        });
+        let Some((a, _, p)) = na_slucke(z) else {
+            eprintln!("slučka nie je dostupná – skúška vynechaná");
+            return;
+        };
+        let adresa = SocketAddr::from((a, p));
+        let t = Duration::from_secs(5);
+        let identita_s_casom = |verzia: &str, cas: &str| {
+            Sprava::nova()
+                .s("zariadenie", "Raspberry Pi 5 Model B Rev 1.0")
+                .s("mac", "2c:cf:67:40:c9:32")
+                .s("verzia", verzia)
+                .s("beh", "beh-r264")
+                .s("aktualizacia", "1")
+                .s("arch", "aarch64")
+                .s("cas", cas)
+        };
+        let identita = |verzia: &str| identita_s_casom(verzia, "1000");
+        let zaznam =
+            identita("abc1234").s("subor", "01-RPi5.txt").s("zaznam", "1").s_obsahom(b"z\n".to_vec());
+        assert_eq!(zber::posli(adresa, &kluc, &[1; 12], &zaznam, t).unwrap(), "ok nova=f00d123");
+        let stara = Sprava::nova().s("zariadenie", "RPi 5").s("verzia", "abc1234").s("zaznam", "2");
+        assert_eq!(zber::posli(adresa, &kluc, &[2; 12], &stara, t).unwrap(), "ok", "stará karta len „ok“");
+        let otazka = identita("abc1234").s("ziadost", "ponuka");
+        assert_eq!(zber::posli(adresa, &kluc, &[3; 12], &otazka, t).unwrap(), "ok nova=f00d123");
+        // sťahovanie: každá žiadosť má nové nonce
+        let mut n = 10u8;
+        let mut ziadaj = |s: Sprava| {
+            n += 1;
+            zber::poziadaj(adresa, &kluc, &[n; 12], &s, t)
+        };
+        let mut kroky = 0;
+        let st =
+            balik::stiahni(&mut ziadaj, &identita("abc1234"), "klic", "aarch64", "f00d123", &mut |_, _| {
+                kroky += 1
+            })
+            .unwrap();
+        assert_eq!(st.balik.verzia, "f00d123");
+        assert_eq!(st.subory, vec![klic.clone(), b"HEVC".to_vec()]);
+        assert_eq!(kroky, 4, "KLÍČ v 3 kusoch, HEVC v 1");
+        // iná verzia, než je ponúkaná, sa nepošle
+        assert!(
+            balik::stiahni(&mut ziadaj, &identita("abc1234"), "klic", "aarch64", "0000000", &mut |_, _| {})
+                .is_err()
+        );
+        // krabička s ponúkanou verziou (alebo novšou) už ponuku nedostane
+        let nova = identita("f00d123").s("ziadost", "ponuka");
+        assert_eq!(zber::posli(adresa, &kluc, &[40; 12], &nova, t).unwrap(), "ok");
+        let novsia = identita_s_casom("1234abc", "3000").s("ziadost", "ponuka");
+        assert_eq!(zber::posli(adresa, &kluc, &[41; 12], &novsia, t).unwrap(), "ok");
+        // hlásenie krabičky ide do prehľadu
+        let h = identita("f00d123").s("ziadost", "hlasenie").s("text", "aktualizácia f00d123 potvrdená");
+        assert_eq!(zber::posli(adresa, &kluc, &[42; 12], &h, t).unwrap(), "ok");
+        assert!(
+            std::fs::read_to_string(d.join("_prehlad.txt"))
+                .unwrap()
+                .contains("aktualizácia f00d123 potvrdená")
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }

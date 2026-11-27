@@ -110,6 +110,9 @@ dependencies = [
 [[package]]
 name = "sklenik-korene"
 version = "0.1.0"
+dependencies = [
+ "orchidea-jadro",
+]
 
 [[package]]
 name = "sklenik-sadic"

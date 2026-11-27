@@ -65,7 +65,7 @@ pub fn bezpecne_meno(t: &str) -> String {
     if v.is_empty() { "subor.txt".into() } else { v }
 }
 
-fn cas_text(c: Cas) -> String {
+pub fn cas_text(c: Cas) -> String {
     format!("{:04}-{:02}-{:02} {:02}:{:02}", c.0, c.1, c.2, c.3, c.4)
 }
 
@@ -178,6 +178,19 @@ impl Sklad {
         fs::create_dir_all(&cesta)?;
         fs::write(cesta.join(".beh"), format!("{beh}\n"))?;
         Ok((cesta, true, nove_zariadenie))
+    }
+
+    /// R264: kto poslal správu – meno priečinka zariadenia (napr. „02 X96 Max Plus (46-27-29-f7-03-ef)“).
+    pub fn kto(&self, s: &Sprava) -> String {
+        self.priecinok_zariadenia(s)
+            .ok()
+            .and_then(|(p, _)| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .unwrap_or_else(|| s.pole("zariadenie").unwrap_or("krabička").to_string())
+    }
+
+    /// R264: riadok do prehľadu (`_prehlad.txt`) – udalosti aktualizácie.
+    pub fn zapis_do_prehladu(&self, riadok: &str) -> io::Result<()> {
+        self.do_prehladu(riadok)
     }
 
     fn do_prehladu(&self, riadok: &str) -> io::Result<()> {

@@ -11,6 +11,7 @@ on:
       - "pismo/**"
       - "zariadenie/**"
       - "teplo/**"
+      - "jadro/**"
       - "nastroje/kontrola_merania.py"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -142,6 +143,8 @@ jobs:
         run: |
           # verzia na obrazovke: dátum a odtlačok zostavenia (aby bolo vidieť, ktorá karta beží)
           export SKLENIK_VERZIA="$(date -u +'%-d. %-m. %Y') · ${GITHUB_SHA::7}"
+          # R264: čas commitu – krabička nikdy neprejde aktualizáciou na starší balík
+          export ORCHIDEA_CAS="$(git show -s --format=%ct HEAD)"
           T=$(echo "${{ matrix.ciel }}" | tr 'a-z-' 'A-Z_')
           export "CARGO_TARGET_${T}_RUNNER=${{ matrix.qemu }} -cpu ${{ matrix.cpu }}"
           if [ -n "${{ matrix.linker }}" ]; then export "CARGO_TARGET_${T}_LINKER=${{ matrix.linker }}"; fi
@@ -195,6 +198,21 @@ jobs:
             echo "- $(basename "$t"): $v" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "$v" | grep -q 'stav=ok' && echo "$v" | grep -q 'sei_nezhoda=0'
           done
+      - name: R264 – balík aktualizácie po sieti (zberač ho rozošle krabičkám bez napaľovania karty)
+        if: matrix.id == 'v8'
+        run: |
+          b=aktualizacia/klic-aarch64
+          mkdir -p "$b/usr/bin" "$b/usr/share/orchidea/hevc"
+          cp klic-vystup/klic "$b/init"
+          cp klic-vystup/hevc_meranie "$b/usr/bin/hevc_meranie"
+          cp klic-vystup/hevc/*.hevc "$b/usr/share/orchidea/hevc/"
+          cargo run --locked --release -q -p sklenik-zberac -- --balik "$b" klic aarch64 "${GITHUB_SHA::7}" "$(git show -s --format=%ct HEAD)" > /tmp/popis.txt
+          { echo "### Balík aktualizácie klic-aarch64 (R264) – ${GITHUB_SHA::7}"; echo '```'; cat /tmp/popis.txt; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: matrix.id == 'v8'
+        with:
+          name: aktualizacia-klic-aarch64
+          path: aktualizacia
       - uses: actions/upload-artifact@v4
         with:
           name: klic-${{ matrix.id }}
