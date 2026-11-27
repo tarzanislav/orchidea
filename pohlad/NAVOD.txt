@@ -16,9 +16,10 @@ Linux (64-bit, x86-64): rozbaľte ZIP, v termináli v tom priečinku  chmod +x p
   (GTK, Qt, libwayland, libxkbcommon), všetko vrátane rozloženia klávesnice a mŕtvych klávesov (ˇ ´) je vlastné.
   Ak prostredie kreslí rámy okien samo (KDE, Sway), lišta okna je od neho; inak (GNOME, weston) má okno vlastnú
   lištu s titulkom: ťahaním sa presúva, dvojklikom maximalizuje, za okraj sa mení veľkosť, pravé tlačidlo = ponuka okna.
-  Rozdiel oproti Windows: tlačidlo Otvoriť zatiaľ nemá dialóg výberu súboru (je sivé) – súbor alebo priečinok
-  pretiahnite do okna zo správcu súborov alebo ho zadajte pri spustení; v katalógu „Pridať priečinok“ pridá
-  práve otvorený priečinok.
+  Dialóg Otvoriť a výber priečinka v katalógu ukáže prostredie vo svojom vzhľade (služba xdg-desktop-portal, ktorú
+  majú GNOME, KDE Plasma aj ďalšie; v Sway a Hyprland treba balík xdg-desktop-portal-gtk). Ak služba nie je,
+  tlačidlo Otvoriť je sivé – súbor alebo priečinok pretiahnite do okna alebo ho zadajte pri spustení; v katalógu
+  „Pridať priečinok“ potom pridá práve otvorený priečinok.
 
 Otvorenie obrázkov
   - tlačidlo Otvoriť alebo Ctrl+O (otvorí sa vybraný obrázok aj celý jeho priečinok),

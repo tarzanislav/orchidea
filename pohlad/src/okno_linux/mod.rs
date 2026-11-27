@@ -14,6 +14,7 @@
 //!
 //! Ovládanie je rovnaké ako vo Windows (pozri `okno_win`).
 
+mod portal;
 #[cfg(test)]
 mod skuska_kompozitor;
 mod sys;
@@ -21,7 +22,7 @@ mod wayland;
 
 use crate::klavesnica::{self as kl, Klavesnica};
 use crate::okno::{self, Dalej, Samotest, povel_znaku};
-use crate::prehliadac::{Povel, Prehliadac, Vstup};
+use crate::prehliadac::{Povel, Prehliadac, Vstup, ZiadostOkna};
 use orchidea_pismo::{Pismo, Platno};
 use std::collections::HashMap;
 use std::fs::File;
@@ -61,6 +62,10 @@ enum Sprava {
     Hotove,
     /// Pretiahnuté súbory (text/uri-list prečítaný v pomocnom vlákne).
     Pretiahnute(Vec<PathBuf>),
+    /// Služba dialógov prostredia (xdg-desktop-portal) je k dispozícii.
+    Dialogy,
+    /// Dialóg sa zavrel: vybraný súbor alebo priečinok (None = zrušené alebo chyba).
+    Vybrane(Option<PathBuf>),
     Koniec(String),
 }
 
@@ -180,6 +185,7 @@ struct Okno {
     koniec: bool,
     kod: i32,
     obraz_okna: Vec<u32>,
+    dialog_otvoreny: bool,
 }
 
 fn chyba(e: impl std::fmt::Display) -> String {
@@ -990,8 +996,49 @@ impl Okno {
                     self.vstup(Vstup::Otvor(c));
                 }
             }
+            Sprava::Dialogy => {
+                self.jadro.povol_dialogy();
+                self.prekreslit = true;
+            }
+            Sprava::Vybrane(c) => {
+                self.dialog_otvoreny = false;
+                if let Some(c) = c {
+                    self.vstup(Vstup::Otvor(c));
+                }
+            }
             Sprava::Koniec(e) => self.zlyhanie(e),
         }
+    }
+
+    /// Žiadosť jadra o dialóg: ukáže ho prostredie (portál) v pomocnom vlákne; v samoteste sa len započíta.
+    fn dialogy(&mut self) {
+        let Some(z) = self.jadro.vezmi_ziadost_okna() else { return };
+        if let Some(t) = self.samotest.as_mut() {
+            t.dialogy += 1;
+            return;
+        }
+        if self.dialog_otvoreny {
+            return;
+        }
+        let (titulok, priecinok, adresar) = match z {
+            ZiadostOkna::OtvorSubor { priecinok } => {
+                ("Otvoriť obrázok – prehliadač a editor fotografií (Pohľad)", priecinok, false)
+            }
+            ZiadostOkna::VyberPriecinok { priecinok } => {
+                ("Pridať priečinok do katalógu fotografií (Herbár)", priecinok, true)
+            }
+        };
+        self.dialog_otvoreny = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let v = portal::Zbernica::relacie()
+                .and_then(|b| portal::vyber(b, titulok, priecinok.as_deref(), adresar))
+                .unwrap_or_else(|e| {
+                    eprintln!("{}", chyba(format!("dialóg prostredia: {e}")));
+                    None
+                });
+            let _ = tx.send(Sprava::Vybrane(v));
+        });
     }
 
     /// Termíny: časovač prezentácie a opakovanie klávesu.
@@ -1028,10 +1075,13 @@ impl Okno {
         match t.krok(&mut self.jadro) {
             Dalej::Cakaj => {}
             Dalej::Vstupy(v) => {
+                self.samotest = Some(t);
                 for v in v {
                     self.vstup(v);
+                    self.dialogy();
                 }
                 self.samotest_dalsi = true;
+                return;
             }
             Dalej::Koniec => {
                 let kod = t.dokonci(&mut self.jadro, &mut self.platno);
@@ -1216,7 +1266,19 @@ fn spusti_na(z: std::os::unix::net::UnixStream, argumenty: &[String], katalog: O
         koniec: false,
         kod: 0,
         obraz_okna: Vec::new(),
+        dialog_otvoreny: false,
     };
+    if o.samotest.is_some() {
+        // samotest nečaká na človeka – dialógy sa len započítajú
+        o.jadro.povol_dialogy();
+    } else {
+        let tx = o.tx.clone();
+        std::thread::spawn(move || {
+            if portal::je_k_dispozicii() {
+                let _ = tx.send(Sprava::Dialogy);
+            }
+        });
+    }
 
     // zoznam rozhraní kompozitora (get_registry + sync)
     o.objekty.insert(2, Druh::Registry);
@@ -1300,6 +1362,7 @@ fn spusti_na(z: std::os::unix::net::UnixStream, argumenty: &[String], katalog: O
             o.sprava(s);
         }
         o.terminy();
+        o.dialogy();
     }
     // zmeny katalógu fotografií na disk (súbory XMP sú zapísané hneď)
     o.jadro.pri_zatvoreni();
