@@ -750,6 +750,13 @@ pub fn nadviaz<S: Read + Write>(
     })
 }
 
+impl<S> Tls<S> {
+    /// Prúd pod šifrovaním (napr. na nastavenie limitov TCP).
+    pub fn prud(&self) -> &S {
+        &self.prud
+    }
+}
+
 impl<S: Read + Write> Tls<S> {
     /// Spracuje správy výmeny po nadviazaní: NewSessionTicket sa ignoruje, KeyUpdate obnoví kľúč (a odpovie).
     fn po_vymene(&mut self, obsah: &[u8]) -> Result<(), Chyba> {

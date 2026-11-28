@@ -519,8 +519,10 @@ pub fn ziadaj<S: Read + Write>(
 /// Nastavenie sťahovania cez sieť.
 #[derive(Clone, Copy)]
 pub struct Nastavenie<'a> {
-    /// najdlhšie čakanie na spojenie a na každé čítanie
+    /// najdlhšie čakanie na spojenie (TCP, výmena TLS)
     pub cakanie: Duration,
+    /// najdlhšia nečinnosť pri čítaní a zápise (žiadny bajt) – celkový limit pre živý prúd nie je (žiadosť D)
+    pub necinnost: Duration,
     pub presmerovani: usize,
     /// overenie servera pre `https://` (napr. [`crate::x509::Overenie::mozilla`] s aktuálnym časom)
     pub overenie: Option<&'a dyn crate::tls::Overovac>,
@@ -528,7 +530,12 @@ pub struct Nastavenie<'a> {
 
 impl Default for Nastavenie<'_> {
     fn default() -> Self {
-        Nastavenie { cakanie: Duration::from_secs(10), presmerovani: NAJVIAC_PRESMEROVANI, overenie: None }
+        Nastavenie {
+            cakanie: Duration::from_secs(10),
+            necinnost: Duration::from_secs(15),
+            presmerovani: NAJVIAC_PRESMEROVANI,
+            overenie: None,
+        }
     }
 }
 
@@ -536,8 +543,9 @@ impl std::fmt::Debug for Nastavenie<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Nastavenie({:?}, {} presm., overenie {})",
+            "Nastavenie(spojenie {:?}, nečinnosť {:?}, {} presm., overenie {})",
             self.cakanie,
+            self.necinnost,
             self.presmerovani,
             self.overenie.is_some()
         )
@@ -639,6 +647,13 @@ pub fn stiahni(
         } else {
             Prud::Tcp(s)
         };
+        // po výmene TLS platí pre čítanie a zápis limit nečinnosti
+        let tcp = match &prud {
+            Prud::Tcp(t) => t,
+            Prud::Tls(t) => t.prud(),
+        };
+        tcp.set_read_timeout(Some(nastavenie.necinnost))?;
+        tcp.set_write_timeout(Some(nastavenie.necinnost))?;
         let o = ziadaj(prud, &url, navyse)?;
         match (o.hlavicka.stav, o.hlavicka.pole("location")) {
             (301 | 302 | 303 | 307 | 308, Some(kam)) => url = url.spoj(kam)?,
