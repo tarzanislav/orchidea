@@ -96,6 +96,15 @@ pub fn hlasenie(text: &str) {
 
 /// R264: žiadosť, na ktorú zberač odpovie bajtmi (popis balíka, kus súboru). Zberač musí byť už nájdený.
 pub fn poziadaj(sprava: Sprava) -> Result<Vec<u8>, String> {
+    // R267: čip siete mohol medzitým zaspať (chladný systém) – počkať, kým sa zobudí a má adresu (RPi 5
+    // 28. 11. 01:13: „Network unreachable“, sťahovanie začalo, keď sieť práve zaspávala)
+    let od = Instant::now();
+    while rozhranie().is_none() {
+        if od.elapsed() >= CAKANIE_NA_SIET {
+            return Err("sieť bez spojenia alebo bez adresy IPv6".into());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
     let (kluc, adresa, mac) = {
         let s = STAV.lock().map_err(|_| "zámok")?;
         (s.kluc.ok_or("bez kľúča")?, s.zberac.ok_or("zberač ešte nie je nájdený")?, s.identita.mac.clone())

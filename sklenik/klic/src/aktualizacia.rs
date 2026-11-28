@@ -614,10 +614,13 @@ pub fn ponuka(v: &str) {
         return;
     }
     let v = v.to_string();
-    let _ = std::thread::Builder::new().name("aktualizacia".into()).spawn(move || {
+    // R267: sieť ostane zobudená hneď od ponuky (nie až od začiatku sťahovania) – inak medzitým zaspí
+    crate::zber::prenos_aktualizacie(true);
+    let vlakno = std::thread::Builder::new().name("aktualizacia".into()).spawn(move || {
         let _ = sys::nizka_priorita();
         let t = Instant::now();
         let r = stiahni_a_uloz(&v);
+        crate::zber::prenos_aktualizacie(false);
         STAHUJE.store(false, Ordering::Relaxed);
         match r {
             Ok(true) => {
@@ -643,10 +646,14 @@ pub fn ponuka(v: &str) {
             }
             Err(e) => {
                 hlas(&format!("aktualizácia (R264): verzia {v} – {e} (skúsi sa znova pri ďalšej ponuke)"));
-                crate::zber::hlasenie(&format!("aktualizácia {v} zlyhala: {e}"));
+                crate::zber::hlasenie(&format!("aktualizácia {v} zlyhala: {e} (skúsi sa znova o 5 min)"));
             }
         }
     });
+    if vlakno.is_err() {
+        crate::zber::prenos_aktualizacie(false);
+        STAHUJE.store(false, Ordering::Relaxed);
+    }
 }
 
 /// Stiahne verziu `v` a uloží ju na kartu ako skúšanú. `Ok(false)` – verzia predtým zlyhala.
@@ -663,7 +670,6 @@ fn stiahni_a_uloz(v: &str) -> Result<bool, String> {
             return Ok(true);
         }
     }
-    crate::zber::prenos_aktualizacie(true);
     let mut posledne = 0;
     let r = balik::stiahni(
         &mut |s| crate::zber::poziadaj(s),
@@ -679,7 +685,6 @@ fn stiahni_a_uloz(v: &str) -> Result<bool, String> {
             }
         },
     );
-    crate::zber::prenos_aktualizacie(false);
     let st = r?;
     over_balik(&st.balik, v)?;
     let _z = KARTA_ZAMOK.lock();
