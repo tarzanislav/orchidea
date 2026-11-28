@@ -214,15 +214,18 @@ jobs:
           sudo ip link set v0 up
           sudo ip netns exec skuska ip link set lo up
           sudo ip netns exec skuska ip link set v1 up
-          printf 'local stratum 8\nallow 10.77.0.0/24\nbindaddress 10.77.0.1\ncmdport 0\npidfile /tmp/chrony.pid\ndriftfile /tmp/chrony.drift\n' > /tmp/chrony.conf
-          sudo chronyd -x -f /tmp/chrony.conf
+          # rozhodcovia majú profil AppArmor – nastavenie, pid a záznamy len na miestach, ktoré profil dovoľuje
+          printf 'local stratum 8\nallow 10.77.0.0/24\nbindaddress 10.77.0.1\ncmdport 0\npidfile /run/chrony/skuska.pid\ndriftfile /var/lib/chrony/skuska.drift\n' \
+            | sudo tee /etc/chrony/skuska.conf > /dev/null
+          sudo mkdir -p /run/chrony /var/lib/chrony
+          sudo chronyd -x -f /etc/chrony/skuska.conf
           sudo dnsmasq --conf-file=/dev/null --interface=v0 --bind-interfaces \
             --dhcp-range=10.77.0.50,10.77.0.99,255.255.255.0,2m --dhcp-option=option:ntp-server,10.77.0.1 \
             --host-record=skuska.orchidea,10.77.0.7 --host-record=web.orchidea,10.77.0.1 \
             --address=/priamo.orchidea/10.77.0.8 \
             --cname=alias.orchidea,skuska.orchidea --cname=len-alias.orchidea,priamo.orchidea --local=/orchidea/ \
-            --no-resolv --no-hosts --log-dhcp --log-queries --log-facility=/tmp/dnsmasq.log \
-            --dhcp-leasefile=/tmp/dnsmasq.leases --pid-file=/tmp/dnsmasq.pid
+            --no-resolv --no-hosts --log-dhcp --log-queries \
+            --dhcp-leasefile=/var/lib/misc/dnsmasq.skuska.leases --pid-file=/run/dnsmasq-skuska.pid
           # rozhodca HTTP: server Pythonu (Content-Length, presmerovanie /nove → /nove/)
           mkdir -p /tmp/web/nove /tmp/stiahnute
           printf '#EXTM3U\n#EXTINF:-1,Skuska\nhttp://10.77.0.1:8080/prud.ts\n' > /tmp/web/nove/zoznam.m3u
@@ -253,7 +256,7 @@ jobs:
           { echo "### Internet (R268) – KLÍČ proti dnsmasq a chrony"; echo '```'; cat /tmp/internet.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Záznam rozhodcu
         if: always()
-        run: sudo tail -60 /tmp/dnsmasq.log || true
+        run: sudo journalctl -t dnsmasq -t dnsmasq-dhcp -t chronyd --no-pager | tail -80 || true
 
   sadic-iso:
     name: ORCHIDEA Zapisovač – formátovanie a ISO (Linux, nezávislé fsck)
