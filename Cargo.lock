@@ -54,6 +54,10 @@ name = "orchidea-jadro"
 version = "0.1.0"
 
 [[package]]
+name = "orchidea-kryptografia"
+version = "0.1.0"
+
+[[package]]
 name = "orchidea-media"
 version = "0.1.0"
 dependencies = [

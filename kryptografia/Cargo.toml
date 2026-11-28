@@ -1,0 +1,17 @@
+[package]
+name = "orchidea-kryptografia"
+description = "Kryptografia ORCHIDEA – vlastné šifry a odtlačky podľa noriem (SHA-2, HMAC, HKDF, AES-GCM, ECDSA, RSA) pre šifrované spojenie s webom (HTTPS, TLS 1.3); bez cudzích knižníc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[dependencies]
+
+[lints]
+workspace = true

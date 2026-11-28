@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["jadro", "gpu", "neuron", "pismo", "zariadenie", "teplo", "dlazdice", "farba", "formaty", "pohlad", "vzhlad", "hevc", "hevc-dekoder", "media", "siet", "sklenik/karta", "sklenik/klic", "sklenik/korene", "sklenik/sadic", "sklenik/zberac"]
+members = ["jadro", "gpu", "neuron", "pismo", "zariadenie", "teplo", "dlazdice", "farba", "formaty", "pohlad", "vzhlad", "hevc", "hevc-dekoder", "media", "siet", "kryptografia", "sklenik/karta", "sklenik/klic", "sklenik/korene", "sklenik/sadic", "sklenik/zberac"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,6 +27,7 @@ orchidea-hevc = { path = "hevc" }
 orchidea-hevc-dekoder = { path = "hevc-dekoder" }
 orchidea-media = { path = "media" }
 orchidea-siet = { path = "siet" }
+orchidea-kryptografia = { path = "kryptografia" }
 sklenik-karta = { path = "sklenik/karta" }
 sklenik-korene = { path = "sklenik/korene" }
 
