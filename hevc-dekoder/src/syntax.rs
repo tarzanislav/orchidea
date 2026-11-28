@@ -303,6 +303,94 @@ const PRECHOD: [[[(u8, u8); 64]; 3]; 4] = prechody();
 /// ctxIdxMap pre sig_coeff_flag bloku 4×4 (9.3.4.2.5).
 const MAPA_SIG_4X4: [u8; 16] = [0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8];
 
+/// ctxInc príznaku sig_coeff_flag (9.3.4.2.5, s posunom 27 pre farbu) vopred pre každý podblok:
+/// `SIG_CTX[trieda][farba][prevCsbf][(xS, yS) ≠ (0, 0)][scanIdx][n]` – trieda 0 = blok 4 × 4, 1 = 8 × 8,
+/// 2 = 16 × 16 a 32 × 32; `n` = poloha v podbloku v poradí prechodu 4 × 4. Odvodenie po vetvách sa robí raz
+/// pri preklade, nie pri každom koeficiente (na Cortex-A53 so vetvením v poradí je to citeľné).
+static SIG_CTX: TabulkaSig = tabulka_sig();
+
+/// ctxInc pre 16 polôh podbloku podľa scanIdx a (xS, yS) ≠ (0, 0).
+type SigPodblok = [[[u8; 16]; 3]; 2];
+/// [trieda veľkosti][farba][prevCsbf] → [`SigPodblok`].
+type TabulkaSig = [[[SigPodblok; 4]; 2]; 3];
+
+const fn tabulka_sig() -> TabulkaSig {
+    let mut t = [[[[[[0u8; 16]; 3]; 2]; 4]; 2]; 3];
+    let mut trieda = 0;
+    while trieda < 3 {
+        let mut farba = 0;
+        while farba < 2 {
+            let mut pred = 0;
+            while pred < 4 {
+                let mut mimo = 0;
+                while mimo < 2 {
+                    let mut sken = 0;
+                    while sken < 3 {
+                        let mut np = 0;
+                        while np < 16 {
+                            let (xp, yp) = (PRECHOD[2][sken][np].0 as usize, PRECHOD[2][sken][np].1 as usize);
+                            let s = if trieda == 0 {
+                                MAPA_SIG_4X4[(yp << 2) + xp] as usize
+                            } else if mimo == 0 && xp + yp == 0 {
+                                0
+                            } else {
+                                let mut s = match pred {
+                                    0 => {
+                                        if xp + yp == 0 {
+                                            2
+                                        } else if xp + yp < 3 {
+                                            1
+                                        } else {
+                                            0
+                                        }
+                                    }
+                                    1 => {
+                                        if yp == 0 {
+                                            2
+                                        } else if yp == 1 {
+                                            1
+                                        } else {
+                                            0
+                                        }
+                                    }
+                                    2 => {
+                                        if xp == 0 {
+                                            2
+                                        } else if xp == 1 {
+                                            1
+                                        } else {
+                                            0
+                                        }
+                                    }
+                                    _ => 2,
+                                };
+                                if farba == 0 {
+                                    if mimo == 1 {
+                                        s += 3;
+                                    }
+                                    s += if trieda == 1 { if sken == 0 { 9 } else { 15 } } else { 21 };
+                                } else {
+                                    s += if trieda == 1 { 9 } else { 12 };
+                                }
+                                s
+                            };
+                            t[trieda][farba][pred][mimo][sken][np] =
+                                (if farba == 0 { s } else { 27 + s }) as u8;
+                            np += 1;
+                        }
+                        sken += 1;
+                    }
+                    mimo += 1;
+                }
+                pred += 1;
+            }
+            farba += 1;
+        }
+        trieda += 1;
+    }
+    t
+}
+
 /// QpC podľa qPi pre ChromaArrayType = 1 (tab. 8-10).
 fn qp_farby(qpi: i32) -> i32 {
     const T: [i32; 14] = [29, 30, 31, 32, 33, 33, 34, 34, 35, 35, 36, 36, 37, 37];
@@ -1572,6 +1660,8 @@ impl<'a> DekoderRezu<'a> {
             }
             let predosly = (xs + 1 < nsb && csbf[ys * 8 + xs + 1]) as usize
                 + 2 * (ys + 1 < nsb && csbf[(ys + 1) * 8 + xs]) as usize;
+            let trieda = (log2 as usize - 2).min(2);
+            let sig_ctx = &SIG_CTX[trieda][usize::from(c > 0)][predosly][usize::from(xs + ys > 0)][sken];
             // významné koeficienty v poradí n = 15 … 0
             let mut vyznamne = [0u8; 16];
             let mut pocet = 0usize;
@@ -1585,55 +1675,8 @@ impl<'a> DekoderRezu<'a> {
             let mut nn = zaciatok;
             while nn >= 0 {
                 let np = nn as usize;
-                let (xp, yp) = (prechod_4[np].0 as usize, prechod_4[np].1 as usize);
-                let (xc, yc) = ((xs << 2) + xp, (ys << 2) + yp);
                 let sig = if np > 0 || !odvod_dc {
-                    let s = if log2 == 2 {
-                        MAPA_SIG_4X4[(yc << 2) + xc] as usize
-                    } else if xc + yc == 0 {
-                        0
-                    } else {
-                        let mut s = match predosly {
-                            0 => {
-                                if xp + yp == 0 {
-                                    2
-                                } else if xp + yp < 3 {
-                                    1
-                                } else {
-                                    0
-                                }
-                            }
-                            1 => {
-                                if yp == 0 {
-                                    2
-                                } else if yp == 1 {
-                                    1
-                                } else {
-                                    0
-                                }
-                            }
-                            2 => {
-                                if xp == 0 {
-                                    2
-                                } else if xp == 1 {
-                                    1
-                                } else {
-                                    0
-                                }
-                            }
-                            _ => 2,
-                        };
-                        if c == 0 {
-                            if xs + ys > 0 {
-                                s += 3;
-                            }
-                            s += if log2 == 3 { if sken == 0 { 9 } else { 15 } } else { 21 };
-                        } else {
-                            s += if log2 == 3 { 9 } else { 12 };
-                        }
-                        s
-                    };
-                    let v = self.bin(k::SIG_COEFF + if c == 0 { s } else { 27 + s }) == 1;
+                    let v = self.bin(k::SIG_COEFF + usize::from(sig_ctx[np])) == 1;
                     if v {
                         odvod_dc = false;
                     }
