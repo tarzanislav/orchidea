@@ -125,6 +125,15 @@ pub trait Zdroj {
     fn riadok(&self, y: usize) -> &[Vzorka];
     /// Riadky `y … y + h − 1` v jednom kuse pamäte: (vzorky od začiatku riadka `y`, krok riadka), inak `None`.
     fn riadky(&self, y: usize, h: usize) -> Option<(&[Vzorka], usize)>;
+    /// Zoznam riadkov od riadka `sy`: `riadky[j]` = vzorky od stĺpca `x` (`x` ≤ šírka) po koniec riadka
+    /// Clip3(0, výška − 1, sy + j) – riadky nad a pod rovinou sú okrajové (8.5.3.3.3.2).
+    #[inline]
+    fn riadky_od<'a>(&'a self, sy: i32, x: usize, riadky: &mut [&'a [Vzorka]]) {
+        let posledny = self.vyska() as i32 - 1;
+        for (j, r) in riadky.iter_mut().enumerate() {
+            *r = &self.riadok((sy + j as i32).clamp(0, posledny) as usize)[x..];
+        }
+    }
 }
 
 impl Zdroj for Rovina {
@@ -259,6 +268,22 @@ impl Zdroj for RovinaPasov {
             return None;
         }
         Some((&self.pas(i)[(y - i * self.vyska_pasu) * self.sirka..], self.sirka))
+    }
+
+    /// Pás sa vyhľadá (a prípadne počká) len pri prechode do ďalšieho pásu, nie pre každý riadok.
+    #[inline]
+    fn riadky_od<'a>(&'a self, sy: i32, x: usize, riadky: &mut [&'a [Vzorka]]) {
+        let posledny = self.vyska as i32 - 1;
+        let (mut pas, mut od, mut po): (&[Vzorka], usize, usize) = (&[], 0, 0);
+        for (j, r) in riadky.iter_mut().enumerate() {
+            let y = (sy + j as i32).clamp(0, posledny) as usize;
+            if y < od || y >= po {
+                let i = y / self.vyska_pasu;
+                (pas, od, po) = (self.pas(i), i * self.vyska_pasu, (i + 1) * self.vyska_pasu);
+            }
+            let z = (y - od) * self.sirka;
+            *r = &pas[z + x..z + self.sirka];
+        }
     }
 }
 
