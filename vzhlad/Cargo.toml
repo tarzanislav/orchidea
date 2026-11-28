@@ -1,0 +1,18 @@
+[package]
+name = "orchidea-vzhlad"
+description = "Téma vzhľadu (Okvetie) a dizajnový systém ORCHIDEE – návrhové hodnoty, témy, kontrast podľa WCAG 2.2, ikony a prvky s ich stavmi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.orchidea]
+vrstva = 2
+
+[dependencies]
+orchidea-pismo.workspace = true
+
+[lints]
+workspace = true
