@@ -538,8 +538,10 @@ mod skusky {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// R266: denník – riadok s dátumom hneď v súbore; príliš veľký sa presunie do staršieho.
+    /// R266: denník – riadok s dátumom hneď v súbore; príliš veľký sa presunie do staršieho. Vo WebAssembly
+    /// (WASI) nie sú vlákna – vlákno okna sa nespustí, zberač tam nebeží.
     #[test]
+    #[cfg_attr(target_family = "wasm", ignore = "WASI nemá vlákna")]
     fn r266_dennik_zberaca() {
         let d = docasny("dennik");
         std::fs::create_dir_all(&d).unwrap();
