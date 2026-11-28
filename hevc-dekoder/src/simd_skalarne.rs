@@ -33,6 +33,32 @@ pub fn predvolene_jedna(pred: &[i16], ciel: &mut [Vzorka], pridaj: i32, shift: u
     predvolene_jedna_skalarne(pred, ciel, pridaj, shift, max);
 }
 
+/// SAO hranový posun – bez ručného NEON sa tu nespracuje nič (0 vzoriek), počíta skalárna cesta v `sao`.
+#[inline(always)]
+pub fn sao_hrana(
+    _ciel: &mut [Vzorka],
+    _stred: &[Vzorka],
+    _a: &[Vzorka],
+    _b: &[Vzorka],
+    _t: [i16; 5],
+    _max: i16,
+) -> usize {
+    0
+}
+
+/// SAO pásmový posun – bez ručného NEON 0 vzoriek (ako `sao_hrana`).
+#[inline(always)]
+pub fn sao_pasmo(
+    _ciel: &mut [Vzorka],
+    _stred: &[Vzorka],
+    _posuny: [i16; 4],
+    _pasmo: u16,
+    _posun_pasma: u32,
+    _max: i16,
+) -> usize {
+    0
+}
+
 /// Úsek hrany jasu – bez ručného NEON sa nespracuje tu (`false`), odblokovanie použije skalárnu cestu.
 #[inline(always)]
 pub fn odblokuj_jas(
