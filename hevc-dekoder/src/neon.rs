@@ -418,6 +418,111 @@ pub fn odblokuj_jas(
     true
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// SAO (8.7.3.2) pre 8 bitov: posun sa vyberie tabuľkou v registri (TBL) a pripočíta so sčítaním s nasýtením
+// (USQADD: vzorka bez znamienka + posun so znamienkom, výsledok 0 … 255 = Clip3(0, 255, …)). Posuny SaoOffsetVal
+// sú pri 8 bitoch v −7 … 7, teda v i8 (inak sa vráti 0 a počíta skalárna cesta).
+// ---------------------------------------------------------------------------------------------------------------
+
+/// Hranový posun úseku riadka (ako `sao::hrana_riadok`): `ciel[i] = Clip3(0, 255, c + t[2 + Sign(c − a) +
+/// Sign(c − b)])` pre c = `stred[i]`, a = `a[i]`, b = `b[i]`. Spracuje začiatok úseku po 16 a 8 vzorkách a vráti
+/// ich počet – zvyšok (menej ako 8) dopočíta volajúci. Pri `max` ≠ 255 alebo posune mimo i8 vráti 0.
+pub fn sao_hrana(
+    ciel: &mut [Vzorka],
+    stred: &[Vzorka],
+    a: &[Vzorka],
+    b: &[Vzorka],
+    t: [i16; 5],
+    max: i16,
+) -> usize {
+    if max != 255 || t.iter().any(|&p| i8::try_from(p).is_err()) {
+        return 0;
+    }
+    let n = ciel.len();
+    assert!(stred.len() >= n && a.len() >= n && b.len() >= n, "HEVC: krátky riadok SAO");
+    let mut tab = [0i8; 16];
+    for (d, &p) in tab.iter_mut().zip(&t) {
+        *d = p as i8;
+    }
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        // SAFETY: tab má 16 bajtov.
+        let tab = unsafe { vld1q_s8(tab.as_ptr()) };
+        let (zs, za, zb, zc) = (stred.as_ptr(), a.as_ptr(), b.as_ptr(), ciel.as_mut_ptr());
+        let mut i = 0;
+        while i + 16 <= n {
+            // SAFETY: i + 16 ≤ n ≤ dĺžka každého rezu (assert vyššie).
+            let (c, va, vb) = unsafe { (vld1q_u8(zs.add(i)), vld1q_u8(za.add(i)), vld1q_u8(zb.add(i))) };
+            // Sign(c − x) = [c > x] − [c < x]; maska porovnania je −1 (0xFF), preto (x > c) − (c > x)
+            let sa = vsubq_u8(vcgtq_u8(va, c), vcgtq_u8(c, va));
+            let sb = vsubq_u8(vcgtq_u8(vb, c), vcgtq_u8(c, vb));
+            let posun = vqtbl1q_s8(tab, vaddq_u8(vaddq_u8(sa, sb), vdupq_n_u8(2)));
+            // SAFETY: i + 16 ≤ n = ciel.len().
+            unsafe { vst1q_u8(zc.add(i), vsqaddq_u8(c, posun)) };
+            i += 16;
+        }
+        if i + 8 <= n {
+            // SAFETY: i + 8 ≤ n ≤ dĺžka každého rezu.
+            let (c, va, vb) = unsafe { (vld1_u8(zs.add(i)), vld1_u8(za.add(i)), vld1_u8(zb.add(i))) };
+            let sa = vsub_u8(vcgt_u8(va, c), vcgt_u8(c, va));
+            let sb = vsub_u8(vcgt_u8(vb, c), vcgt_u8(c, vb));
+            let posun = vqtbl1_s8(tab, vadd_u8(vadd_u8(sa, sb), vdup_n_u8(2)));
+            // SAFETY: i + 8 ≤ n = ciel.len().
+            unsafe { vst1_u8(zc.add(i), vsqadd_u8(c, posun)) };
+            i += 8;
+        }
+        i
+    }
+}
+
+/// Pásmový posun úseku riadka (ako `sao::pasmo_riadok`): pásmo p = c >> 3 má posun `posuny[k]` pre
+/// k = (p − `pasmo`) & 31 < 4, inak 0; `ciel[i] = Clip3(0, 255, c + posun)`. Spracuje začiatok po 16 a 8 vzorkách
+/// a vráti ich počet (zvyšok dopočíta volajúci). Pri inej hĺbke (`posun_pasma` ≠ 3, `max` ≠ 255) alebo posune
+/// mimo i8 vráti 0.
+pub fn sao_pasmo(
+    ciel: &mut [Vzorka],
+    stred: &[Vzorka],
+    posuny: [i16; 4],
+    pasmo: u16,
+    posun_pasma: u32,
+    max: i16,
+) -> usize {
+    if max != 255 || posun_pasma != 3 || posuny.iter().any(|&p| i8::try_from(p).is_err()) {
+        return 0;
+    }
+    let n = ciel.len();
+    assert!(stred.len() >= n, "HEVC: krátky riadok SAO");
+    // bandTable: posun pre každé z 32 pásiem
+    let mut tab = [0i8; 32];
+    for (k, &p) in posuny.iter().enumerate() {
+        tab[(k + usize::from(pasmo)) & 31] = p as i8;
+    }
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        // SAFETY: tab má 32 bajtov.
+        let tab = unsafe { int8x16x2_t(vld1q_s8(tab.as_ptr()), vld1q_s8(tab.as_ptr().add(16))) };
+        let (zs, zc) = (stred.as_ptr(), ciel.as_mut_ptr());
+        let mut i = 0;
+        while i + 16 <= n {
+            // SAFETY: i + 16 ≤ n ≤ stred.len().
+            let c = unsafe { vld1q_u8(zs.add(i)) };
+            let posun = vqtbl2q_s8(tab, vshrq_n_u8::<3>(c));
+            // SAFETY: i + 16 ≤ n = ciel.len().
+            unsafe { vst1q_u8(zc.add(i), vsqaddq_u8(c, posun)) };
+            i += 16;
+        }
+        if i + 8 <= n {
+            // SAFETY: i + 8 ≤ n ≤ stred.len().
+            let c = unsafe { vld1_u8(zs.add(i)) };
+            let posun = vqtbl2_s8(tab, vshr_n_u8::<3>(c));
+            // SAFETY: i + 8 ≤ n = ciel.len().
+            unsafe { vst1_u8(zc.add(i), vsqadd_u8(c, posun)) };
+            i += 8;
+        }
+        i
+    }
+}
+
 #[cfg(test)]
 mod testy {
     use super::*;
@@ -508,6 +613,56 @@ mod testy {
             filtrovanych += usize::from(b != data);
         }
         assert!(filtrovanych > 50_000, "skúška má filtrovať veľa úsekov: {filtrovanych}");
+    }
+
+    /// SAO: NEON časť úseku je bitovo rovnaká ako vzorec normy (8.7.3.2) – hranový aj pásmový posun, všetky dĺžky
+    /// úseku, posuny −7 … 7 (aj krajné vzorky 0 a 255), všetky polohy pásma; zvyšok úseku sa nezmení.
+    #[test]
+    fn sao_rovnako_ako_norma() {
+        let mut n = Nahoda::zo_semienka(0x5a0);
+        let sign = |x: i32| x.signum();
+        for pokus in 0..20_000 {
+            let dlzka = (n.dalsie() % 70) as usize;
+            let nahodne = |n: &mut Nahoda| -> Vec<u8> {
+                let zaklad = (n.dalsie() % 256) as i32;
+                let roz = [1, 3, 16, 256][(n.dalsie() % 4) as usize];
+                (0..dlzka + 3)
+                    .map(|_| (zaklad + (n.dalsie() % roz) as i32 - roz as i32 / 2).clamp(0, 255) as u8)
+                    .collect()
+            };
+            let (c, a, b) = (nahodne(&mut n), nahodne(&mut n), nahodne(&mut n));
+            let p: [i16; 4] = std::array::from_fn(|_| (n.dalsie() % 15) as i16 - 7);
+            let t = [p[0], p[1], 0, p[2], p[3]];
+            let mut ciel = vec![0xa5u8; dlzka];
+            let hotovo = sao_hrana(&mut ciel, &c, &a, &b, t, 255);
+            assert!(hotovo <= dlzka && dlzka - hotovo < 8, "pokus {pokus}: spracované {hotovo} z {dlzka}");
+            for i in 0..dlzka {
+                let ocakavane = if i < hotovo {
+                    let e =
+                        2 + sign(i32::from(c[i]) - i32::from(a[i])) + sign(i32::from(c[i]) - i32::from(b[i]));
+                    (i32::from(c[i]) + i32::from(t[e as usize])).clamp(0, 255) as u8
+                } else {
+                    0xa5
+                };
+                assert_eq!(ciel[i], ocakavane, "hrana pokus {pokus} i={i}");
+            }
+            let pasmo = (n.dalsie() % 32) as u16;
+            let hotovo = sao_pasmo(&mut ciel, &c, p, pasmo, 3, 255);
+            assert!(hotovo <= dlzka && dlzka - hotovo < 8);
+            for i in 0..hotovo {
+                let k = ((u16::from(c[i]) >> 3).wrapping_sub(pasmo) & 31) as usize;
+                let posun = if k < 4 { i32::from(p[k]) } else { 0 };
+                assert_eq!(
+                    ciel[i],
+                    (i32::from(c[i]) + posun).clamp(0, 255) as u8,
+                    "pásmo pokus {pokus} i={i}"
+                );
+            }
+        }
+        // posun mimo i8 alebo iná hĺbka: NEON nič nespracuje
+        let mut ciel = [0u8; 16];
+        assert_eq!(sao_hrana(&mut ciel, &[0; 16], &[0; 16], &[0; 16], [200, 0, 0, 0, 0], 255), 0);
+        assert_eq!(sao_pasmo(&mut ciel, &[0; 16], [0; 4], 0, 3, 1023), 0);
     }
 
     /// NEON a skalárny rozhodca dávajú bitovo to isté (všetky šírky blokov aj zvyšky, náhodné vzorky).

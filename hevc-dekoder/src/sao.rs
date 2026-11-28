@@ -282,10 +282,13 @@ impl TabulkaPasma {
 /// Posun sa vyberá nezávislými maskami spojenými `|` (nie čítaním z tabuľky ani reťazou `if … else if`, ktorú
 /// LLVM pri opt-level 2 zmení na vetvenie) – slučka sa vektorizuje (overené: x86-64 SSE2, AArch64 Cortex-A53
 /// NEON so šírkou 16). Súčet so saturáciou v i16 dá po orezaní rovnaký výsledok ako Clip3 v širšom type.
+///
+/// Pre 8 bitov na aarch64 spracuje začiatok úseku ručné NEON (tabuľka v registri), zvyšok táto slučka.
 #[inline]
 fn pasmo_riadok(ciel: &mut [Vzorka], stred: &[Vzorka], t: &TabulkaPasma) {
     let ([p1, p2, p3, p4], posun_pasma, pasmo, max) = (t.posuny, t.posun, t.pasmo, t.max);
-    for (o, &c) in ciel.iter_mut().zip(stred) {
+    let hotovo = super::simd::sao_pasmo(ciel, stred, t.posuny, pasmo, posun_pasma, max);
+    for (o, &c) in ciel[hotovo..].iter_mut().zip(&stred[hotovo..]) {
         let k = (u16::from(c) >> posun_pasma).wrapping_sub(pasmo) & 31;
         let posun = (if k == 0 { p1 } else { 0 })
             | (if k == 1 { p2 } else { 0 })
@@ -316,11 +319,14 @@ fn hrana(c: Vzorka, a: Vzorka, b: Vzorka, t: [i16; 5], max: i16) -> Vzorka {
 }
 
 /// Hranový posun úseku riadka: vzorky `stred[i]` so susedmi `a[i]` a `b[i]` (už posunutými podľa triedy),
-/// všetci susedia dostupní. Bez kontrol hraníc, bez vetvenia.
+/// všetci susedia dostupní. Bez kontrol hraníc, bez vetvenia. Pre 8 bitov na aarch64 spracuje začiatok úseku ručné
+/// NEON (výber posunu tabuľkou v registri), zvyšok táto slučka.
 #[inline]
 fn hrana_riadok(ciel: &mut [Vzorka], stred: &[Vzorka], a: &[Vzorka], b: &[Vzorka], t: [i16; 5], max: i16) {
     let n = ciel.len();
     let (stred, a, b) = (&stred[..n], &a[..n], &b[..n]);
+    let h = super::simd::sao_hrana(ciel, stred, a, b, t, max);
+    let (ciel, stred, a, b) = (&mut ciel[h..], &stred[h..], &a[h..], &b[h..]);
     for (((o, &c), &a), &b) in ciel.iter_mut().zip(stred).zip(a).zip(b) {
         *o = hrana(c, a, b, t, max);
     }
