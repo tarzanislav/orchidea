@@ -139,6 +139,29 @@ impl Kreslic {
         self.tvar(x, y, x + w, y + h, f, a, |px, py| zaobleny(px - cx, py - cy, hx, hy, r));
     }
 
+    /// Zaoblený obdĺžnik s plynulým prechodom farby uhlopriečne z ľavého horného rohu (`f1`) do pravého dolného
+    /// (`f2`) – podklad ikon aplikácií a dlaždíc.
+    #[allow(clippy::too_many_arguments)]
+    pub fn obdlznik_s_prechodom(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, f1: Farba, f2: Farba) {
+        let m = self.mierka;
+        let (x, y, w, h, r) = (x * m, y * m, w * m, h * m, r * m);
+        let (cx, cy, hx, hy) = (x + w / 2.0, y + h / 2.0, w / 2.0, h / 2.0);
+        let r = r.min(hx).min(hy);
+        let (sw, sh) = (self.p.sirka as i32, self.p.vyska as i32);
+        for py in (y.floor() as i32 - 1).max(0)..((y + h).ceil() as i32 + 1).min(sh) {
+            for px in (x.floor() as i32 - 1).max(0)..((x + w).ceil() as i32 + 1).min(sw) {
+                let (bx, by) = (px as f32 + 0.5, py as f32 + 0.5);
+                let k = (0.5 - zaobleny(bx - cx, by - cy, hx, hy, r)).clamp(0.0, 1.0);
+                if k > 0.0 {
+                    let t = (((bx - x) / w + (by - y) / h) / 2.0).clamp(0.0, 1.0);
+                    let f = zmiesaj(f1, f2, (t * 255.0).round() as u8);
+                    let i = py as usize * self.p.sirka + px as usize;
+                    self.p.body[i] = zmiesaj(self.p.body[i], f, (k * 255.0).round() as u8);
+                }
+            }
+        }
+    }
+
     /// Obrys zaobleného obdĺžnika hrúbky `hrubka` (stred čiary na hrane).
     #[allow(clippy::too_many_arguments)]
     pub fn ram(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, hrubka: f32, f: Farba) {

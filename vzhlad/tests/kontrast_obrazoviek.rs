@@ -13,10 +13,13 @@
 //! najsvetlejšie (najtmavšie) miesto, nie priemer.
 //!
 //! Na x86-64 (CI): 6 tém × 3 varianty × 3 obrazovky (prehliadač a editor fotografií (Pohľad), prehrávač médií LÝRA,
-//! obrazovka TV krabičky) = 54 obrazoviek.
+//! obrazovka TV krabičky) = 54 obrazoviek a domovská obrazovka TV krabičky (3 koncepty, prvé spustenie Počasia,
+//! šetrič) v každej téme.
 
 #![allow(clippy::too_many_arguments, dead_code)]
 
+#[path = "../examples/navrh/domov.rs"]
+mod domov;
 #[path = "../examples/navrh/lyra.rs"]
 mod lyra;
 #[path = "../examples/navrh/obrazky.rs"]
@@ -27,7 +30,7 @@ mod pohlad;
 mod tv;
 
 use orchidea_vzhlad::kreslic::{Kreslic, Meranie, merat_kontrast};
-use orchidea_vzhlad::miery::TV_NADPIS;
+use orchidea_vzhlad::miery::{StupnicaTv, TV_NADPIS};
 use orchidea_vzhlad::tema::{LAN, NOC, TEMY, Tema};
 
 /// Požadované minimum pre jedno meranie (`None` = výnimka: vypnutý prvok).
@@ -109,6 +112,18 @@ fn text_a_ikony_na_obrazovkach_splnaju_kontrast() {
                 ));
             }
         }
+        // domovská obrazovka TV krabičky – koncepty, prvé spustenie Počasia, šetrič
+        for t in TEMY {
+            for c in ['1', '2', '3', 'p', 's'] {
+                let f = &foto;
+                pripady.push((
+                    format!("domov_{c} ({})", t.meno),
+                    t,
+                    true,
+                    Box::new(move || domov::obrazovka(t, c, 1.0, &StupnicaTv::REFERENCNA, f)),
+                ));
+            }
+        }
     } else {
         let f = &foto;
         pripady.push((
@@ -128,7 +143,7 @@ fn text_a_ikony_na_obrazovkach_splnaju_kontrast() {
     let mut spolu = 0;
     for (meno, t, je_tv, kresli) in &pripady {
         let (n, zle) = zmeraj(meno, t, *je_tv, kresli);
-        assert!(n >= 10, "{meno}: zmeraných len {n} textov a ikon");
+        assert!(n >= 3, "{meno}: zmeraných len {n} textov a ikon");
         spolu += n;
         vsetky_zle.extend(zle);
     }

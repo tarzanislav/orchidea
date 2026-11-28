@@ -7,6 +7,7 @@
 //! - [`miery`] – mriežka 4 bodov, rozostupy, zaoblenia, výšky, typografická stupnica písma STONKA, čitateľnosť
 //!   obrazovky na diaľku,
 //! - [`ikony`] – vlastné vektorové ikony na jednej mriežke s jednou hrúbkou ťahu,
+//! - [`ikony_aplikacii`] – veľké ikony aplikácií, zdrojov a systému pre domovskú obrazovku TV krabičky,
 //! - [`kreslic`] – kreslenie s vyhladením v mierke 100 % aj 200 % (HiDPI),
 //! - [`prvky`] – ovládacie prvky a ich stavy (bežný, pod myšou, stlačený, zameraný, vypnutý),
 //! - [`znak`] – znak ORCHIDEE (logo), tri návrhy kvetu orchidey na výber vlastníkom.
@@ -17,6 +18,7 @@
 #![deny(unsafe_code)]
 
 pub mod ikony;
+pub mod ikony_aplikacii;
 pub mod kontrast;
 pub mod kreslic;
 pub mod miery;

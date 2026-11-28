@@ -4,6 +4,7 @@
 use crate::obrazky::{Obr, fotka};
 use orchidea_pismo::zmiesaj;
 use orchidea_vzhlad::ikony::{Ikona, VSETKY};
+use orchidea_vzhlad::ikony_aplikacii::{self, Aplikacia};
 use orchidea_vzhlad::kontrast::{Poziadavka, kontrola};
 use orchidea_vzhlad::kreslic::{Kreslic, zakladna_v_strede};
 use orchidea_vzhlad::miery::*;
@@ -417,6 +418,39 @@ pub fn logo(m: f32) -> Kreslic {
         znak::kresli(&mut k, *z, t, x + 24.0, 572.0 + 40.0, 40.0);
         k.text("Domov", x + 84.0, 572.0 + 76.0, TV_TEXT, t.text_druhy);
         k.text("Filmy", x + 84.0 + k.sirka("Domov", TV_TEXT) + 40.0, 572.0 + 76.0, TV_TEXT, t.text);
+    }
+    k
+}
+
+/// Veľké ikony aplikácií, zdrojov a systému (domovská obrazovka TV krabičky) – v referenčnej veľkosti 160 bodov
+/// a zmenšené na 96 a 64.
+pub fn ikony_aplikacii(m: f32) -> Kreslic {
+    let t = &NOC;
+    let (w, h) = (1920.0, 1080.0);
+    let mut k = Kreslic::novy(w, h, m, t.okolie);
+    k.text("Ikony aplikácií – domovská obrazovka TV krabičky", 96.0, 104.0, TV_NADPIS, t.text);
+    k.text(
+        "Vlastný štýl, žiadne cudzie logá: dlaždica s prechodom farby a biely plný symbol (aspoň 4,5 : 1 na celej dlaždici).",
+        96.0,
+        148.0,
+        TV_POPIS,
+        t.text_druhy,
+    );
+    let (s, medzera) = (160.0, 72.0);
+    for (i, a) in ikony_aplikacii::VSETKY.iter().enumerate() {
+        let (r, c) = (i / 8, i % 8);
+        let x = 96.0 + c as f32 * (s + medzera);
+        let y = 208.0 + r as f32 * (s + 120.0);
+        ikony_aplikacii::kresli(&mut k, *a, x, y, s, t.tien.max(3));
+        k.text_v_strede(a.meno(), x - 24.0, s + 48.0, y + s + 44.0, TV_POPIS, t.text);
+    }
+    let y = 208.0 + 2.0 * (s + 120.0) + 24.0;
+    k.text("Zmenšené (96 a 64 bodov)", 96.0, y, TV_POPIS, t.text_druhy);
+    let mut x = 96.0;
+    for a in [Aplikacia::Lyra, Aplikacia::ZivaTv, Aplikacia::Fotografie, Aplikacia::Nastavenia] {
+        ikony_aplikacii::kresli(&mut k, a, x, y + 24.0, 96.0, t.tien);
+        ikony_aplikacii::kresli(&mut k, a, x + 112.0, y + 56.0, 64.0, t.tien);
+        x += 240.0;
     }
     k
 }
