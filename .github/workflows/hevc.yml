@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       porovnaj:
-        description: "Porovnanie A/B na ARM64 behúni: commit základu (prázdne = bez porovnania)"
+        description: "Porovnanie A/B na ARM64 behúni: commit základu – celý alebo skrátený odtlačok z main (prázdne = bez porovnania)"
         required: false
         default: ""
 
@@ -189,8 +189,14 @@ jobs:
           # ten istý behúň, rovnaké prekladové voľby ako balík pre dosky, behy A a B sa striedajú (menej šumu);
           # serverové jadro nie je Cortex-A53 – rozhoduje meranie na doske, toto len zachytí veľké zmeny
           b=orchidea-hevc-rpi-64bit
-          git fetch -q --depth=1 origin "$ZAKLAD"
-          git worktree add -q /tmp/zaklad FETCH_HEAD
+          # celý odtlačok sa stiahne priamo, skrátený sa nájde v posledných 300 commitoch main
+          if git fetch -q --depth=1 origin "$ZAKLAD" 2>/dev/null; then
+            c=FETCH_HEAD
+          else
+            git fetch -q --depth=300 origin main
+            c=$(git rev-parse --verify "$ZAKLAD^{commit}")
+          fi
+          git worktree add -q /tmp/zaklad "$c"
           (cd /tmp/zaklad && RUSTFLAGS="-D warnings -C target-cpu=cortex-a53" cargo build -q --release \
             -p orchidea-hevc-dekoder --example hevc_meranie --target-dir "$GITHUB_WORKSPACE/target-zaklad")
           a=target-zaklad/release/examples/hevc_meranie
