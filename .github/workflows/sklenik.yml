@@ -937,7 +937,13 @@ jobs:
         run: |
           tar -czf aktualizacia-klic-aarch64.tar.gz -C aktualizacia klic-aarch64
           gh release delete aktualizacia-klic --yes --cleanup-tag || true
-          gh release create aktualizacia-klic aktualizacia-klic-aarch64.tar.gz --prerelease --target "$GITHUB_SHA" \
-            --title "Aktualizácia krabičiek ORCHIDEA OS ${GITHUB_SHA::7}" \
-            --notes "R264 – systém v pamäti (KLÍČ, meranie HEVC, skúšobné toky) pre zberač meraní: priečinok klic-aarch64 patrí do MERANIA\\_aktualizacia. Jadro a popis hardvéru sa takto nemenia."
+          # 28. 11. 2026 (beh 46124778886): jednorazové HTTP 403 pri tvorbe po zmazaní – vydanie potom chýbalo.
+          # Tvorba sa preto skúsi až 4× s pauzou 20, 40, 60 s; až potom úloha zlyhá.
+          for pokus in 1 2 3 4; do
+            [ "$pokus" -gt 1 ] && { echo "pokus $pokus o vydanie aktualizacia-klic"; sleep $(( (pokus - 1) * 20 )); }
+            gh release create aktualizacia-klic aktualizacia-klic-aarch64.tar.gz --prerelease --target "$GITHUB_SHA" \
+              --title "Aktualizácia krabičiek ORCHIDEA OS ${GITHUB_SHA::7}" \
+              --notes "R264 – systém v pamäti (KLÍČ, meranie HEVC, skúšobné toky) pre zberač meraní: priečinok klic-aarch64 patrí do MERANIA\\_aktualizacia. Jadro a popis hardvéru sa takto nemenia." && break
+            [ "$pokus" -eq 4 ] && exit 1
+          done
           echo "### ✅ Vydanie aktualizacia-klic: ${GITHUB_SHA::7}" | tee -a "$GITHUB_STEP_SUMMARY"

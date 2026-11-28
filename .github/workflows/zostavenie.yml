@@ -468,9 +468,15 @@ jobs:
         run: |
           tar -czf aktualizacia-zberac-windows.tar.gz -C aktualizacia zberac-windows-x86_64
           gh release delete aktualizacia-zberac --yes --cleanup-tag || true
-          gh release create aktualizacia-zberac aktualizacia-zberac-windows.tar.gz --prerelease --target "$GITHUB_SHA" \
-            --title "Zberač meraní ORCHIDEA ${GITHUB_SHA::7}" \
-            --notes "R264 – zberač meraní pre Windows: priečinok zberac-windows-x86_64 patrí do MERANIA\\_aktualizacia (zberač sa vymení sám)."
+          # 28. 11. 2026 (beh 46124778886): jednorazové HTTP 403 pri tvorbe po zmazaní – vydanie potom chýbalo.
+          # Tvorba sa preto skúsi až 4× s pauzou 20, 40, 60 s; až potom úloha zlyhá.
+          for pokus in 1 2 3 4; do
+            [ "$pokus" -gt 1 ] && { echo "pokus $pokus o vydanie aktualizacia-zberac"; sleep $(( (pokus - 1) * 20 )); }
+            gh release create aktualizacia-zberac aktualizacia-zberac-windows.tar.gz --prerelease --target "$GITHUB_SHA" \
+              --title "Zberač meraní ORCHIDEA ${GITHUB_SHA::7}" \
+              --notes "R264 – zberač meraní pre Windows: priečinok zberac-windows-x86_64 patrí do MERANIA\\_aktualizacia (zberač sa vymení sám)." && break
+            [ "$pokus" -eq 4 ] && exit 1
+          done
           echo "### ✅ Vydanie aktualizacia-zberac: ${GITHUB_SHA::7}" | tee -a "$GITHUB_STEP_SUMMARY"
 
   formaty:
