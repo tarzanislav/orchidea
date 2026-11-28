@@ -1,5 +1,6 @@
-//! Jadrá interpolácie bez ručného NEON – priamo skalárne vzory z `interpolacia` (prekladač ich vektorizuje sám).
-//! Použije sa pre 10 bitov a na procesoroch iných ako aarch64; rozhranie je rovnaké ako v module `neon`.
+//! Jadrá bez ručného NEON – priamo skalárne vzory z `interpolacia` (prekladač ich vektorizuje sám); odblokovanie
+//! ostáva v module `odblokovanie`. Použije sa pre 10 bitov a na procesoroch iných ako aarch64; rozhranie je
+//! rovnaké ako v module `neon`.
 
 use super::interpolacia::{
     predvolene_dve_skalarne, predvolene_jedna_skalarne, vodorovne8_skalarne, zvislo_medzi_skalarne,
@@ -30,4 +31,18 @@ pub fn predvolene_dve(pred0: &[i16], pred1: &[i16], ciel: &mut [Vzorka], pridaj:
 #[inline]
 pub fn predvolene_jedna(pred: &[i16], ciel: &mut [Vzorka], pridaj: i32, shift: u32, max: i32) {
     predvolene_jedna_skalarne(pred, ciel, pridaj, shift, max);
+}
+
+/// Úsek hrany jasu – bez ručného NEON sa nespracuje tu (`false`), odblokovanie použije skalárnu cestu.
+#[inline(always)]
+pub fn odblokuj_jas(
+    _data: &mut [Vzorka],
+    _i: usize,
+    _krok: usize,
+    _zvisla: bool,
+    _beta: i32,
+    _tc: i32,
+    _bez: [bool; 2],
+) -> bool {
+    false
 }

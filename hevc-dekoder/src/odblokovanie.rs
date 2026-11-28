@@ -312,45 +312,75 @@ fn qpc_z_qpi(qpi: i32) -> i32 {
 /// Zvislá hrana jasu: úsek 4 riadkov so vzorkou q0,0 na (x, y).
 fn filtruj_zvislu_jasu(r: &mut Rovina, x: usize, y: usize, pr: &Prahy) {
     let krok = r.krok;
-    let zaciatok = y * krok + x - 4; // p3 prvej línie
-    let mut u: UsekJasu = [[0; 4]; 8];
-    for k in 0..4 {
-        let linia = &r.data[zaciatok + k * krok..][..8];
-        for (uj, &v) in u.iter_mut().zip(linia) {
-            uj[k] = i32::from(v);
-        }
-    }
-    if !filtruj_usek_jasu(&mut u, pr.beta, pr.tc, pr.max) {
-        return;
-    }
-    let (od, po) = rozsah_zapisu(pr, 3);
-    for k in 0..4 {
-        let linia = &mut r.data[zaciatok + k * krok..][..8];
-        for (v, uj) in linia[od..po].iter_mut().zip(&u[od..po]) {
-            *v = uj[k] as Vzorka;
-        }
-    }
+    // p3 prvej línie; línia k je riadok (krok vzorky 1)
+    odblokuj_usek_jasu(&mut r.data, y * krok + x - 4, krok, true, pr);
 }
 
 /// Vodorovná hrana jasu: úsek 4 stĺpcov so vzorkou q0,0 na (x, y).
 fn filtruj_vodorovnu_jasu(r: &mut Rovina, x: usize, y: usize, pr: &Prahy) {
     let krok = r.krok;
-    let zaciatok = (y - 4) * krok + x; // p3 prvej línie
-    let mut u: UsekJasu = [[0; 4]; 8];
-    for (j, uj) in u.iter_mut().enumerate() {
-        let riadok = &r.data[zaciatok + j * krok..][..4];
-        for (d, &v) in uj.iter_mut().zip(riadok) {
-            *d = i32::from(v);
-        }
-    }
-    if !filtruj_usek_jasu(&mut u, pr.beta, pr.tc, pr.max) {
+    // p3 prvej línie; línia k je stĺpec (krok vzorky = krok riadka)
+    odblokuj_usek_jasu(&mut r.data, (y - 4) * krok + x, krok, false, pr);
+}
+
+/// Úsek hrany jasu (4 línie) v `data`: p3 prvej línie je `data[i]`; pri zvislej hrane je línia k riadok
+/// `i + k · krok` a vzorky p3 … q3 idú za sebou, pri vodorovnej je línia k stĺpec `i + k` a vzorky idú po `krok`.
+/// Pre 8 bitov na aarch64 ručné NEON (modul `simd`, bitovo rovnaké), inak [`odblokuj_usek_jasu_skalarne`].
+#[inline]
+fn odblokuj_usek_jasu(data: &mut [Vzorka], i: usize, krok: usize, zvisla: bool, pr: &Prahy) {
+    if pr.max == 255 && super::simd::odblokuj_jas(data, i, krok, zvisla, pr.beta, pr.tc, [pr.bez_p, pr.bez_q])
+    {
         return;
     }
-    let (od, po) = rozsah_zapisu(pr, 3);
-    for (j, uj) in u.iter().enumerate().take(po).skip(od) {
-        let riadok = &mut r.data[zaciatok + j * krok..][..4];
-        for (v, &d) in riadok.iter_mut().zip(uj) {
-            *v = d as Vzorka;
+    odblokuj_usek_jasu_skalarne(data, i, krok, zvisla, pr.beta, pr.tc, [pr.bez_p, pr.bez_q], pr.max);
+}
+
+/// Skalárny úsek hrany jasu (ako [`odblokuj_usek_jasu`]) – aj rozhodca pre skúšku NEON. `bez` = [nDp = 0,
+/// nDq = 0] (strana P či Q sa nemení), `max` = Clip1Y.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub(super) fn odblokuj_usek_jasu_skalarne(
+    data: &mut [Vzorka],
+    i: usize,
+    krok: usize,
+    zvisla: bool,
+    beta: i32,
+    tc: i32,
+    bez: [bool; 2],
+    max: i32,
+) {
+    let mut u: UsekJasu = [[0; 4]; 8];
+    if zvisla {
+        // línia k = riadok: 8 vzoriek p3 … q3 za sebou
+        for k in 0..4 {
+            for (uj, &v) in u.iter_mut().zip(&data[i + k * krok..][..8]) {
+                uj[k] = i32::from(v);
+            }
+        }
+    } else {
+        // vzorka j = riadok: 4 línie za sebou
+        for (j, uj) in u.iter_mut().enumerate() {
+            for (d, &v) in uj.iter_mut().zip(&data[i + j * krok..][..4]) {
+                *d = i32::from(v);
+            }
+        }
+    }
+    if !filtruj_usek_jasu(&mut u, beta, tc, max) {
+        return;
+    }
+    let (od, po) = rozsah_zapisu(&Prahy { beta, tc, max, bez_p: bez[0], bez_q: bez[1] }, 3);
+    if zvisla {
+        for k in 0..4 {
+            let linia = &mut data[i + k * krok..][..8];
+            for (v, uj) in linia[od..po].iter_mut().zip(&u[od..po]) {
+                *v = uj[k] as Vzorka;
+            }
+        }
+    } else {
+        for (j, uj) in u.iter().enumerate().take(po).skip(od) {
+            for (v, &d) in data[i + j * krok..][..4].iter_mut().zip(uj) {
+                *v = d as Vzorka;
+            }
         }
     }
 }
