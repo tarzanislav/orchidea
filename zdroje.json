@@ -327,6 +327,14 @@
       "kde": "len v CI (úloha pohlad-okno-linux) a v nástroji pohlad/nastroje/over_klavesnicu.py – program ich nepoužíva",
       "ucel": "nezávislé overenie: okno sa ukáže v skutočnom kompozitore (samotest, snímka obrazovky) a rozbor rozložení XKB dá rovnaké symboly a znaky ako libxkbcommon",
       "posudenie_charty": "slobodné nástroje bez vojenského účelu, len na skúšky"
+    },
+    {
+      "meno": "rozhodcovia internetu a HTTPS v CI: dnsmasq (DHCP, DNS), chrony (NTP), server HTTP Pythonu (http.server), OpenSSL (s_server, req, x509, verify) a knižnica Python cryptography (skúšobné podpisy a certifikáty)",
+      "trieda": "B",
+      "licencia": "GPL-2.0/3.0 (dnsmasq), GPL-2.0 (chrony), PSF-2.0 (Python), Apache-2.0 (OpenSSL 3), Apache-2.0/BSD-3-Clause (cryptography)",
+      "kde": "len v CI (úloha Internet v zostavenie.yml, skúška siet::tls proti_openssl_s_server) a v nástroji nastroje/skusobne_certifikaty.py, ktorý vytvoril skúšobné certifikáty siet/skusky/*.der a vektory podpisov v kryptografia/src/{ec,rsa}.rs – program ich nepoužíva",
+      "ucel": "nezávislé overenie vlastného DHCP, DNS, SNTP, HTTP/1.1, TLS 1.3, X.509, ECDSA a RSA (A9, A12): náš klient sa spojí so serverom iného autora a overí podpisy vytvorené inou implementáciou",
+      "posudenie_charty": "slobodné nástroje bez vojenského účelu, len na skúšky; žiadny cudzí kód v programe"
     }
   ],
   "triedy": {

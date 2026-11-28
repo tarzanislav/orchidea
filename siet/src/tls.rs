@@ -958,19 +958,125 @@ mod testy {
         }
     }
 
-    /// Len pre skúšky: prijme akýkoľvek certifikát (overenie certifikátov je krok 4 a má vlastné skúšky).
-    struct LenSkuska;
-    impl Overovac for LenSkuska {
-        fn over_retaz(&self, retaz: &[Vec<u8>], _: &str) -> Result<VerejnyKluc, String> {
-            Ok(VerejnyKluc { algoritmus: vec![], parametre: vec![], kluc: retaz[0].clone() })
-        }
-        fn over_podpis(&self, _: &VerejnyKluc, _: u16, _: &[u8], podpis: &[u8]) -> Result<(), String> {
-            if podpis.is_empty() { Err("prázdny podpis".into()) } else { Ok(()) }
-        }
-    }
-
     fn urandom(b: &mut [u8]) {
         std::fs::File::open("/dev/urandom").unwrap().read_exact(b).unwrap();
+    }
+
+    /// Spustí program a skončí skúšku, ak zlyhá.
+    fn prikaz(d: &std::path::Path, args: &[&str]) {
+        let ok = std::process::Command::new(args[0])
+            .args(&args[1..])
+            .current_dir(d)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(ok.success(), "{args:?}");
+    }
+
+    /// Reťaz pre živú skúšku vytvorí program openssl (rozhodca): koreň P-384 → sprostredkujúca RSA 2048 → listy
+    /// P-256 a RSA 2048 pre skuska.orchidea.
+    fn retaz_openssl(d: &std::path::Path) {
+        let ca = "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n";
+        let list = "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n\
+                    extendedKeyUsage=serverAuth\nsubjectAltName=DNS:skuska.orchidea\n";
+        std::fs::write(d.join("ca.ext"), ca).unwrap();
+        std::fs::write(d.join("list.ext"), list).unwrap();
+        let o = "openssl";
+        prikaz(
+            d,
+            &[
+                o,
+                "req",
+                "-x509",
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:P-384",
+                "-noenc",
+                "-days",
+                "2",
+                "-subj",
+                "/CN=Koren skusky",
+                "-addext",
+                "basicConstraints=critical,CA:TRUE",
+                "-addext",
+                "keyUsage=critical,keyCertSign",
+                "-keyout",
+                "koren.key",
+                "-out",
+                "koren.pem",
+            ],
+        );
+        prikaz(
+            d,
+            &[
+                o,
+                "req",
+                "-new",
+                "-newkey",
+                "rsa:2048",
+                "-noenc",
+                "-subj",
+                "/CN=Medzi skusky",
+                "-keyout",
+                "medzi.key",
+                "-out",
+                "medzi.csr",
+            ],
+        );
+        prikaz(
+            d,
+            &[
+                o,
+                "x509",
+                "-req",
+                "-in",
+                "medzi.csr",
+                "-CA",
+                "koren.pem",
+                "-CAkey",
+                "koren.key",
+                "-days",
+                "2",
+                "-sha384",
+                "-extfile",
+                "ca.ext",
+                "-out",
+                "medzi.pem",
+            ],
+        );
+        for (meno, kluc) in [("list-ec", "ec"), ("list-rsa", "rsa:2048")] {
+            let mut args = vec![o, "req", "-new", "-newkey", kluc];
+            if kluc == "ec" {
+                args.extend(["-pkeyopt", "ec_paramgen_curve:P-256"]);
+            }
+            let (k, csr, pem) = (format!("{meno}.key"), format!("{meno}.csr"), format!("{meno}.pem"));
+            args.extend(["-noenc", "-subj", "/CN=skuska.orchidea", "-keyout", &k, "-out", &csr]);
+            prikaz(d, &args);
+            prikaz(
+                d,
+                &[
+                    o,
+                    "x509",
+                    "-req",
+                    "-in",
+                    &csr,
+                    "-CA",
+                    "medzi.pem",
+                    "-CAkey",
+                    "medzi.key",
+                    "-days",
+                    "2",
+                    "-sha256",
+                    "-extfile",
+                    "list.ext",
+                    "-out",
+                    &pem,
+                ],
+            );
+        }
+        prikaz(d, &[o, "x509", "-in", "koren.pem", "-outform", "DER", "-out", "koren.der"]);
     }
 
     #[test]
@@ -979,35 +1085,19 @@ mod testy {
         use std::process::{Command, Stdio};
         let d = std::env::temp_dir().join(format!("orchidea-tls-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        let (kluc, cert) = (d.join("k.pem"), d.join("c.pem"));
-        let ok = Command::new("openssl")
-            .args([
-                "req",
-                "-x509",
-                "-newkey",
-                "ec",
-                "-pkeyopt",
-                "ec_paramgen_curve:P-256",
-                "-nodes",
-                "-days",
-                "2",
-            ])
-            .args(["-subj", "/CN=skuska.orchidea", "-keyout"])
-            .arg(&kluc)
-            .arg("-out")
-            .arg(&cert)
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        assert!(ok.success());
-        for (i, sada) in [Sada::Chacha20Poly1305, Sada::Aes128Gcm, Sada::Aes256Gcm].into_iter().enumerate() {
-            let port = 44330 + i as u16 + (std::process::id() % 1000) as u16;
+        retaz_openssl(&d);
+        let teraz =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let (overenie, _) =
+            crate::x509::Overenie::nove(&[std::fs::read(d.join("koren.der")).unwrap()], teraz);
+        let mut port = 44330 + (std::process::id() % 1000) as u16;
+        let mut pripoj = |sada: Sada, list: &str, meno: &str| {
+            port += 1;
             let mut server = Command::new("openssl")
                 .args(["s_server", "-tls1_3", "-www", "-naccept", "1", "-ciphersuites", sada.meno()])
-                .args(["-accept", &format!("127.0.0.1:{port}"), "-cert"])
-                .arg(&cert)
-                .arg("-key")
-                .arg(&kluc)
+                .args(["-accept", &format!("127.0.0.1:{port}"), "-cert", &format!("{list}.pem")])
+                .args(["-key", &format!("{list}.key"), "-cert_chain", "medzi.pem"])
+                .current_dir(&d)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -1019,17 +1109,29 @@ mod testy {
                 })
                 .expect("s_server neodpovedá");
             tcp.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
-            let mut t = nadviaz(tcp, "skuska.orchidea", &LenSkuska, &mut urandom).unwrap();
-            assert_eq!(t.sada, sada);
-            t.write_all(b"GET / HTTP/1.0\r\n\r\n").unwrap();
-            let mut odpoved = String::new();
-            t.read_to_string(&mut odpoved).unwrap();
-            assert!(odpoved.starts_with("HTTP/1.0 200 ok"), "{odpoved}");
-            assert!(odpoved.contains(sada.meno()), "server hlási tú istú sadu: {odpoved}");
-            let _ = t.zavri();
-            drop(t);
+            let v = nadviaz(tcp, meno, &overenie, &mut urandom).map(|mut t| {
+                t.write_all(b"GET / HTTP/1.0\r\n\r\n").unwrap();
+                let mut odpoved = String::new();
+                t.read_to_string(&mut odpoved).unwrap();
+                let _ = t.zavri();
+                (t.sada, odpoved)
+            });
+            let _ = server.kill();
             let _ = server.wait();
+            v
+        };
+        for sada in [Sada::Chacha20Poly1305, Sada::Aes128Gcm, Sada::Aes256Gcm] {
+            for list in ["list-ec", "list-rsa"] {
+                let (s, odpoved) =
+                    pripoj(sada, list, "skuska.orchidea").unwrap_or_else(|e| panic!("{list}: {e}"));
+                assert_eq!(s, sada);
+                assert!(odpoved.starts_with("HTTP/1.0 200 ok"), "{odpoved}");
+                assert!(odpoved.contains(sada.meno()), "server hlási tú istú sadu: {odpoved}");
+            }
         }
+        // iné meno → overenie zlyhá ešte pred odoslaním čohokoľvek
+        let e = pripoj(Sada::Chacha20Poly1305, "list-ec", "iny.orchidea").unwrap_err();
+        assert!(matches!(&e, Chyba::Overenie(t) if t.contains("nepatrí menu")), "{e}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
