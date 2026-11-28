@@ -335,6 +335,14 @@
       "kde": "len v CI (úloha Internet v zostavenie.yml, skúška siet::tls proti_openssl_s_server) a v nástroji nastroje/skusobne_certifikaty.py, ktorý vytvoril skúšobné certifikáty siet/skusky/*.der a vektory podpisov v kryptografia/src/{ec,rsa}.rs – program ich nepoužíva",
       "ucel": "nezávislé overenie vlastného DHCP, DNS, SNTP, HTTP/1.1, TLS 1.3, X.509, ECDSA a RSA (A9, A12): náš klient sa spojí so serverom iného autora a overí podpisy vytvorené inou implementáciou",
       "posudenie_charty": "slobodné nástroje bez vojenského účelu, len na skúšky; žiadny cudzí kód v programe"
+    },
+    {
+      "meno": "zoznam koreňových certifikačných autorít programu Mozilla CA (certdata.txt z NSS)",
+      "trieda": "B",
+      "licencia": "MPL-2.0 (Mozilla Foundation) – dáta",
+      "kde": "siet/data/korene-mozilla.txt (113 autorít dôveryhodných pre servery, certifikáty DER v base64 s „nedôverovať po“), vytvorený nástrojom nastroje/korene_mozilla.py; zdroj a SHA-256 zdroja sú v hlavičke súboru",
+      "ucel": "overenie servera HTTPS (A12) – bez zoznamu dôveryhodných autorít sa nedá overiť žiadny server; rovnaký zoznam používa väčšina systémov. Súhlas vlastníka 28. 11. 2026 10:43",
+      "posudenie_charty": "verejné dáta bez vojenského účelu; žiadny cudzí kód – rozbor certifikátov a overenie cesty je vlastné (siet::x509)"
     }
   ],
   "triedy": {

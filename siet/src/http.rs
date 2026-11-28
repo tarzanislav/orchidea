@@ -8,8 +8,9 @@
 //! Klient žiada `Accept-Encoding: identity` (bez kompresie) a `Connection: close` (jedno spojenie = jedna
 //! požiadavka – jednoduché a bez skrytých stavov).
 //!
-//! **HTTPS zatiaľ nie** (vlastné TLS 1.3 je úloha A12): adresa `https://` aj presmerovanie na ňu vráti
-//! [`Chyba::Zabezpecene`] – nikdy sa potichu nepošle nezabezpečená požiadavka namiesto zabezpečenej.
+//! **HTTPS** (A12): `https://` ide cez vlastné TLS 1.3 ([`crate::tls`]) s overením servera ([`crate::x509`]) –
+//! [`Nastavenie::overenie`] musí byť zadané, inak [`Chyba::Zabezpecene`]. Presmerovanie z `https://` na `http://`
+//! sa neprijme – nikdy sa potichu nepošle nezabezpečená požiadavka namiesto zabezpečenej.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
@@ -30,8 +31,10 @@ pub const MENO_KLIENTA: &str = "ORCHIDEA/0.1";
 #[derive(Debug)]
 pub enum Chyba {
     ZlaAdresa(String),
-    /// `https://` – zabezpečené spojenie ešte nie je (A12)
+    /// `https://` bez overenia servera, alebo presmerovanie z `https://` na `http://`
     Zabezpecene(String),
+    /// šifrované spojenie (TLS 1.3) zlyhalo – aj neoverený server
+    Tls(crate::tls::Chyba),
     Preklad(dns::ChybaPrekladu),
     Spojenie(io::Error),
     /// odpoveď porušuje RFC 9112 (stavový riadok, pole, dĺžka, kúsky)
@@ -45,7 +48,10 @@ impl std::fmt::Display for Chyba {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Chyba::ZlaAdresa(a) => write!(f, "neplatná adresa „{a}“"),
-            Chyba::Zabezpecene(a) => write!(f, "zabezpečené spojenie (HTTPS) zatiaľ nie je: {a}"),
+            Chyba::Zabezpecene(a) => {
+                write!(f, "zabezpečené spojenie (HTTPS) sa nesmie znížiť ani obísť: {a}")
+            }
+            Chyba::Tls(e) => write!(f, "{e}"),
             Chyba::Preklad(e) => write!(f, "{e}"),
             Chyba::Spojenie(e) => write!(f, "spojenie: {e}"),
             Chyba::Poskodena(c) => write!(f, "poškodená odpoveď HTTP ({c})"),
@@ -66,6 +72,8 @@ impl From<io::Error> for Chyba {
 /// Adresa `http://hostiteľ[:port]/cesta?otázka` (RFC 3986). Úlomok (`#…`) sa zahodí – na server nejde.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Url {
+    /// `https://` – šifrované spojenie (TLS 1.3, A12)
+    pub zabezpecene: bool,
     /// meno alebo číselná adresa (IPv6 bez hranatých zátvoriek)
     pub hostitel: String,
     pub port: u16,
@@ -79,12 +87,13 @@ impl Url {
         let t = t.trim();
         let zla = || Chyba::ZlaAdresa(t.to_string());
         let (schema, zvysok) = t.split_once("://").ok_or_else(zla)?;
-        if schema.eq_ignore_ascii_case("https") {
-            return Err(Chyba::Zabezpecene(t.to_string()));
-        }
-        if !schema.eq_ignore_ascii_case("http") {
+        let zabezpecene = if schema.eq_ignore_ascii_case("https") {
+            true
+        } else if schema.eq_ignore_ascii_case("http") {
+            false
+        } else {
             return Err(zla());
-        }
+        };
         let koniec = zvysok.find(['/', '?', '#']).unwrap_or(zvysok.len());
         let (autorita, cesta) = zvysok.split_at(koniec);
         if autorita.contains('@') || autorita.is_empty() {
@@ -101,7 +110,13 @@ impl Url {
             }
         };
         let port = match port {
-            None | Some("") => 80,
+            None | Some("") => {
+                if zabezpecene {
+                    443
+                } else {
+                    80
+                }
+            }
             Some(p) => p.parse::<u16>().ok().filter(|&p| p > 0).ok_or_else(zla)?,
         };
         if hostitel.is_empty() || !hostitel.bytes().all(|b| b.is_ascii_alphanumeric() || b".-_:".contains(&b))
@@ -109,6 +124,7 @@ impl Url {
             return Err(zla());
         }
         Ok(Url {
+            zabezpecene,
             hostitel: hostitel.to_ascii_lowercase(),
             port,
             cesta: normalizuj_cestu(cesta).ok_or_else(zla)?,
@@ -119,11 +135,15 @@ impl Url {
     /// alebo relatívna k priečinku tejto cesty.
     pub fn spoj(&self, odkaz: &str) -> Result<Url, Chyba> {
         let o = odkaz.trim();
+        // presmerovanie zo zabezpečeného na nezabezpečené sa neprijme (žiadne potichu odkryté spojenie)
+        let bez_znizenia = |u: Url| {
+            if self.zabezpecene && !u.zabezpecene { Err(Chyba::Zabezpecene(o.to_string())) } else { Ok(u) }
+        };
         if o.contains("://") {
-            return Url::rozober(o);
+            return Url::rozober(o).and_then(bez_znizenia);
         }
         if let Some(z) = o.strip_prefix("//") {
-            return Url::rozober(&format!("http://{z}"));
+            return Url::rozober(&format!("{}://{z}", if self.zabezpecene { "https" } else { "http" }));
         }
         let cesta = if o.starts_with('/') {
             o.to_string()
@@ -134,23 +154,24 @@ impl Url {
             format!("{}{o}", &zaklad[..zaklad.rfind('/').map_or(0, |i| i + 1)])
         };
         Ok(Url {
+            zabezpecene: self.zabezpecene,
             hostitel: self.hostitel.clone(),
             port: self.port,
             cesta: normalizuj_cestu(&cesta).ok_or_else(|| Chyba::ZlaAdresa(o.to_string()))?,
         })
     }
 
-    /// Hodnota poľa `Host` (port len ak nie je 80; IPv6 v hranatých zátvorkách).
+    /// Hodnota poľa `Host` (port len ak nie je predvolený – 80, pri HTTPS 443; IPv6 v hranatých zátvorkách).
     pub fn host(&self) -> String {
         let h =
             if self.hostitel.contains(':') { format!("[{}]", self.hostitel) } else { self.hostitel.clone() };
-        if self.port == 80 { h } else { format!("{h}:{}", self.port) }
+        if self.port == if self.zabezpecene { 443 } else { 80 } { h } else { format!("{h}:{}", self.port) }
     }
 }
 
 impl std::fmt::Display for Url {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "http://{}{}", self.host(), self.cesta)
+        write!(f, "{}://{}{}", if self.zabezpecene { "https" } else { "http" }, self.host(), self.cesta)
     }
 }
 
@@ -496,17 +517,71 @@ pub fn ziadaj<S: Read + Write>(
 }
 
 /// Nastavenie sťahovania cez sieť.
-#[derive(Debug, Clone, Copy)]
-pub struct Nastavenie {
+#[derive(Clone, Copy)]
+pub struct Nastavenie<'a> {
     /// najdlhšie čakanie na spojenie a na každé čítanie
     pub cakanie: Duration,
     pub presmerovani: usize,
+    /// overenie servera pre `https://` (napr. [`crate::x509::Overenie::mozilla`] s aktuálnym časom)
+    pub overenie: Option<&'a dyn crate::tls::Overovac>,
 }
 
-impl Default for Nastavenie {
-    fn default() -> Nastavenie {
-        Nastavenie { cakanie: Duration::from_secs(10), presmerovani: NAJVIAC_PRESMEROVANI }
+impl Default for Nastavenie<'_> {
+    fn default() -> Self {
+        Nastavenie { cakanie: Duration::from_secs(10), presmerovani: NAJVIAC_PRESMEROVANI, overenie: None }
     }
+}
+
+impl std::fmt::Debug for Nastavenie<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Nastavenie({:?}, {} presm., overenie {})",
+            self.cakanie,
+            self.presmerovani,
+            self.overenie.is_some()
+        )
+    }
+}
+
+/// Spojenie so serverom: TCP, alebo TLS 1.3 nad TCP.
+#[derive(Debug)]
+pub enum Prud {
+    Tcp(TcpStream),
+    Tls(Box<crate::tls::Tls<TcpStream>>),
+}
+
+impl Read for Prud {
+    fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Prud::Tcp(s) => s.read(b),
+            Prud::Tls(s) => s.read(b),
+        }
+    }
+}
+
+impl Write for Prud {
+    fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        match self {
+            Prud::Tcp(s) => s.write(b),
+            Prud::Tls(s) => s.write(b),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Prud::Tcp(s) => s.flush(),
+            Prud::Tls(s) => s.flush(),
+        }
+    }
+}
+
+/// Náhoda z jadra pre kľúče TLS (Linux, macOS, BSD) – celá vopred; bez nej sa spojenie nenadviaže (nikdy nie
+/// predvídateľný kľúč).
+fn nahoda_jadra(n: usize) -> io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut b = vec![0u8; n];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+    Ok(b)
 }
 
 /// Otázka DNS cez UDP so zásuvkou spojenou len so serverom (odpoveď od iného sa neprijme).
@@ -530,8 +605,8 @@ pub fn stiahni(
     prekladac: &mut dns::Prekladac,
     teraz: Duration,
     nahoda: &mut dyn FnMut() -> u16,
-    nastavenie: Nastavenie,
-) -> Result<Odpoved<BufReader<TcpStream>>, Chyba> {
+    nastavenie: Nastavenie<'_>,
+) -> Result<Odpoved<BufReader<Prud>>, Chyba> {
     let mut url = Url::rozober(adresa)?;
     for _ in 0..=nastavenie.presmerovani {
         let adresy: Vec<IpAddr> = match url.hostitel.parse::<IpAddr>() {
@@ -554,7 +629,17 @@ pub fn stiahni(
         let s = spojenie.ok_or(Chyba::Spojenie(posledna))?;
         s.set_read_timeout(Some(nastavenie.cakanie))?;
         s.set_write_timeout(Some(nastavenie.cakanie))?;
-        let o = ziadaj(s, &url, navyse)?;
+        let prud = if url.zabezpecene {
+            let overenie = nastavenie.overenie.ok_or_else(|| Chyba::Zabezpecene(url.to_string()))?;
+            // ClientHello potrebuje 3 × 32 B: tajný kľúč X25519, náhodná hodnota, legacy_session_id
+            let mut zasoba = nahoda_jadra(96)?.into_iter();
+            let mut nahoda = |b: &mut [u8]| b.iter_mut().for_each(|x| *x = zasoba.next().unwrap_or(0));
+            let t = crate::tls::nadviaz(s, &url.hostitel, overenie, &mut nahoda).map_err(Chyba::Tls)?;
+            Prud::Tls(Box::new(t))
+        } else {
+            Prud::Tcp(s)
+        };
+        let o = ziadaj(prud, &url, navyse)?;
         match (o.hlavicka.stav, o.hlavicka.pole("location")) {
             (301 | 302 | 303 | 307 | 308, Some(kam)) => url = url.spoj(kam)?,
             _ => return Ok(o),
@@ -571,7 +656,15 @@ mod testy {
     #[test]
     fn adresy() {
         let u = Url::rozober("http://Example.COM:8080/a/b?x=1&y=2#cast").unwrap();
-        assert_eq!(u, Url { hostitel: "example.com".into(), port: 8080, cesta: "/a/b?x=1&y=2".into() });
+        assert_eq!(
+            u,
+            Url {
+                zabezpecene: false,
+                hostitel: "example.com".into(),
+                port: 8080,
+                cesta: "/a/b?x=1&y=2".into()
+            }
+        );
         assert_eq!(u.host(), "example.com:8080");
         assert_eq!(u.to_string(), "http://example.com:8080/a/b?x=1&y=2");
         let u = Url::rozober("http://10.0.0.1").unwrap();
@@ -580,8 +673,14 @@ mod testy {
         assert_eq!((u.hostitel.as_str(), u.host()), ("2001:db8::1", "[2001:db8::1]:81".to_string()));
         assert_eq!(Url::rozober("http://h/a b.m3u").unwrap().cesta, "/a%20b.m3u");
         assert_eq!(Url::rozober("http://h/a/./b/../c").unwrap().cesta, "/a/c");
-        assert!(matches!(Url::rozober("https://h/"), Err(Chyba::Zabezpecene(_))));
-        assert!(matches!(Url::rozober("HTTPS://h/"), Err(Chyba::Zabezpecene(_))));
+        let z = Url::rozober("HTTPS://h/").unwrap();
+        assert_eq!(
+            (z.zabezpecene, z.port, z.host(), z.to_string()),
+            (true, 443, "h".into(), "https://h/".into())
+        );
+        let z = Url::rozober("https://h:8443/x").unwrap();
+        assert_eq!((z.port, z.host(), z.to_string()), (8443, "h:8443".into(), "https://h:8443/x".into()));
+        assert_eq!(Url::rozober("https://h:80/").unwrap().host(), "h:80");
         for zla in [
             "ftp://h/",
             "http://",
@@ -604,10 +703,14 @@ mod testy {
         assert_eq!(b.spoj("?z=2").unwrap().cesta, "/a/b/c?z=2");
         assert_eq!(b.spoj("//iny.sk/y").unwrap(), Url::rozober("http://iny.sk/y").unwrap());
         assert_eq!(b.spoj("http://iny.sk:81/").unwrap().port, 81);
+        assert!(b.spoj("https://iny.sk/").unwrap().zabezpecene, "zvýšenie na HTTPS smie");
+        let z = Url::rozober("https://h.sk/a/b").unwrap();
         assert!(
-            matches!(b.spoj("https://iny.sk/"), Err(Chyba::Zabezpecene(_))),
-            "nikdy potichu bez zabezpečenia"
+            matches!(z.spoj("http://iny.sk/"), Err(Chyba::Zabezpecene(_))),
+            "z HTTPS nikdy potichu bez zabezpečenia"
         );
+        assert_eq!(z.spoj("//iny.sk/y").unwrap().to_string(), "https://iny.sk/y");
+        assert_eq!(z.spoj("c").unwrap().to_string(), "https://h.sk/a/c");
         assert_eq!(b.spoj("../../../../x").unwrap().cesta, "/x", "nad koreň sa nedá");
     }
 
@@ -784,5 +887,55 @@ mod testy {
         assert_eq!(o.telo.cele(1000).unwrap(), b"#EXTM3U");
         assert_eq!(o.url.cesta, "/nove/zoznam.m3u");
         assert_eq!(server.join().unwrap(), ["GET /stare.m3u HTTP/1.1", "GET /nove/zoznam.m3u HTTP/1.1"]);
+    }
+
+    /// Verejné servery HTTPS s rôznymi autoritami a kľúčmi (RSA, ECDSA) – zoznam autorít Mozilla, preklad mien
+    /// cez server DNS systému. Len v CI (behúň má internet): `cargo test -p orchidea-siet -- --ignored`.
+    #[test]
+    #[ignore = "verejný internet – v CI úloha Internet"]
+    fn verejne_servery_https() {
+        let servery: Vec<IpAddr> = std::fs::read_to_string("/etc/resolv.conf")
+            .unwrap()
+            .lines()
+            .filter_map(|r| r.strip_prefix("nameserver "))
+            .filter_map(|a| a.trim().parse().ok())
+            .collect();
+        let mut prekladac = dns::Prekladac::novy(servery);
+        let cas =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let (overenie, _) = crate::x509::Overenie::mozilla(cas);
+        let zaciatok = std::time::Instant::now();
+        let mut nahoda = || (zaciatok.elapsed().as_nanos() as u16).wrapping_mul(40503);
+        let mut zle = Vec::new();
+        for adresa in [
+            "https://www.mozilla.org/robots.txt",
+            "https://letsencrypt.org/robots.txt",
+            "https://github.com/robots.txt",
+            "https://www.google.com/robots.txt",
+            "https://www.cloudflare.com/robots.txt",
+            "https://www.wikipedia.org/",
+        ] {
+            let n = Nastavenie { overenie: Some(&overenie), ..Default::default() };
+            let t = std::time::Instant::now();
+            match stiahni(adresa, &[], &mut prekladac, zaciatok.elapsed(), &mut nahoda, n) {
+                Ok(mut o) => {
+                    let telo = o.telo.cele(4 << 20).map(|t| t.len());
+                    println!(
+                        "HTTPS {adresa} stav={} telo={telo:?} čas={:?} z={}",
+                        o.hlavicka.stav,
+                        t.elapsed(),
+                        o.url
+                    );
+                    if o.hlavicka.stav != 200 || telo.is_err() {
+                        zle.push(adresa);
+                    }
+                }
+                Err(e) => {
+                    println!("HTTPS {adresa} CHYBA {e}");
+                    zle.push(adresa);
+                }
+            }
+        }
+        assert!(zle.is_empty(), "{zle:?}");
     }
 }

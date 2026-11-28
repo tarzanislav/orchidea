@@ -22,6 +22,7 @@ use crate::tls::{Overovac, VerejnyKluc};
 const OID_EC: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
 const OID_P256: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 const OID_P384: &[u8] = &[0x2b, 0x81, 0x04, 0x00, 0x22];
+const OID_P521: &[u8] = &[0x2b, 0x81, 0x04, 0x00, 0x23];
 const OID_RSA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
 const OID_RSA_PSS: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0a];
 const OID_MGF1: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x08];
@@ -174,6 +175,9 @@ enum Algoritmus {
     Ecdsa(Hash),
     RsaPkcs1(Hash),
     RsaPss(Hash),
+    /// napr. SHA-1 – certifikát sa prečíta (koreňová autorita, ktorej vlastný podpis sa neoveruje), ale podpis
+    /// takým algoritmom sa nikdy neprijme
+    Nepodporovany,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,7 +243,7 @@ fn algoritmus(obsah: &[u8]) -> Result<Algoritmus, String> {
             })
         }
         OID_RSA_PSS => Algoritmus::RsaPss(pss_parametre(d.ocakavaj(0x30)?)?),
-        _ => return Err(format!("nepodporovaný algoritmus podpisu {}", oid_text(oid))),
+        _ => Algoritmus::Nepodporovany,
     };
     Ok(a)
 }
@@ -316,6 +320,7 @@ fn krivka(k: &VerejnyKluc) -> Result<Krivka, String> {
     match p.ocakavaj(0x06)? {
         OID_P256 => Ok(Krivka::P256),
         OID_P384 => Ok(Krivka::P384),
+        OID_P521 => Ok(Krivka::P521),
         iny => Err(format!("nepodporovaná krivka {}", oid_text(iny))),
     }
 }
@@ -368,6 +373,7 @@ fn over_podpis_certifikatu(
             .map_err(|e| format!("RSA: {e:?}"))
         }
         (Algoritmus::RsaPss(h), OID_RSA) => over_pss(&rsa_kluc(k)?, h, data, podpis),
+        (Algoritmus::Nepodporovany, _) => Err("nepodporovaný algoritmus podpisu (napr. SHA-1)".into()),
         _ => Err("algoritmus podpisu nesedí s typom kľúča".into()),
     }
 }
@@ -679,6 +685,8 @@ fn meno_sedi(server: &str, vzor: &str) -> bool {
 /// Overovač servera: dôveryhodné koreňové autority a aktuálny čas.
 pub struct Overenie {
     korene: Vec<Certifikat>,
+    /// „nedôverovať po“ pre každý koreň (CKA_NSS_SERVER_DISTRUST_AFTER)
+    po: Vec<Option<i64>>,
     /// sekundy od 1. 1. 1970 – čas zo siete (SNTP); bez neho sa nič neoverí
     teraz: i64,
 }
@@ -692,10 +700,32 @@ impl std::fmt::Debug for Overenie {
 impl Overenie {
     /// Koreňové autority v DER; chybné sa preskočia (vráti aj ich počet).
     pub fn nove(korene: &[Vec<u8>], teraz: i64) -> (Overenie, usize) {
+        let k: Vec<crate::korene::Koren> = korene
+            .iter()
+            .map(|d| crate::korene::Koren { meno: String::new(), der: d.clone(), nedoverovat_po: None })
+            .collect();
+        Overenie::z_korenov(&k, teraz)
+    }
+
+    /// Koreňové autority so „nedôverovať po“.
+    pub fn z_korenov(korene: &[crate::korene::Koren], teraz: i64) -> (Overenie, usize) {
         let mut zle = 0;
-        let korene =
-            korene.iter().filter_map(|d| Certifikat::precitaj(d).map_err(|_| zle += 1).ok()).collect();
-        (Overenie { korene, teraz }, zle)
+        let (mut c, mut po) = (Vec::new(), Vec::new());
+        for k in korene {
+            match Certifikat::precitaj(&k.der) {
+                Ok(x) => {
+                    c.push(x);
+                    po.push(k.nedoverovat_po);
+                }
+                Err(_) => zle += 1,
+            }
+        }
+        (Overenie { korene: c, po, teraz }, zle)
+    }
+
+    /// Zoznam programu Mozilla CA vložený do programu (`siet::korene`).
+    pub fn mozilla(teraz: i64) -> (Overenie, usize) {
+        Overenie::z_korenov(&crate::korene::mozilla(), teraz)
     }
 
     pub fn pocet_korenov(&self) -> usize {
@@ -717,9 +747,9 @@ impl Overenie {
         let posledny = cesta.last().ok_or("prázdna cesta")?.clone();
         // koreň, ktorý ho vydal (alebo je ním samotný)
         let mut chyba = String::from("chýba dôveryhodná autorita vydavateľa");
-        for koren in &self.korene {
+        for (i, koren) in self.korene.iter().enumerate() {
             if koren.der == posledny.der {
-                return self.skontroluj_cestu(cesta, None);
+                return self.skontroluj_cestu(cesta, None, self.po[i]);
             }
             if koren.subjekt == posledny.vydavatel {
                 match over_podpis_certifikatu(
@@ -728,7 +758,7 @@ impl Overenie {
                     posledny.tbs(),
                     &posledny.podpis,
                 ) {
-                    Ok(()) => match self.skontroluj_cestu(cesta, Some(koren)) {
+                    Ok(()) => match self.skontroluj_cestu(cesta, Some(koren), self.po[i]) {
                         Ok(()) => return Ok(()),
                         Err(e) => chyba = e,
                     },
@@ -759,8 +789,18 @@ impl Overenie {
     }
 
     /// Kontroly celej cesty: platnosť, autority (cA, keyUsage, dĺžka cesty, účel), obmedzenia mien.
-    fn skontroluj_cestu(&self, cesta: &[Certifikat], koren: Option<&Certifikat>) -> Result<(), String> {
+    fn skontroluj_cestu(
+        &self,
+        cesta: &[Certifikat],
+        koren: Option<&Certifikat>,
+        nedoverovat_po: Option<i64>,
+    ) -> Result<(), String> {
         let list = &cesta[0];
+        if nedoverovat_po.is_some_and(|po| list.od > po) {
+            return Err(
+                "autorita už nie je dôveryhodná pre certifikáty vydané po dátume v zozname Mozilla".into()
+            );
+        }
         for (i, c) in cesta.iter().enumerate() {
             self.platny(c, if i == 0 { "certifikát servera" } else { "sprostredkujúca autorita" })?;
         }

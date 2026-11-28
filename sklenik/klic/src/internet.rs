@@ -704,11 +704,36 @@ pub fn skuska(argumenty: &[String]) -> i32 {
             }
         }
     }
-    // sťahovanie cez HTTP (rozhranie R6) – dĺžka a odtlačok BLAKE3 na porovnanie s rozhodcom
+    // sťahovanie cez HTTP a HTTPS (rozhranie R7, A12) – dĺžka a odtlačok BLAKE3 na porovnanie s rozhodcom
     let adresy: Vec<&String> = argumenty.windows(2).filter(|w| w[0] == "--stiahni").map(|w| &w[1]).collect();
+    // overenie servera: koreňové autority Mozilla vložené v programe, alebo `--koren <súbor.der>` (skúška v CI)
+    let vlastne: Vec<Vec<u8>> = argumenty
+        .windows(2)
+        .filter(|w| w[0] == "--koren")
+        .filter_map(|w| std::fs::read(&w[1]).ok())
+        .collect();
+    let cas = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    let (overenie, nepreckane) = if vlastne.is_empty() {
+        orchidea_siet::x509::Overenie::mozilla(cas)
+    } else {
+        orchidea_siet::x509::Overenie::nove(&vlastne, cas)
+    };
+    if adresy.iter().any(|a| a.starts_with("https://")) {
+        println!(
+            "INTERNET KORENE autorit={} neprecitanych={nepreckane} zdroj={}",
+            overenie.pocet_korenov(),
+            if vlastne.is_empty() { &orchidea_siet::korene::zdroj()[..16] } else { "--koren" }
+        );
+        // pred 1. 1. 2026 je čas zariadenia určite zlý (bez SNTP) – overenie platnosti by nemalo zmysel
+        if cas < 1_767_225_600 {
+            println!("INTERNET CHYBA čas zariadenia neznámy – HTTPS sa neoverí (najprv čas zo siete)");
+            ok = false;
+        }
+    }
     for a in adresy {
         let mut n = nahoda16;
-        match orchidea_siet::http::stiahni(a, &[], &mut prekladac, od.elapsed(), &mut n, Default::default()) {
+        let nastavenie = orchidea_siet::http::Nastavenie { overenie: Some(&overenie), ..Default::default() };
+        match orchidea_siet::http::stiahni(a, &[], &mut prekladac, od.elapsed(), &mut n, nastavenie) {
             Ok(mut o) => match o.telo.cele(64 << 20) {
                 Ok(t) => {
                     let odtlacok: String = sklenik_korene::aktualizacia::odtlacok(&t)

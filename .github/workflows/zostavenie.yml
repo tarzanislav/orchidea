@@ -258,10 +258,44 @@ jobs:
           ! sudo ip netns exec skuska timeout 60 ./target/debug/klic --internet v1 --meno neexistuje.orchidea > /tmp/nic.txt
           grep -q 'neexistuje.orchidea neexistuje' /tmp/nic.txt
           { echo "### Internet (R268) – KLÍČ proti dnsmasq a chrony"; echo '```'; cat /tmp/internet.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: HTTPS – TLS 1.3 proti openssl s_server (A12, všetky tri šifrovacie sady)
+      - name: HTTPS – KLÍČ cez DHCP, DNS a TLS 1.3 proti openssl s_server s vlastnou autoritou (A12)
         run: |
+          set -o pipefail
           openssl version
-          cargo test --locked -p orchidea-siet -- --ignored --nocapture
+          mkdir -p /tmp/tls && cd /tmp/tls
+          printf 'basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n' > ca.ext
+          printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:web.orchidea\n' > list.ext
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-384 -noenc -days 2 -subj "/CN=Koren skusky" \
+            -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign -keyout koren.key -out koren.pem
+          openssl req -new -newkey rsa:2048 -noenc -subj "/CN=Medzi skusky" -keyout medzi.key -out medzi.csr
+          openssl x509 -req -in medzi.csr -CA koren.pem -CAkey koren.key -days 2 -sha384 -extfile ca.ext -out medzi.pem
+          openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -noenc -subj "/CN=web.orchidea" -keyout list.key -out list.csr
+          openssl x509 -req -in list.csr -CA medzi.pem -CAkey medzi.key -days 2 -sha256 -extfile list.ext -out list.pem
+          openssl x509 -in koren.pem -outform DER -out koren.der
+          (cd /tmp/web && openssl s_server -tls1_3 -WWW -naccept 1 -accept 10.77.0.1:8443 -cert /tmp/tls/list.pem \
+            -key /tmp/tls/list.key -cert_chain /tmp/tls/medzi.pem > /tmp/tls/server.log 2>&1 &)
+          sleep 1
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p /tmp/https
+          sudo ip netns exec skuska timeout 120 ./target/debug/klic --internet v1 --koren /tmp/tls/koren.der \
+            --stiahni https://web.orchidea:8443/velky.bin --uloz /tmp/https | tee /tmp/https.txt
+          cmp /tmp/https/velky.bin /tmp/web/velky.bin
+          grep -q '^INTERNET STIAHNUTE https://web.orchidea:8443/velky.bin stav=200 bajtov=3145745 ' /tmp/https.txt
+          grep -q '^INTERNET VYSLEDOK ok$' /tmp/https.txt
+          # ten istý server so zoznamom Mozilla (bez vlastnej autority) sa NESMIE overiť
+          (cd /tmp/web && openssl s_server -tls1_3 -WWW -naccept 1 -accept 10.77.0.1:8443 -cert /tmp/tls/list.pem \
+            -key /tmp/tls/list.key -cert_chain /tmp/tls/medzi.pem > /tmp/tls/server2.log 2>&1 &)
+          sleep 1
+          ! sudo ip netns exec skuska timeout 120 ./target/debug/klic --internet v1 \
+            --stiahni https://web.orchidea:8443/velky.bin > /tmp/https-cudzi.txt
+          grep 'INTERNET KORENE' /tmp/https-cudzi.txt
+          grep -q 'server sa neoveril: chýba dôveryhodná autorita' /tmp/https-cudzi.txt
+          { echo "### HTTPS (A12) – KLÍČ proti openssl s_server"; echo '```'; cat /tmp/https.txt /tmp/https-cudzi.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: HTTPS – TLS 1.3 proti openssl s_server (všetky sady, RSA aj ECDSA) a verejné servery so zoznamom Mozilla
+        run: |
+          set -o pipefail
+          cargo test --locked -p orchidea-siet -- --ignored --nocapture 2>&1 | tee /tmp/tls-skusky.txt
+          { echo "### HTTPS – verejné servery"; echo '```'; grep '^HTTPS ' /tmp/tls-skusky.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Záznam rozhodcu
         if: always()
         run: sudo journalctl -t dnsmasq -t dnsmasq-dhcp -t chronyd --no-pager | tail -80 || true

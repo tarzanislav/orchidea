@@ -554,7 +554,8 @@ fn upozornenie(obsah: &[u8]) -> Chyba {
     }
 }
 
-/// Nadviaže spojenie TLS 1.3 so serverom `meno` cez hotový prúd (TCP). `nahoda` naplní bajty náhodou z jadra.
+/// Nadviaže spojenie TLS 1.3 so serverom `meno` cez hotový prúd (TCP). `nahoda` naplní bajty náhodou z jadra –
+/// spolu 96 B (tajný kľúč X25519, náhodná hodnota ClientHello, legacy_session_id).
 pub fn nadviaz<S: Read + Write>(
     mut prud: S,
     meno: &str,

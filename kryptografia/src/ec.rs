@@ -1,7 +1,7 @@
-//! Overenie podpisu ECDSA na krivkách P-256 a P-384 (certifikáty a výmena TLS 1.3).
+//! Overenie podpisu ECDSA na krivkách P-256, P-384 (certifikáty a výmena TLS 1.3) a P-521 (len certifikáty).
 //!
 //! Podľa **FIPS 186-5** (6.4.2 overenie podpisu ECDSA), parametre kriviek **NIST SP 800-186** (3.2.1.3 P-256,
-//! 3.2.1.4 P-384) a **SEC 1 v2** (2.3.4 bod z bajtov, 3.2.2.1 kontrola verejného kľúča). Vzorce v Jakobiho
+//! 3.2.1.4 P-384, 3.2.1.5 P-521) a **SEC 1 v2** (2.3.4 bod z bajtov, 3.2.2.1 kontrola verejného kľúča). Vzorce v Jakobiho
 //! súradniciach pre a = −3: zdvojenie „dbl-2001-b“ a sčítanie „add-2007-bl“ z Explicit-Formulas Database
 //! (Bernstein, Lange). Súčet u₁·G + u₂·Q naraz Shamirovým postupom (ElGamal 1985).
 //!
@@ -14,6 +14,8 @@ use crate::velke::{self, Modul, Slova};
 pub enum Krivka {
     P256,
     P384,
+    /// len v certifikátoch (niektoré koreňové autority) – TLS 1.3 ju v ClientHello neponúka
+    P521,
 }
 
 struct Parametre {
@@ -40,6 +42,14 @@ const P384: Parametre = Parametre {
     gy: "3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f",
 };
 
+const P521: Parametre = Parametre {
+    p: "01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    n: "01fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffa51868783bf2f966b7fcc0148f709a5d03bb5c9b8899c47aebb6fb71e91386409",
+    b: "0051953eb9618e1c9a1f929a21a0b68540eea2da725b99b315f3b8b489918ef109e156193951ec7e937b1652c0bd3bb1bf073573df883d2c34f1ef451fd46b503f00",
+    gx: "00c6858e06b70404e9cd9e3ecb662395b4429c648139053fb521f828af606b4d3dbaa14b5e77efe75928fe1dc127a2ffa8de3348b3c1856a429bf97e7e31c2e5bd66",
+    gy: "011839296a789a3bc0045c8a5fb42c7d1bd998f54449579b446817afbd17273e662c97ee72995ef42640c550b9013fad0761353c7086a272c24088be94769fd16650",
+};
+
 fn z_hex(s: &str) -> Slova {
     let b: Vec<u8> =
         (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap_or(0)).collect();
@@ -52,6 +62,7 @@ impl Krivka {
         match self {
             Krivka::P256 => 32,
             Krivka::P384 => 48,
+            Krivka::P521 => 66,
         }
     }
 
@@ -59,6 +70,7 @@ impl Krivka {
         match self {
             Krivka::P256 => &P256,
             Krivka::P384 => &P384,
+            Krivka::P521 => &P521,
         }
     }
 }
@@ -254,7 +266,7 @@ mod skusky {
     /// by obe podmienky porušila).
     #[test]
     fn parametre_kriviek() {
-        for krivka in [Krivka::P256, Krivka::P384] {
+        for krivka in [Krivka::P256, Krivka::P384, Krivka::P521] {
             let par = krivka.parametre();
             let pm = Modul::novy(&z_hex(par.p)).unwrap();
             let t = Teleso { b: pm.do_tvaru(&z_hex(par.b)), p: pm };
@@ -275,7 +287,7 @@ mod skusky {
 
     /// Podpisy vytvorené nezávislou knižnicou (Python `cryptography` 50 / OpenSSL – rozhodca, 28. 11. 2026):
     /// (krivka, odtlačok, kľúč 04‖X‖Y, odtlačok správy, r, s). P-256 so SHA-384/512 skracuje odtlačok (6.4.2 krok 3).
-    const PODPISY: [(&str, &str, &str, &str, &str, &str); 6] = [
+    const PODPISY: [(&str, &str, &str, &str, &str, &str); 7] = [
         (
             "P256",
             "S256",
@@ -324,12 +336,24 @@ mod skusky {
             "768d0b813560787993f368cccd4265379f92a3df80ab9c50edf46ee9e2f2cb96569b93615b680999a25b2cbbf8848e62",
             "854dce53c36b35c59a018d7cab01041bb3dd9801f399e68706e4f6a82b2eec1ab3c0305af1a8e427495b1101eadacd30",
         ),
+        (
+            "P521",
+            "S512",
+            "0400d9549e20e6f219827a003a7ba5d0e7b076a5f27f0179f26aa5142553bb65a36b2a50110310caa0839612643c1b1100b9f5e808832dbeee8ea2cec2b66bc832665a00ce03767e96823607c49dbb6f5e74fa50acdab1a4129c291b26631685c317feb4918033828d8e37c444112b063562dc3315efe0a38d31bba17483b01d946ddd83d7",
+            "d38e330eabc2a05b35cfd4c8b5fe9f885ce103b485f991b9a4f3479f5593f7abb5e5ca4bebcaf30aaace6a37bd49f387a4c6d732fef56fd65a4b0a987387991e",
+            "00d0ad750b0271f05780fd9921354690a94326f50b0f3ab43983d13faad0f4adb912f8396ecddcb8ad0f6f07d0c07c3a3661a7f2fc7a6a831cfa48fcd47de7d70fd2",
+            "0165155da3be797d22bbce189d0e80fdbf80892a57fbe97dc80ba0d4deb2faa75dcdc1dac5bb374641d635a3cedb62221ef93c6a90d83801fd53048f7fe14dee6423",
+        ),
     ];
 
     #[test]
     fn podpisy_nezavislej_kniznice() {
         for (k, h, kluc, odt, r, s) in PODPISY {
-            let krivka = if k == "P256" { Krivka::P256 } else { Krivka::P384 };
+            let krivka = match k {
+                "P256" => Krivka::P256,
+                "P384" => Krivka::P384,
+                _ => Krivka::P521,
+            };
             let (kluc, odt, r, s) = (hx(kluc), hx(odt), hx(r), hx(s));
             assert_eq!(over(krivka, &kluc, &odt, &r, &s), Ok(()), "{k} {h}");
             // zmenený odtlačok, prehodené r a s, iný kľúč

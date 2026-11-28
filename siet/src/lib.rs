@@ -14,6 +14,7 @@
 //! | [`sntp`] | presný čas zo siete (krabičky nemajú hodiny s batériou) | RFC 4330, RFC 5905 |
 //! | [`tls`] | šifrované spojenie s webom – klient TLS 1.3 (HTTPS), A12 | RFC 8446, RFC 8448 |
 //! | [`x509`] | overenie servera: certifikáty X.509, reťaz k autorite, meno | RFC 5280, RFC 9525, X.690 |
+//! | [`korene`] | dôveryhodné koreňové autority (zoznam Mozilla CA ako dáta) | – |
 //! | [`http`] | sťahovanie prúdom (zoznamy staníc, súbory, živé prúdy) – rozhranie R7; HTTPS až s A12 | RFC 9112, RFC 9110, RFC 3986 |
 //!
 //! **Chladný systém:** nič sa neopakuje naprázdno – automat DHCP povie volajúcemu, kedy ho má zobudiť
@@ -23,6 +24,7 @@
 pub mod dhcp;
 pub mod dns;
 pub mod http;
+pub mod korene;
 pub mod sntp;
 pub mod tls;
 pub mod x509;
