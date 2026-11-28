@@ -38,6 +38,9 @@ pub struct Beh {
     pub prerusene: Option<String>,
     /// R232: riadky `CAS` a `CAS_SPOLU` (rozpis času po etapách, `--etapy`)
     pub cas: Vec<String>,
+    /// Žiadosť B (#20, d377ce9): riadky `PROFIL_SPOLU`, `PROFIL`, `PROFIL_NEDOSTUPNY` (profil po funkciách,
+    /// `--profil`) – odovzdávajú sa bez zmeny
+    pub profil: Vec<String>,
 }
 
 impl Beh {
@@ -69,6 +72,9 @@ pub fn rozober(vystup: &str) -> Beh {
             }
             Some("CHYBA") => b.chyba = Some(r.trim_start_matches("CHYBA").trim().to_string()),
             Some("CAS") | Some("CAS_SPOLU") => b.cas.push(r.trim().to_string()),
+            Some("PROFIL") | Some("PROFIL_SPOLU") | Some("PROFIL_NEDOSTUPNY") => {
+                b.profil.push(r.trim().to_string())
+            }
             _ => {}
         }
     }
@@ -287,6 +293,45 @@ pub fn popis_etap(cas: &[String]) -> Option<String> {
     Some(t.join(" · "))
 }
 
+/// Žiadosť B (#20, d377ce9): krátky popis profilu – počet vzoriek a tri najväčšie funkcie, alebo dôvod, prečo
+/// profil nie je (vtedy aj `perf_event_paranoid`, ak ho jadro má).
+pub fn popis_profilu(b: &Beh, paranoid: Option<&str>) -> String {
+    let pole = |r: &str, k: &str| {
+        r.split_whitespace()
+            .find_map(|p| p.strip_prefix(k).and_then(|v| v.strip_prefix('=')))
+            .map(str::to_string)
+    };
+    if let Some(r) = b.profil.iter().find(|r| r.starts_with("PROFIL_NEDOSTUPNY")) {
+        let dovod = r.trim_start_matches("PROFIL_NEDOSTUPNY").trim().trim_start_matches("dovod=");
+        return format!(
+            "profil nedostupný – {dovod}{}",
+            paranoid.map(|p| format!(" · perf_event_paranoid={p}")).unwrap_or_default()
+        );
+    }
+    let Some(spolu) = b.profil.iter().find(|r| r.starts_with("PROFIL_SPOLU")) else {
+        if let Some(p) = &b.prerusene {
+            return format!("profil {p}");
+        }
+        if let Some(e) = &b.chyba {
+            return format!("profil chyba – {e}");
+        }
+        return "bez riadkov PROFIL (program bez --profil?)".into();
+    };
+    let vzoriek = pole(spolu, "vzoriek").unwrap_or_else(|| "?".into());
+    let stratene = pole(spolu, "stratene").unwrap_or_else(|| "?".into());
+    let najvacsie: Vec<String> = b
+        .profil
+        .iter()
+        .filter(|r| r.starts_with("PROFIL "))
+        .take(3)
+        .filter_map(|r| Some(format!("{} {} %", pole(r, "symbol")?, cislo(&pole(r, "podiel")?))))
+        .collect();
+    format!(
+        "{vzoriek} vzoriek (stratené {stratene}){}",
+        if najvacsie.is_empty() { String::new() } else { format!(" · {}", najvacsie.join(" · ")) }
+    )
+}
+
 /// R248: počet jadier procesora z `/sys/devices/system/cpu/possible` („0-3“ → 4), aj keď sú niektoré práve
 /// vypnuté (parkovanie jadier v pokoji, R161).
 fn jadra_procesora() -> Option<usize> {
@@ -444,6 +489,29 @@ pub fn spusti(
                     }
                     pridaj(format!("{meno} viac vlákien ako jadier ({jadra}): {} (R241)", casti.join(" · ")));
                 }
+                // Žiadosť B (#20, d377ce9): profil po funkciách hlavného vlákna priamo na doske (perf_event_open,
+                // softvérové hodiny jadra) – 1 vlákno, riadky PROFIL bez zmeny pre B
+                ochlad();
+                let b = spusti_beh(
+                    program,
+                    &[
+                        "--rychlost".into(),
+                        "--profil".into(),
+                        "--vlakna".into(),
+                        "1".into(),
+                        tok.to_string_lossy().to_string(),
+                    ],
+                    strop_behu,
+                );
+                let paranoid = std::fs::read_to_string("/proc/sys/kernel/perf_event_paranoid").ok();
+                pridaj(format!(
+                    "{meno} profil, {}: {}",
+                    popis_rychlosti(1, &b),
+                    popis_profilu(&b, paranoid.as_deref().map(str::trim))
+                ));
+                for r in &b.profil {
+                    pridaj(format!("    {r}"));
+                }
             }
         }
         drop(takt);
@@ -502,6 +570,32 @@ mod testy {
         assert_eq!(b.cas.len(), 5);
         assert_eq!(popis_etap(&b.cas).as_deref(), Some("cabac 31 % · inter 26 % · využitie vlákien 95,5 %"));
         assert_eq!(popis_etap(&[]), None);
+    }
+
+    #[test]
+    fn profil_po_funkciach() {
+        let b = rozober(
+            "VYSLEDOK obrazov=96 cas_ms=5000 obr_s=19.2 sei_zhoda=0 sei_nezhoda=0 sei_bez=96 chyby=0 stav=ok\n\
+             PROFIL_SPOLU vzoriek=4980 stratene=0 frekvencia=1000\n\
+             PROFIL vzoriek=1200 podiel=24.1 symbol=cabac_dekoduj\n\
+             PROFIL vzoriek=800 podiel=16.1 symbol=interpolacia_jas\n\
+             PROFIL vzoriek=500 podiel=10.0 symbol=odblokuj\n\
+             PROFIL vzoriek=100 podiel=2.0 symbol=sao\n",
+        );
+        assert_eq!(b.profil.len(), 5, "riadky PROFIL sa odovzdajú všetky a bez zmeny");
+        assert_eq!(b.profil[1], "PROFIL vzoriek=1200 podiel=24.1 symbol=cabac_dekoduj");
+        assert_eq!(
+            popis_profilu(&b, Some("2")),
+            "4980 vzoriek (stratené 0) · cabac_dekoduj 24,1 % · interpolacia_jas 16,1 % · odblokuj 10,0 %"
+        );
+        let n = rozober(
+            "PROFIL_NEDOSTUPNY dovod=perf_event_open errno=13\nVYSLEDOK obrazov=96 obr_s=19.0 stav=ok",
+        );
+        assert_eq!(
+            popis_profilu(&n, Some("3")),
+            "profil nedostupný – perf_event_open errno=13 · perf_event_paranoid=3"
+        );
+        assert_eq!(popis_profilu(&Beh::default(), None), "bez riadkov PROFIL (program bez --profil?)");
     }
 
     #[test]

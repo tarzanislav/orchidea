@@ -192,8 +192,11 @@ jobs:
           film film720 1280x720
           film film1080 1920x1080
           # R255 (žiadosť B, #20): ťažší tok ako skutočný film – zrno (časový šum), 8 Mb/s (rovnako ako hevc.yml)
-          ffmpeg $z -i "testsrc2=size=1920x1080:rate=24,noise=alls=10:allf=t+u" -frames:v 96 -c:v libx265 -preset fast \
-            -pix_fmt yuv420p -x265-params "log-level=error:hash=1:bitrate=8000:vbv-maxrate=10000:vbv-bufsize=10000" \
+          # žiadosť B (#20, 9acf136): semienko šumu a x265 s jedným vláknom – tok je pri každom behu CI rovnaký,
+          # merania na krabičkách sa dajú presne porovnať s CI (VBV s viacerými vláknami x265 nie je deterministické)
+          ffmpeg $z -i "testsrc2=size=1920x1080:rate=24,noise=alls=10:allf=t+u:all_seed=12345" -frames:v 96 -c:v libx265 \
+            -preset fast -pix_fmt yuv420p \
+            -x265-params "log-level=error:hash=1:bitrate=8000:vbv-maxrate=10000:vbv-bufsize=10000:pools=1:frame-threads=1" \
             klic-vystup/hevc/film1080_tazky.hevc
           ls -l klic-vystup/hevc
           for t in klic-vystup/hevc/*.hevc; do
