@@ -1,4 +1,5 @@
-//! Listy dizajnového systému: témy s nameraným kontrastom, prvky vo všetkých stavoch, ikony na mriežke, písmo.
+//! Listy dizajnového systému: témy s nameraným kontrastom, prvky vo všetkých stavoch, ikony na mriežke, písmo,
+//! návrhy znaku (logo).
 
 use crate::obrazky::{Obr, fotka};
 use orchidea_pismo::zmiesaj;
@@ -7,7 +8,8 @@ use orchidea_vzhlad::kontrast::{Poziadavka, kontrola};
 use orchidea_vzhlad::kreslic::{Kreslic, zakladna_v_strede};
 use orchidea_vzhlad::miery::*;
 use orchidea_vzhlad::prvky::{self, Druh, STAVY, Stav};
-use orchidea_vzhlad::tema::{NOC, TEMY, Tema};
+use orchidea_vzhlad::tema::{LAN, NOC, TEMY, Tema};
+use orchidea_vzhlad::znak::{self, ZNAKY};
 
 /// Meno úlohy farby a jej výber z témy.
 type Rola = (&'static str, fn(&Tema) -> u32);
@@ -333,10 +335,13 @@ pub fn pismo(m: f32) -> Kreslic {
     let mut y = 140.0;
     for r in STUPNICA {
         let tv = r.meno.starts_with("TV");
+        // slovenská ukážka – ä, ĺ, ŕ, ľ, ť, ď, ô, ý (kritika A: česká veta ich netestovala); pri veľkých rezoch kratšia
         let vzor = if tv {
             "Svetlo nad jazerom 20:45"
+        } else if r.velkost <= 13.0 {
+            "Kŕdeľ šťastných ďatľov učí pri ústí Váhu mĺkveho koňa obhrýzať kôru a žrať čerstvé mäso · 0123456789"
         } else {
-            "Príliš žltučký kôň úpel ďábelské ódy · 0123456789"
+            "Kŕdeľ ďatľov, mĺkvy kôň, kôra a mäso · 0123456789"
         };
         k.text(r.meno, 40.0, y, TEXT_SILNY, t.text);
         let mut opis = format!(
@@ -370,5 +375,48 @@ pub fn pismo(m: f32) -> Kreslic {
         POPIS,
         t.text_druhy,
     );
+    k
+}
+
+/// Znak ORCHIDEE – tri návrhy na výber vlastníkom: veľký v tmavej a svetlej téme, malé veľkosti a znak v hlavičke
+/// programu a na TV.
+pub fn logo(m: f32) -> Kreslic {
+    let t = &NOC;
+    let (w, h) = (1440.0, 760.0);
+    let mut k = Kreslic::novy(w, h, m, t.plocha);
+    hlavicka(
+        &mut k,
+        t,
+        "Znak ORCHIDEE – tri návrhy (vyberie vlastník)",
+        "Plný a dvojfarebný (nepletie sa s ťahovými ikonami), bez kruhového podkladu (nevyzerá ako tlačidlo); farby z témy.",
+    );
+    let sw = (w - 80.0) / 3.0;
+    for (i, z) in ZNAKY.iter().enumerate() {
+        let x = 40.0 + i as f32 * sw;
+        k.text(z.meno(), x, 136.0, NADPIS_VELKY, t.text);
+        k.text(z.opis(), x, 160.0, TEXT, t.text_druhy);
+        // veľký v tmavej a svetlej téme
+        for (j, tt) in [&NOC, &LAN].iter().enumerate() {
+            let bx = x + j as f32 * 216.0;
+            k.obdlznik(bx, 184.0, 200.0, 200.0, R_VELKE, tt.okolie);
+            znak::kresli(&mut k, *z, tt, bx + 36.0, 220.0, 128.0);
+        }
+        // malé veľkosti
+        let mut sx = x;
+        for s in [48.0, 32.0, 20.0, 16.0] {
+            znak::kresli(&mut k, *z, t, sx, 408.0 + (48.0 - s), s);
+            k.cisla(&format!("{s:.0}"), sx, 476.0, POPIS, t.text_druhy);
+            sx += s + 28.0;
+        }
+        // v hlavičke programu (lišta 52) a v hlavičke TV (40 bodov vedľa záložiek)
+        k.obdlznik(x, 500.0, sw - 32.0, LISTA, R, t.plocha_vyssia);
+        znak::kresli(&mut k, *z, t, x + 16.0, 500.0 + 16.0, 20.0);
+        k.text("zapad_slnka.jpg", x + 48.0, 500.0 + 24.0, TEXT_SILNY, t.text);
+        k.cisla("6000 × 4000 · JPEG", x + 48.0, 500.0 + 40.0, POPIS, t.text_druhy);
+        k.obdlznik(x, 572.0, sw - 32.0, 120.0, R, t.okolie);
+        znak::kresli(&mut k, *z, t, x + 24.0, 572.0 + 40.0, 40.0);
+        k.text("Domov", x + 84.0, 572.0 + 76.0, TV_TEXT, t.text_druhy);
+        k.text("Filmy", x + 84.0 + k.sirka("Domov", TV_TEXT) + 40.0, 572.0 + 76.0, TV_TEXT, t.text);
+    }
     k
 }

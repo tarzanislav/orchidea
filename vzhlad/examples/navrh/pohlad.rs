@@ -9,6 +9,7 @@ use orchidea_vzhlad::kreslic::{Kreslic, zakladna_v_strede};
 use orchidea_vzhlad::miery::*;
 use orchidea_vzhlad::prvky::{self, Druh, Stav};
 use orchidea_vzhlad::tema::Tema;
+use orchidea_vzhlad::znak::{self, Znak};
 
 pub const W: f32 = 1440.0;
 pub const H: f32 = 900.0;
@@ -18,12 +19,9 @@ pub fn logo(k: &mut Kreslic, t: &Tema, x: f32, y: f32) {
     logo_v(k, t, x, y, 20.0);
 }
 
-/// Znak programu vo veľkosti `s` bodov.
+/// Znak ORCHIDEE vo veľkosti `s` bodov – dočasne návrh 1 (orchidea), kým vlastník nevyberie (`system/logo.png`).
 pub fn logo_v(k: &mut Kreslic, t: &Tema, x: f32, y: f32, s: f32) {
-    let q = s / 20.0;
-    k.kruh(x + 10.0 * q, y + 10.0 * q, 10.0 * q, t.akcent);
-    k.kruh(x + 10.0 * q, y + 12.0 * q, 3.5 * q, t.akcent_text);
-    k.kruh(x + 10.0 * q, y + 6.0 * q, 2.0 * q, zmiesaj(t.akcent, t.akcent_text, 110));
+    znak::kresli(k, Znak::Orchidea, t, x, y, s);
 }
 
 fn oddelovac_zvisly(k: &mut Kreslic, t: &Tema, x: f32, y: f32) {
@@ -133,12 +131,10 @@ fn udaje(k: &mut Kreslic, t: &Tema, x: f32, mut y: f32, w: f32) -> f32 {
     y
 }
 
-fn svetlo(k: &mut Kreslic, t: &Tema, x: f32, mut y: f32, w: f32, zvyraznene: bool) -> f32 {
-    for (i, (m, h, v)) in
-        [("Jas", "+12", 0.12f32), ("Kontrast", "+20", 0.2), ("Gama", "-6", -0.06)].iter().enumerate()
-    {
-        let stav = if zvyraznene && i == 1 { Stav::PodMysou } else { Stav::Bezny };
-        prvky::posuvnik(k, t, stav, x, y, w, m, h, *v, true);
+/// Posuvníky Svetla v pokojovom stave (stavy pod myšou a zameraný sú na liste prvkov – kritika A, 28. 11.).
+fn svetlo(k: &mut Kreslic, t: &Tema, x: f32, mut y: f32, w: f32) -> f32 {
+    for (m, h, v) in [("Jas", "+12", 0.12f32), ("Kontrast", "+20", 0.2), ("Gama", "-6", -0.06)] {
+        prvky::posuvnik(k, t, Stav::Bezny, x, y, w, m, h, v, true);
         y += 44.0;
     }
     y
@@ -151,7 +147,7 @@ fn panel_uprav(k: &mut Kreslic, t: &Tema, f: &Obr, x: f32, y: f32, w: f32, kompa
     y += if kompaktny { 80.0 } else { 96.0 };
     y = oddelovac(k, t, x, y, w);
     y = hlavicka_sekcie(k, t, "Svetlo", Some("Obnoviť"), x, y, w);
-    y = svetlo(k, t, x, y, w, true) - 8.0;
+    y = svetlo(k, t, x, y, w) - 8.0;
     y = oddelovac(k, t, x, y, w);
     if !kompaktny {
         y = hlavicka_sekcie(k, t, "Veľkosť", None, x, y, w);
@@ -159,16 +155,7 @@ fn panel_uprav(k: &mut Kreslic, t: &Tema, f: &Obr, x: f32, y: f32, w: f32, kompa
         for (i, (m, v)) in [("Šírka", "6000"), ("Výška", "4000")].iter().enumerate() {
             let px = x + i as f32 * (pw + 8.0);
             k.text(m, px, y + 11.0, POPIS, t.text_druhy);
-            prvky::pole(
-                k,
-                t,
-                if i == 0 { Stav::Zamerany } else { Stav::Bezny },
-                px,
-                y + 18.0,
-                pw,
-                v,
-                "bodov",
-            );
+            prvky::pole(k, t, Stav::Bezny, px, y + 18.0, pw, v, "bodov");
         }
         y += 18.0 + POLE + 12.0;
         prvky::tlacidlo(
@@ -245,7 +232,7 @@ fn skupiny_nastrojov(orezanie_vybrane: bool) -> Vec<Vec<(Ikona, bool)>> {
             (Ikona::Zrkadlit, false),
             (Ikona::Orezat, orezanie_vybrane),
         ],
-        vec![(Ikona::Spat, false), (Ikona::Znova, false)],
+        vec![(Ikona::Vratit, false), (Ikona::Znova, false)],
         vec![(Ikona::Porovnat, false), (Ikona::Prezentacia, false), (Ikona::Katalog, false)],
     ]
 }
@@ -263,18 +250,13 @@ fn variant_a(k: &mut Kreslic, t: &Tema, f: &Obr) {
     let n: usize = skupiny.iter().map(|s| s.len()).sum();
     let sirka = n as f32 * (TLACIDLO + 4.0) - 4.0 + (skupiny.len() - 1) as f32 * 25.0;
     let mut x = ((px - sirka) / 2.0).round();
-    let mut orez_x = 0.0;
     for (g, s) in skupiny.iter().enumerate() {
         if g > 0 {
             oddelovac_zvisly(k, t, x + 8.0, 16.0);
             x += 21.0;
         }
         for &(ik, vybrane) in s {
-            let stav = if ik == Ikona::Orezat { Stav::PodMysou } else { Stav::Bezny };
-            if ik == Ikona::Orezat {
-                orez_x = x + TLACIDLO / 2.0;
-            }
-            prvky::tlacidlo(k, t, Druh::Ikona, stav, vybrane, x, 8.0, TLACIDLO, Some(ik), None);
+            prvky::tlacidlo(k, t, Druh::Ikona, Stav::Bezny, vybrane, x, 8.0, TLACIDLO, Some(ik), None);
             x += TLACIDLO + 4.0;
         }
     }
@@ -323,7 +305,6 @@ fn variant_a(k: &mut Kreslic, t: &Tema, f: &Obr) {
     k.obdlznik(px, LISTA, PANEL, H - LISTA, 0.0, t.plocha);
     k.obdlznik(px, LISTA, 1.0, H - LISTA, 0.0, t.okraj);
     panel_uprav(k, t, f, px + 20.0, LISTA + 20.0, PANEL - 40.0, false);
-    prvky::bublina(k, t, orez_x, LISTA + 8.0 + 28.0 - 4.0, "Orezať", Some("C"));
 }
 
 /// Variant B – nástroje vo zvislom páse vľavo, panel so záložkami; zobrazený režim orezania.
@@ -525,7 +506,7 @@ fn variant_c(k: &mut Kreslic, t: &Tema, f: &Obr) {
         k,
         t,
         Druh::Hlavne,
-        Stav::Zamerany,
+        Stav::Bezny,
         false,
         x + w - uw,
         y - 2.0,

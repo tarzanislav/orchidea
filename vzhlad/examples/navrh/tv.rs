@@ -8,7 +8,7 @@ use orchidea_pismo::zmiesaj;
 use orchidea_vzhlad::ikony::Ikona;
 use orchidea_vzhlad::kreslic::{Kreslic, SmerPrechodu, zakladna_v_strede};
 use orchidea_vzhlad::miery::*;
-use orchidea_vzhlad::tema::Tema;
+use orchidea_vzhlad::tema::{CLONA_OBRAZU, TEXT_NA_OBRAZE, Tema};
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -28,25 +28,23 @@ fn zameranie_tv(k: &mut Kreslic, t: &Tema, x: f32, y: f32, w: f32, h: f32, r: f3
     k.ram(x - o, y - o, w + 2.0 * o, h + 2.0 * o, r + o, TV_ZAMERANIE_HRUBKA, t.zameranie);
 }
 
-/// Tlačidlo pre TV (výška 72 bodov); vráti šírku.
+/// Tlačidlo pre TV (výška 72 bodov); vráti šírku. Akcent na TV znamená vždy „tu je zameranie“: **len zamerané
+/// tlačidlo** má akcentovú výplň, rámik 4 body a je o 5 % väčšie (okolo stredu – susedia sa nehýbu; prechod
+/// ≤ 150 ms len pri pohybe zamerania). Ostatné sú neutrálne – aj hlavná akcia, keď na nej zameranie nie je.
 #[allow(clippy::too_many_arguments)]
-fn tlacidlo_tv(
-    k: &mut Kreslic,
-    t: &Tema,
-    x: f32,
-    y: f32,
-    ik: Ikona,
-    s: &str,
-    hlavne: bool,
-    zamerane: bool,
-) -> f32 {
+fn tlacidlo_tv(k: &mut Kreslic, t: &Tema, x: f32, y: f32, ik: Ikona, s: &str, zamerane: bool) -> f32 {
     let w = k.sirka(s, TV_TEXT) + 40.0 + 36.0 + 40.0;
-    let (vypln, popredie) = if hlavne { (t.akcent, t.akcent_text) } else { (t.prvok_pod_mysou, t.text) };
-    k.obdlznik(x, y, w, TV_TLACIDLO, R_VELKE, vypln);
-    k.ikona(ik, x + 36.0, y + 18.0, 36.0, popredie);
-    k.text(s, x + 36.0 + 36.0 + 16.0, zakladna_v_strede(y, TV_TLACIDLO, TV_TEXT), TV_TEXT, popredie);
+    let (vypln, popredie) = if zamerane { (t.akcent, t.akcent_text) } else { (t.prvok_pod_mysou, t.text) };
+    let q = if zamerane { TV_ZAMERANE_ZVACSENIE } else { 1.0 };
+    let (cx, cy) = (x + w / 2.0, y + TV_TLACIDLO / 2.0);
+    let (zw, zh) = (w * q, TV_TLACIDLO * q);
+    let (zx, zy) = (cx - zw / 2.0, cy - zh / 2.0);
+    let rez = Rez { meno: "TV text", velkost: TV_TEXT.velkost * q, hrubka: TV_TEXT.hrubka * q };
+    k.obdlznik(zx, zy, zw, zh, R_VELKE * q, vypln);
+    k.ikona(ik, zx + 36.0 * q, zy + 18.0 * q, 36.0 * q, popredie);
+    k.text(s, zx + (36.0 + 36.0 + 16.0) * q, zakladna_v_strede(zy, zh, rez), rez, popredie);
     if zamerane {
-        zameranie_tv(k, t, x, y, w, TV_TLACIDLO, R_VELKE);
+        zameranie_tv(k, t, zx, zy, zw, zh, R_VELKE * q);
     }
     w
 }
@@ -70,7 +68,8 @@ fn zalozky(k: &mut Kreslic, t: &Tema, vybrana: usize) {
         let w = k.sirka(s, TV_TEXT);
         k.text(s, x, z, TV_TEXT, if i == vybrana { t.text } else { t.text_druhy });
         if i == vybrana {
-            k.obdlznik(x, z + 14.0, w, 4.0, 2.0, t.akcent);
+            // vybraná záložka neutrálne – akcent je na TV vyhradený zameraniu
+            k.obdlznik(x, z + 14.0, w, 4.0, 2.0, t.text);
         }
         x += w + 56.0;
     }
@@ -144,8 +143,40 @@ fn karta(
     postup: Option<f32>,
     zamerana: bool,
 ) {
-    let o = plagat(i, (w * k.mierka) as usize / 2, (h * k.mierka) as usize / 2, FILMY[i % FILMY.len()].0);
+    // náhľad v plnom rozlíšení zobrazenia (v systéme sa dekóduje rovno vo veľkosti zobrazenia a uloží). Karta
+    // „Pokračovať“ je snímka z videa bez názvu – názov kreslí rozhranie na tmavej clone dopočítanej z obrázka.
+    // Karta, ktorá siaha za bezpečnú plochu, len naznačí ďalší obsah – bez názvu, ktorý by TV s orezaním odrezal.
+    let naznacena = x + w > W - TV_OKRAJ_X;
+    let mut o = plagat(i, (w * k.mierka) as usize, (h * k.mierka) as usize, "");
     k.obraz(&o.body, o.w, o.h, x, y, w, h, R_VELKE);
+    if !naznacena {
+        let min = if t.vysoky_kontrast { 7.0 } else { 4.5 };
+        let zakladna = y + h - 30.0;
+        let a = k.potrebna_clona(
+            x + 16.0,
+            zakladna - TV_POPIS.velkost,
+            w - 32.0,
+            TV_POPIS.velkost,
+            TEXT_NA_OBRAZE,
+            CLONA_OBRAZU,
+            min,
+        );
+        // clona sa vloží do náhľadu (zaoblené rohy karty ostanú) – plná od pásu textu nadol, nad ním prechod
+        let (m, ow) = (k.mierka, o.w);
+        let od = ((zakladna - TV_POPIS.velkost - 8.0 - y) * m).max(0.0);
+        let prechod = 48.0 * m;
+        for py in 0..o.h {
+            let v = ((od - py as f32) / prechod).clamp(0.0, 1.0);
+            let kryt = (a as f32 * (1.0 - v * v * (3.0 - 2.0 * v))).round() as u8;
+            if kryt > 0 {
+                for b in &mut o.body[py * ow..(py + 1) * ow] {
+                    *b = zmiesaj(*b, CLONA_OBRAZU, kryt);
+                }
+            }
+        }
+        k.obraz(&o.body, o.w, o.h, x, y, w, h, R_VELKE);
+        k.text(FILMY[i % FILMY.len()].0, x + 16.0, zakladna, TV_POPIS, TEXT_NA_OBRAZE);
+    }
     if let Some(p) = postup {
         k.obdlznik(x + 16.0, y + h - 14.0, w - 32.0, 6.0, 3.0, zmiesaj(0x000000, 0xFFFFFF, 90));
         k.obdlznik(x + 16.0, y + h - 14.0, (w - 32.0) * p, 6.0, 3.0, t.akcent);
@@ -176,7 +207,7 @@ fn clony_pod_textom(k: &mut Kreslic, t: &Tema, stlpec_x: f32, stlpec_w: f32, stl
     );
 }
 
-fn variant_a(k: &mut Kreslic, t: &Tema, foto: &Obr) {
+fn variant_a(k: &mut Kreslic, t: &Tema, foto: &Obr, zameranie: usize) {
     pozadie_s_nahladom(k, t, foto);
     let x = TV_OKRAJ_X;
     let titul = "Svetlo nad jazerom";
@@ -188,7 +219,8 @@ fn variant_a(k: &mut Kreslic, t: &Tema, foto: &Obr) {
     k.text(titul, x, 316.0, TV_TITUL, t.text);
     k.cisla("2024 · 1 h 52 min · 12+", x, 376.0, TV_POPIS, t.text_druhy);
     let mut sx = x;
-    for s in ["1080p HEVC", "Dolby Digital 5.1", "Titulky SK"] {
+    // AC-3 podľa normy ATSC A/52 (rovnako ako píše prúd D) – nie obchodné meno
+    for s in ["1080p HEVC", "AC-3 5.1", "Titulky SK"] {
         sx += stitok_tv(k, t, sx, 404.0, s) + 16.0;
     }
     let mut y = 508.0;
@@ -197,9 +229,9 @@ fn variant_a(k: &mut Kreslic, t: &Tema, foto: &Obr) {
         y += 44.0;
     }
     let y = 580.0;
-    let w = tlacidlo_tv(k, t, x, y, Ikona::Prehrat, "Prehrať", true, true);
-    let w2 = tlacidlo_tv(k, t, x + w + 24.0, y, Ikona::Info, "Informácie", false, false);
-    tlacidlo_tv(k, t, x + w + w2 + 48.0, y, Ikona::Titulky, "Titulky", false, false);
+    let w = tlacidlo_tv(k, t, x, y, Ikona::Prehrat, "Prehrať", zameranie == 0);
+    let w2 = tlacidlo_tv(k, t, x + w + 24.0, y, Ikona::Info, "Informácie", zameranie == 1);
+    tlacidlo_tv(k, t, x + w + w2 + 48.0, y, Ikona::Titulky, "Titulky", zameranie == 2);
     // pás
     let py = 744.0;
     k.text("Pokračovať v pozeraní", x, py, TV_TEXT, t.text);
@@ -231,7 +263,7 @@ fn variant_b(k: &mut Kreslic, t: &Tema) {
             k.obdlznik(x, y, lw, rh, R_VELKE, t.prvok_pod_mysou);
             zameranie_tv(k, t, x, y, lw, rh, R_VELKE);
         }
-        let o = plagat(i, 192, 108, "");
+        let o = plagat(i, (142.0 * k.mierka) as usize, (80.0 * k.mierka) as usize, "");
         k.obraz(&o.body, o.w, o.h, x + 16.0, y + 16.0, 142.0, 80.0, R);
         k.text(n, x + 182.0, y + 50.0, TV_TEXT, t.text);
         k.cisla(m, x + 182.0, y + 88.0, TV_POPIS, t.text_druhy);
@@ -239,8 +271,8 @@ fn variant_b(k: &mut Kreslic, t: &Tema) {
     }
     // podrobnosti vpravo
     let (dx, dw) = (x + lw + 64.0, W - TV_OKRAJ_X - (x + lw + 64.0));
-    let o = plagat(1, 640, 360, "");
     let dh = (dw * 9.0 / 16.0).round().min(470.0);
+    let o = plagat(1, (dw * k.mierka) as usize, (dh * k.mierka) as usize, "");
     k.tien(dx, 184.0, dw, dh, R_VELKE, 24.0, t.tien.max(3));
     k.obraz(&o.body, o.w, o.h, dx, 184.0, dw, dh, R_VELKE);
     let mut y = 184.0 + dh + 64.0;
@@ -270,48 +302,49 @@ fn variant_c(k: &mut Kreslic, t: &Tema) {
     );
     let (pw, ph, medzera) = (224.0, 336.0, 40.0);
     let y0 = 292.0;
+    // 6 celých plagátov v bezpečnej ploche (EBU R 95) a 7. len naznačený – bez názvu (TV s orezaním by ho odrezal)
     for i in 0..7 {
         let px = x + i as f32 * (pw + medzera);
-        if px + pw > W - TV_OKRAJ_X + pw * 0.6 {
-            break;
-        }
+        let naznaceny = px + pw > W - TV_OKRAJ_X;
         let zamerany = i == 2;
         let (zx, zy, zw, zh) =
             if zamerany { (px - 12.0, y0 - 18.0, pw + 24.0, ph + 36.0) } else { (px, y0, pw, ph) };
         if zamerany {
             k.tien(zx, zy, zw, zh, R_VELKE, 24.0, t.tien.max(4));
         }
-        let o = plagat(
-            i + 2,
-            (zw * k.mierka) as usize / 2,
-            (zh * k.mierka) as usize / 2,
-            FILMY[(i + 2) % FILMY.len()].0,
-        );
+        let nazov = if naznaceny { "" } else { FILMY[(i + 2) % FILMY.len()].0 };
+        let o = plagat(i + 2, (zw * k.mierka) as usize, (zh * k.mierka) as usize, nazov);
         k.obraz(&o.body, o.w, o.h, zx, zy, zw, zh, R_VELKE);
         if zamerany {
             zameranie_tv(k, t, zx, zy, zw, zh, R_VELKE);
             k.text(FILMY[(i + 2) % FILMY.len()].0, zx, zy + zh + 56.0, TV_TEXT, t.text);
             k.cisla(FILMY[(i + 2) % FILMY.len()].1, zx, zy + zh + 96.0, TV_POPIS, t.text_druhy);
         } else {
-            k.obdlznik_a(zx, zy, zw, zh, R_VELKE, t.okolie, 60.0);
+            k.obdlznik_a(zx, zy, zw, zh, R_VELKE, t.okolie, if naznaceny { 120.0 } else { 60.0 });
         }
     }
     // druhý riadok – len začiatok (naznačí ďalší obsah pod)
     for i in 0..7 {
         let px = x + i as f32 * (pw + medzera);
-        let o = plagat(i + 5, 116, 174, "");
+        let o = plagat(i + 5, (pw * k.mierka) as usize, (ph * k.mierka) as usize, "");
         k.obraz(&o.body, o.w, o.h, px, 836.0, pw, ph, R_VELKE);
     }
     napoveda(k, t);
 }
 
-/// Obrazovka TV krabičky v téme `t`, variante `v` a mierke `m` (1 = 1080p, 2 = 4K).
+/// Obrazovka TV krabičky v téme `t`, variante `v` a mierke `m` (1 = 1080p, 2 = 4K) – v pokojovom stave po otvorení
+/// (zameraná hlavná akcia).
 pub fn obrazovka(t: &Tema, v: char, m: f32, foto: &Obr) -> Kreslic {
+    obrazovka_so_zameranim(t, v, m, foto, 0)
+}
+
+/// Obrazovka TV so zameraním na `zameranie`-té tlačidlo (variant A: 0 Prehrať, 1 Informácie, 2 Titulky).
+pub fn obrazovka_so_zameranim(t: &Tema, v: char, m: f32, foto: &Obr, zameranie: usize) -> Kreslic {
     let mut k = Kreslic::novy(W, H, m, t.okolie);
     match v {
         'b' => variant_b(&mut k, t),
         'c' => variant_c(&mut k, t),
-        _ => variant_a(&mut k, t, foto),
+        _ => variant_a(&mut k, t, foto, zameranie),
     }
     k
 }

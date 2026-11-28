@@ -36,6 +36,8 @@ pub const TV_ZAMERANIE_HRUBKA: f32 = 4.0;
 pub const TV_ZAMERANIE_ODSTUP: f32 = 4.0;
 /// Výška tlačidla a riadku zoznamu na TV.
 pub const TV_TLACIDLO: f32 = 72.0;
+/// Zväčšenie zameraného prvku na TV (okolo stredu; prechod ≤ 150 ms len pri pohybe zamerania)
+pub const TV_ZAMERANE_ZVACSENIE: f32 = 1.05;
 /// Bezpečná plocha grafiky na TV (EBU R 95: 5 % šírky a výšky od okraja – niektoré televízory obraz orežú).
 pub const TV_OKRAJ_X: f32 = 96.0;
 pub const TV_OKRAJ_Y: f32 = 56.0;

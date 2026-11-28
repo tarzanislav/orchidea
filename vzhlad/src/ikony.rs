@@ -10,7 +10,8 @@ pub enum Ikona {
     OtocVpravo,
     Zrkadlit,
     Orezat,
-    Spat,
+    /// vrátiť úpravu (undo) – opak Znova; „Späť“ znamená len návrat (`Dozadu`)
+    Vratit,
     Znova,
     Porovnat,
     Prezentacia,
@@ -50,7 +51,7 @@ pub const VSETKY: [Ikona; 35] = [
     Ikona::OtocVpravo,
     Ikona::Zrkadlit,
     Ikona::Orezat,
-    Ikona::Spat,
+    Ikona::Vratit,
     Ikona::Znova,
     Ikona::Porovnat,
     Ikona::Prezentacia,
@@ -125,7 +126,7 @@ impl Ikona {
             Ikona::OtocVpravo => "Otočiť doprava",
             Ikona::Zrkadlit => "Zrkadliť",
             Ikona::Orezat => "Orezať",
-            Ikona::Spat => "Späť",
+            Ikona::Vratit => "Vrátiť",
             Ikona::Znova => "Znova",
             Ikona::Porovnat => "Porovnať",
             Ikona::Prezentacia => "Prezentácia",
@@ -143,7 +144,7 @@ impl Ikona {
             Ikona::Nastavenia => "Nastavenia",
             Ikona::Info => "Informácie",
             Ikona::Zavriet => "Zavrieť",
-            Ikona::Dozadu => "Späť (dozadu)",
+            Ikona::Dozadu => "Späť",
             Ikona::Domov => "Domov",
             Ikona::Film => "Filmy",
             Ikona::Hudba => "Hudba",
@@ -187,11 +188,12 @@ impl Ikona {
             Ikona::Orezat => {
                 vec![vec![(5.5, 2.5), (5.5, 14.5), (17.5, 14.5)], vec![(2.5, 5.5), (14.5, 5.5), (14.5, 17.5)]]
             }
-            Ikona::Spat => {
+            Ikona::Vratit => {
                 vec![obluk(11.0, 11.5, 5.5, 180.0, 400.0), vec![(3.0, 8.0), (5.5, 11.5), (8.5, 9.0)]]
             }
+            // presné zrkadlo Vrátiť podľa zvislej osi x = 10 (uhol θ → 180° − θ)
             Ikona::Znova => {
-                vec![obluk(9.0, 11.5, 5.5, -40.0, 180.0), vec![(17.0, 8.0), (14.5, 11.5), (11.5, 9.0)]]
+                vec![obluk(9.0, 11.5, 5.5, 140.0, 360.0), vec![(17.0, 8.0), (14.5, 11.5), (11.5, 9.0)]]
             }
             Ikona::Porovnat => vec![obdlznik(2.5, 4.5, 17.5, 15.5), vec![(10.0, 2.5), (10.0, 17.5)]],
             Ikona::Prezentacia => vec![
@@ -242,16 +244,28 @@ impl Ikona {
                 vec![(6.5, 12.0), (4.5, 14.0), (6.5, 16.0)],
             ],
             Ikona::Hladat => vec![obluk(8.5, 8.5, 5.5, 0.0, 360.0), vec![(12.5, 12.5), (17.0, 17.0)]],
+            // ozubené koleso: jeden uzavretý obrys so 6 zubami ako lichobežníky (nie lúče – tie sa čítajú ako
+            // slnko, ktoré je v editore Jas) a otvor v strede
             Ikona::Nastavenia => {
-                let mut v = vec![obluk(10.0, 10.0, 2.6, 0.0, 360.0), obluk(10.0, 10.0, 5.6, 0.0, 360.0)];
-                for i in 0..8 {
-                    let u = (i as f32 * 45.0f32).to_radians();
-                    v.push(vec![
-                        (10.0 + 5.6 * u.cos(), 10.0 + 5.6 * u.sin()),
-                        (10.0 + 7.6 * u.cos(), 10.0 + 7.6 * u.sin()),
-                    ]);
+                let (r_paty, r_hlavy) = (5.3, 7.5);
+                let mut obrys = Vec::new();
+                for i in 0..6 {
+                    let s = i as f32 * 60.0;
+                    let bod = |r: f32, uhol: f32| {
+                        let u = (uhol - 90.0f32).to_radians();
+                        (10.0 + r * u.cos(), 10.0 + r * u.sin())
+                    };
+                    obrys.push(bod(r_paty, s - 17.0));
+                    obrys.push(bod(r_hlavy, s - 9.0));
+                    obrys.push(bod(r_hlavy, s + 9.0));
+                    obrys.push(bod(r_paty, s + 17.0));
+                    // päta medzi zubami po kružnici
+                    for k in 1..4 {
+                        obrys.push(bod(r_paty, s + 17.0 + k as f32 * 6.5));
+                    }
                 }
-                v
+                obrys.push(obrys[0]);
+                vec![obrys, obluk(10.0, 10.0, 2.3, 0.0, 360.0)]
             }
             Ikona::Info => {
                 vec![obluk(10.0, 10.0, 7.5, 0.0, 360.0), vec![(10.0, 9.0), (10.0, 14.0)], bodka(10.0, 6.0)]
@@ -350,6 +364,26 @@ mod skusky {
                 );
             }
         }
+    }
+
+    #[test]
+    fn znova_je_presne_zrkadlo_vratit() {
+        let body = |ik: Ikona, zrkadlo: bool| {
+            let mut b: Vec<(i32, i32)> = ik
+                .tahy()
+                .into_iter()
+                .flatten()
+                .map(|(x, y)| {
+                    (
+                        ((if zrkadlo { 20.0 - x } else { x }) * 100.0).round() as i32,
+                        (y * 100.0).round() as i32,
+                    )
+                })
+                .collect();
+            b.sort_unstable();
+            b
+        };
+        assert_eq!(body(Ikona::Znova, false), body(Ikona::Vratit, true));
     }
 
     #[test]

@@ -8,7 +8,8 @@
 //!   obrazovky na diaľku,
 //! - [`ikony`] – vlastné vektorové ikony na jednej mriežke s jednou hrúbkou ťahu,
 //! - [`kreslic`] – kreslenie s vyhladením v mierke 100 % aj 200 % (HiDPI),
-//! - [`prvky`] – ovládacie prvky a ich stavy (bežný, pod myšou, stlačený, zameraný, vypnutý).
+//! - [`prvky`] – ovládacie prvky a ich stavy (bežný, pod myšou, stlačený, zameraný, vypnutý),
+//! - [`znak`] – znak ORCHIDEE (logo), tri návrhy kvetu orchidey na výber vlastníkom.
 //!
 //! Všetko vlastným kódom bez cudzích knižníc. Nová farba alebo rozmer patrí sem, nie do programu – jedna zmena
 //! potom platí rovnako v celej suite.
@@ -21,6 +22,7 @@ pub mod kreslic;
 pub mod miery;
 pub mod prvky;
 pub mod tema;
+pub mod znak;
 
 pub use ikony::Ikona;
 pub use kreslic::Kreslic;

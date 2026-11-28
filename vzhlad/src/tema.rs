@@ -1,13 +1,20 @@
 //! Témy vzhľadu (Okvetie) – výmenné sady farieb. Všetko ostatné (rozostupy, písmo, tvary) je spoločné v `miery`.
 //!
-//! Zásady: okolie obrazu je takmer neutrálne (nefarbí vnímanie fotky), jediný výrazný akcent je orchideová fialová
-//! (odtieň okolo 260°), v každej téme upravená tak, aby splnila kontrast (`kontrast::kontrola`). Svetlé témy nie sú
-//! biele – žiadna plocha nie je svetlejšia ako `SVETLA_HRANICA` (požiadavka vlastníka 28. 11. 2026).
+//! Zásady: okolie obrazu je vnemovo neutrálne – sýtosť C\*ab ≤ 2 v CIELAB (nefarbí vnímanie fotky); jediný výrazný
+//! akcent je orchideová fialová (odtieň okolo 260°), v každej téme upravená tak, aby splnila kontrast
+//! (`kontrast::kontrola`). Svetlé témy nie sú biele – žiadna plocha nie je svetlejšia ako `SVETLA_HRANICA`
+//! (požiadavka vlastníka 28. 11. 2026).
 
 use orchidea_pismo::Farba;
 
 /// Najsvetlejšia povolená plocha svetlej témy (vlastník: „svetlá varianta, ale nie biela“).
 pub const SVETLA_HRANICA: Farba = 0xEDEAE5;
+
+/// Text a ikona **priamo na obrázku** (snímka z videa, náhľad, obal) – v každej téme biely na tmavej clone, ktorej
+/// krytie sa dopočíta z obrázka (`Kreslic::potrebna_clona`); svetlá clona by film „zmliečnila“.
+pub const TEXT_NA_OBRAZE: Farba = 0xFFFFFF;
+/// Clona pod textom na obrázku.
+pub const CLONA_OBRAZU: Farba = 0x000000;
 
 /// Farby jednej témy vzhľadu podľa úlohy (nie podľa odtieňa).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +66,7 @@ pub const NOC: Tema = Tema {
     druh: "tmavá",
     tmava: true,
     vysoky_kontrast: false,
-    okolie: 0x131417,
+    okolie: 0x131416,
     plocha: 0x1B1D21,
     plocha_vyssia: 0x24272C,
     prvok: 0x262930,
@@ -88,7 +95,7 @@ pub const LAN: Tema = Tema {
     druh: "svetlá teplá",
     tmava: false,
     vysoky_kontrast: false,
-    okolie: 0xC4BFB8,
+    okolie: 0xC1BFBD,
     plocha: 0xE4DFD7,
     plocha_vyssia: 0xEDEAE5,
     prvok: 0xD7D1C8,
@@ -117,7 +124,7 @@ pub const HMLA: Tema = Tema {
     druh: "svetlá chladná",
     tmava: false,
     vysoky_kontrast: false,
-    okolie: 0xBEC2C8,
+    okolie: 0xC0C2C4,
     plocha: 0xDDE0E5,
     plocha_vyssia: 0xE8EAED,
     prvok: 0xD0D4DA,
@@ -146,7 +153,7 @@ pub const SUMRAK: Tema = Tema {
     druh: "polotmavá",
     tmava: true,
     vysoky_kontrast: false,
-    okolie: 0x34373D,
+    okolie: 0x363739,
     plocha: 0x3E4249,
     plocha_vyssia: 0x484C54,
     prvok: 0x4A4F57,
@@ -289,12 +296,12 @@ mod skusky {
     }
 
     #[test]
-    fn okolie_obrazu_je_takmer_neutralne() {
-        // rozdiel kanálov okolia najviac 12 z 255 – fotka sa nevníma farebne posunutá
+    fn okolie_obrazu_je_vnemovo_neutralne() {
+        // okolie fotky a videa nesmie farbiť vnímanie obrazu (zásada ISO 3664 / ISO 12646 – neutrálne okolie);
+        // vlastné prísne kritérium: sýtosť C*ab ≤ 2 v CIELAB (D65); teplý či studený nádych témy patrí na panely
         for t in TEMY {
-            let c = [(t.okolie >> 16) & 0xFF, (t.okolie >> 8) & 0xFF, t.okolie & 0xFF];
-            let rozdiel = c.iter().max().unwrap() - c.iter().min().unwrap();
-            assert!(rozdiel <= 12, "téma {}: okolie #{:06X} je príliš farebné", t.meno, t.okolie);
+            let c = crate::kontrast::sytost(t.okolie);
+            assert!(c <= 2.0, "téma {}: okolie #{:06X} má C*ab {c:.2}", t.meno, t.okolie);
         }
     }
 

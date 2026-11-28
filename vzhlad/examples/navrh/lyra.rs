@@ -15,6 +15,10 @@ use orchidea_vzhlad::tema::Tema;
 const W: f32 = 1440.0;
 const H: f32 = 900.0;
 
+/// Ukážkový album – jeden album, jeden (vymyslený) interpret, jeden obal pri všetkých jeho skladbách.
+const ALBUM: &str = "Horské obrazy";
+const INTERPRET: &str = "Komorný orchester Javor";
+
 const SKLADBY: [(&str, &str); 8] = [
     ("Ranná hmla", "3:41"),
     ("Svetlo nad jazerom", "5:12"),
@@ -98,7 +102,7 @@ fn ovladanie(k: &mut Kreslic, t: &Tema, cx: f32, cy: f32, velke: f32) {
         k,
         t,
         Druh::Ikona,
-        Stav::PodMysou,
+        Stav::Bezny,
         false,
         cx - velke / 2.0 - 16.0 - mal,
         cy - mal / 2.0,
@@ -177,10 +181,11 @@ fn spektrum(k: &mut Kreslic, t: &Tema, x: f32, y: f32, w: f32, h: f32, pozadie: 
     }
 }
 
-fn zoznam(k: &mut Kreslic, t: &Tema, x: f32, y: f32, w: f32, hraje: usize, pod_mysou: usize) {
+/// Zoznam skladieb v pokojovom stave – zvýraznená len práve hrajúca skladba.
+fn zoznam(k: &mut Kreslic, t: &Tema, x: f32, y: f32, w: f32, hraje: usize) {
     for (i, (n, d)) in SKLADBY.iter().enumerate() {
         let ry = y + i as f32 * 48.0;
-        if i == hraje || i == pod_mysou {
+        if i == hraje {
             k.obdlznik(x, ry, w, 44.0, R, t.prvok_pod_mysou);
         }
         if i == hraje {
@@ -220,7 +225,7 @@ fn variant_a(k: &mut Kreslic, t: &Tema, o: &Obr) {
     let x = ox + os + 48.0;
     let pw = lx - 48.0 - x;
     k.text("Svetlo nad jazerom", x, oy + 28.0, TITUL, t.text);
-    k.text("Orchestrálna suita · 2026", x, oy + 58.0, PODTITUL, t.text_druhy);
+    k.text(&format!("{INTERPRET} · 2026"), x, oy + 58.0, PODTITUL, t.text_druhy);
     let y = stitky_formatu(k, t, x, oy + 80.0, pw);
     let (sy, sh) = (y + 20.0, oy + 312.0 - y - 20.0);
     spektrum(k, t, x, sy, pw, sh, true);
@@ -240,8 +245,7 @@ fn variant_a(k: &mut Kreslic, t: &Tema, o: &Obr) {
     let zy = oy + 404.0;
     k.obdlznik(x, zy, pw, os - 404.0, R, t.plocha);
     let mut y = zy + 26.0;
-    for (m, v) in
-        [("Album", "Horské obrazy"), ("Žáner", "klasická hudba"), ("Disk, skladba", "1 / 1 · 2 / 8")]
+    for (m, v) in [("Album", ALBUM), ("Žáner", "klasická hudba"), ("Poradie", "skladba 2 z 8 · disk 1 z 1")]
     {
         k.text(m, x + 12.0, y, POPIS, t.text_druhy);
         k.cisla(v, x + 124.0, y, TEXT, t.text);
@@ -252,7 +256,7 @@ fn variant_a(k: &mut Kreslic, t: &Tema, o: &Obr) {
     k.obdlznik(lx, LISTA, 1.0, H - LISTA, 0.0, t.okraj);
     k.text("Zoznam skladieb", lx + 24.0, LISTA + 36.0, NADPIS, t.text);
     k.cisla_vpravo("8 skladieb · 40:35", lx + 336.0, LISTA + 36.0, POPIS, t.text_druhy);
-    zoznam(k, t, lx + 12.0, LISTA + 56.0, 336.0, 1, 3);
+    zoznam(k, t, lx + 12.0, LISTA + 56.0, 336.0, 1);
     // ovládanie dole
     let oy2 = H - 136.0;
     k.obdlznik(0.0, oy2, lx, 136.0, 0.0, t.plocha);
@@ -329,13 +333,13 @@ fn variant_b(k: &mut Kreslic, t: &Tema, foto: &Obr) {
     let medzera = 24.0;
     let s = ((gw - medzera * (stlpce - 1) as f32) / stlpce as f32).floor();
     let mena = [
-        ("Svetlo nad jazerom", "Orchestrálna suita"),
+        (ALBUM, INTERPRET),
         ("Mestá v daždi", "Kvarteto Brezno"),
         ("Púšť", "Ema Lúčna"),
         ("Hlboký les", "Tichý zbor"),
         ("Medená hodina", "Trio Kremeň"),
         ("Polárna noc", "Severka"),
-        ("Jarné trhy", "Ľudová kapela Javor"),
+        ("Jarné trhy", "Ľudová kapela Breza"),
         ("Stanica 9", "Elektrické ovce"),
         ("Dunaj", "Komorní hráči"),
         ("Sivá zóna", "Hmlovina"),
@@ -349,12 +353,6 @@ fn variant_b(k: &mut Kreslic, t: &Tema, foto: &Obr) {
         }
         let o = if i == 0 { stvorec(foto) } else { obal(i, 256) };
         k.obraz(&o.body, o.w, o.h, x, y, s, s, R);
-        if i == 1 {
-            // pod myšou: tlačidlo Prehrať na obale
-            k.obdlznik_a(x, y, s, s, R, 0x000000, 70.0);
-            k.kruh(x + s - 32.0, y + s - 32.0, 20.0, t.akcent);
-            k.ikona(Ikona::Prehrat, x + s - 42.0, y + s - 42.0, 20.0, t.akcent_text);
-        }
         if i == 0 {
             k.ram(x - 3.0, y - 3.0, s + 6.0, s + 6.0, R + 3.0, 2.0, t.akcent);
         }
@@ -374,7 +372,7 @@ fn variant_b(k: &mut Kreslic, t: &Tema, foto: &Obr) {
     let o = stvorec(foto);
     k.obraz(&o.body, o.w, o.h, 16.0, my + 12.0, 56.0, 56.0, R_MALE);
     k.text("Svetlo nad jazerom", 88.0, my + 34.0, TEXT_SILNY, t.text);
-    k.text("Orchestrálna suita", 88.0, my + 52.0, POPIS, t.text_druhy);
+    k.text(INTERPRET, 88.0, my + 52.0, POPIS, t.text_druhy);
     ovladanie(k, t, W / 2.0, my + 32.0, 44.0);
     casova_os(k, t, W / 2.0 - 260.0, my + 64.0, 520.0, 0.38, ("", ""));
     k.cisla_vpravo("1:58", W / 2.0 - 272.0, my + 69.0, POPIS, t.text_druhy);
@@ -419,7 +417,7 @@ fn variant_c(k: &mut Kreslic, t: &Tema, o: &Obr) {
         Rez { meno: "titul veľký", velkost: 34.0, hrubka: 2.9 },
         t.text,
     );
-    k.text("Orchestrálna suita · Horské obrazy", x, oy + 98.0, PODTITUL, t.text_druhy);
+    k.text(&format!("{INTERPRET} · {ALBUM}"), x, oy + 98.0, PODTITUL, t.text_druhy);
     let y = stitky_formatu(k, t, x, oy + 120.0, cw);
     spektrum(k, t, x - 12.0, y + 8.0, cw + 24.0, oy + 300.0 - y - 8.0, false);
     casova_os(k, t, x, oy + 328.0, cw, 0.38, ("1:58", "-3:14"));
@@ -431,8 +429,8 @@ fn variant_c(k: &mut Kreslic, t: &Tema, o: &Obr) {
     k.text("Ďalej", cx + 20.0, cy + 34.0, NADPIS, t.text);
     for (i, (n, d)) in SKLADBY[2..7].iter().enumerate() {
         let ry = cy + 56.0 + i as f32 * 58.0;
-        let ob = obal((i + 3) % 10, 96);
-        k.obraz(&ob.body, ob.w, ob.h, cx + 20.0, ry, 44.0, 44.0, R_MALE);
+        // skladby toho istého albumu – ten istý obal
+        k.obraz(&o.body, o.w, o.h, cx + 20.0, ry, 44.0, 44.0, R_MALE);
         k.text(n, cx + 76.0, ry + 18.0, TEXT_SILNY, t.text);
         k.cisla(d, cx + 76.0, ry + 36.0, POPIS, t.text_druhy);
     }

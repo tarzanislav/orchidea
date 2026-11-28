@@ -181,6 +181,13 @@ impl Kreslic {
         });
     }
 
+    /// Vyplnený mnohouholník (body v bodoch) s vyhladeným okrajom – znak, tvary návrhu.
+    pub fn mnohouholnik(&mut self, body: &[(f32, f32)], f: Farba) {
+        let m = self.mierka;
+        let b: Vec<(f32, f32)> = body.iter().map(|p| (p.0 * m, p.1 * m)).collect();
+        self.mnohouholnik_px(&b, f);
+    }
+
     /// Vyplnený mnohouholník (body v obrazových bodoch) s vyhladeným okrajom.
     fn mnohouholnik_px(&mut self, body: &[(f32, f32)], f: Farba) {
         let x0 = body.iter().map(|b| b.0).fold(f32::MAX, f32::min);

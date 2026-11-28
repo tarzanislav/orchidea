@@ -3,7 +3,7 @@
 //! použijú programy – čo sa schváli, to aj pobeží.
 //!
 //! `cargo run --release -p orchidea-vzhlad --example navrh -- <priečinok>` → `system/` (témy s kontrastom, prvky
-//! v stavoch, ikony, písmo), `varianty/` (prehliadač a editor fotografií (Pohľad), prehrávač médií LÝRA,
+//! v stavoch, ikony, písmo, návrhy znaku), `varianty/` (prehliadač a editor fotografií (Pohľad), prehrávač médií LÝRA,
 //! obrazovka TV krabičky – každý v troch variantoch), `temy/` (každá téma na troch obrazovkách, výrez v 200 %).
 
 // kreslenie návrhu: veľa súradníc v jednom volaní je tu čitateľnejšie ako štruktúry
@@ -67,6 +67,7 @@ fn main() {
     uloz(&vyrez(&k, 0, 0, 1440, 900), &sys, "prvky_noc_200.png");
     uloz(&system::ikony(1.0).p, &sys, "ikony.png");
     uloz(&system::pismo(1.0).p, &sys, "pismo.png");
+    uloz(&system::logo(1.0).p, &sys, "logo.png");
 
     // varianty obrazoviek v predvolenej téme
     for v in ['a', 'b', 'c'] {
@@ -74,6 +75,8 @@ fn main() {
         uloz(&lyra::obrazovka(&NOC, v, 1.0, &foto).p, &var, &format!("lyra_{v}.png"));
         uloz(&tv::obrazovka(&NOC, v, 1.0, &foto).p, &var, &format!("tv_{v}.png"));
     }
+    // to isté TV A so zameraním na Informácie – akcent ide so zameraním, Prehrať ostane neutrálne
+    uloz(&tv::obrazovka_so_zameranim(&NOC, 'a', 1.0, &foto, 1).p, &var, "tv_a_zameranie.png");
     let k = tv::obrazovka(&NOC, 'a', 2.0, &foto);
     uloz(&vyrez(&k, 0, 400, 1920, 1080), &var, "tv_a_200.png");
 

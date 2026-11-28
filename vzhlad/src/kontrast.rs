@@ -37,6 +37,25 @@ pub fn najsilnejsie_vmiesanie(pozadie: Farba, f: Farba, najviac: u8, texty: &[Fa
         .unwrap_or(0)
 }
 
+/// Farba v **CIELAB** (CIE 15:2004) zo sRGB (IEC 61966-2-1: lineárne svetlo, matica do XYZ), biely bod D65 –
+/// vnemová miera na neutralitu okolia obrazu. Vráti (L\*, a\*, b\*).
+pub fn lab(f: Farba) -> (f64, f64, f64) {
+    let (r, g, b) = (linearne((f >> 16) & 0xFF), linearne((f >> 8) & 0xFF), linearne(f & 0xFF));
+    let x = 0.4124 * r + 0.3576 * g + 0.1805 * b;
+    let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let z = 0.0193 * r + 0.1192 * g + 0.9505 * b;
+    let d: f64 = 6.0 / 29.0;
+    let fun = |t: f64| if t > d * d * d { t.cbrt() } else { t / (3.0 * d * d) + 4.0 / 29.0 };
+    let (fx, fy, fz) = (fun(x / 0.95047), fun(y), fun(z / 1.08883));
+    (116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz))
+}
+
+/// Sýtosť C\*ab = √(a\*² + b\*²) v CIELAB (D65); 0 = neutrálna sivá.
+pub fn sytost(f: Farba) -> f64 {
+    let (_, a, b) = lab(f);
+    a.hypot(b)
+}
+
 /// Farba `f` posunutá k bielej alebo čiernej tak, aby mala relatívnu svietivosť čo najbližšie `l` – odtieň
 /// ostane, zmení sa svetlosť (napríklad pastel farby obalu pre svetlú tému: farba je vidieť, kontrast textu nie).
 pub fn farba_so_svietivostou(f: Farba, l: f64) -> Farba {
@@ -140,6 +159,21 @@ pub fn kontrola(t: &Tema) -> Vec<Par> {
 #[cfg(test)]
 mod skusky {
     use super::*;
+
+    #[test]
+    fn cielab_znamych_farieb() {
+        // biela L* 100, sivé neutrálne, čistá červená sRGB L* 53,2 a* 80,1 b* 67,2 (CIE 15, D65)
+        let (l, a, b) = lab(0xFFFFFF);
+        assert!((l - 100.0).abs() < 0.01 && a.abs() < 0.05 && b.abs() < 0.05, "{l} {a} {b}");
+        for s in [0x131313, 0x808080, 0xC0C0C0] {
+            assert!(sytost(s) < 0.05, "#{s:06X}: {}", sytost(s));
+        }
+        let (l, a, b) = lab(0xFF0000);
+        assert!(
+            (l - 53.24).abs() < 0.05 && (a - 80.09).abs() < 0.1 && (b - 67.20).abs() < 0.1,
+            "{l} {a} {b}"
+        );
+    }
 
     #[test]
     fn farba_z_obalu_pre_svetlu_temu() {
