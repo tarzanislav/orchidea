@@ -17,6 +17,11 @@ on:
       - "hevc/**"
       - "hevc-dekoder/**"
   workflow_dispatch:
+    inputs:
+      porovnaj:
+        description: "Porovnanie A/B na ARM64 behúni: commit základu (prázdne = bez porovnania)"
+        required: false
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -175,6 +180,41 @@ jobs:
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           done
           du -sh "$b"
+      - name: Porovnanie A/B so základom (len ručné spustenie s porovnaj=<commit>)
+        if: matrix.os == 'ubuntu-24.04-arm' && github.event_name == 'workflow_dispatch' && inputs.porovnaj != ''
+        shell: bash
+        env:
+          ZAKLAD: ${{ inputs.porovnaj }}
+        run: |
+          # ten istý behúň, rovnaké prekladové voľby ako balík pre dosky, behy A a B sa striedajú (menej šumu);
+          # serverové jadro nie je Cortex-A53 – rozhoduje meranie na doske, toto len zachytí veľké zmeny
+          b=orchidea-hevc-rpi-64bit
+          git fetch -q --depth=1 origin "$ZAKLAD"
+          git worktree add -q /tmp/zaklad FETCH_HEAD
+          (cd /tmp/zaklad && RUSTFLAGS="-D warnings -C target-cpu=cortex-a53" cargo build -q --release \
+            -p orchidea-hevc-dekoder --example hevc_meranie --target-dir "$GITHUB_WORKSPACE/target-zaklad")
+          a=target-zaklad/release/examples/hevc_meranie
+          n="$b/hevc_meranie"
+          echo "### HEVC – porovnanie A/B na ARM64 behúni: A = $ZAKLAD, B = ${GITHUB_SHA::7} (1 vlákno, obr./s)" \
+            >> "$GITHUB_STEP_SUMMARY"
+          for tok in film1080_tazky film1080; do
+            f="$b/toky/$tok.hevc"
+            for k in 1 2 3 4 5; do
+              for v in A B; do
+                p=$a; [ "$v" = B ] && p=$n
+                echo "$v $("$p" --rychlost --vlakna 1 "$f" | grep -oE 'obr_s=[0-9.]+' | cut -d= -f2)" >> "/tmp/ab_$tok.txt"
+              done
+            done
+            sort -k1,1 -k2,2n "/tmp/ab_$tok.txt" | awk -v t="$tok" '{h[$1]=h[$1]" "$2; c[$1]++; s[$1]=s[$1]","$2}
+              END { for (v in h) printf "- %s %s: %s\n", t, v, h[v] }' | tee -a "$GITHUB_STEP_SUMMARY"
+            for v in A B; do
+              p=$a; [ "$v" = B ] && p=$n
+              echo "**$tok $v – etapy (1 vlákno)**" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              "$p" --rychlost --etapy --vlakna 1 "$f" | grep -E '^(VYSLEDOK|CAS)' | tee -a "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+            done
+          done
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'ubuntu-24.04-arm'
         with:
