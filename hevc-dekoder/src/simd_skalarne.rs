@@ -3,8 +3,9 @@
 //! rovnaké ako v module `neon`.
 
 use super::interpolacia::{
-    predvolene_dve_skalarne, predvolene_jedna_skalarne, vodorovne8_skalarne, zvislo_medzi_skalarne,
-    zvislo8_skalarne,
+    cely_dve_skalarne, predvolene_dve_skalarne, predvolene_jedna_skalarne, vodorovne8_dve_skalarne,
+    vodorovne8_jedna_skalarne, vodorovne8_skalarne, zvislo_medzi_dve_skalarne, zvislo_medzi_jedna_skalarne,
+    zvislo_medzi_skalarne, zvislo8_dve_skalarne, zvislo8_jedna_skalarne, zvislo8_skalarne,
 };
 use super::obraz::Vzorka;
 
@@ -31,6 +32,53 @@ pub fn predvolene_dve(pred0: &[i16], pred1: &[i16], ciel: &mut [Vzorka], pridaj:
 #[inline]
 pub fn predvolene_jedna(pred: &[i16], ciel: &mut [Vzorka], pridaj: i32, shift: u32, max: i32) {
     predvolene_jedna_skalarne(pred, ciel, pridaj, shift, max);
+}
+
+// spojené posledný stupeň filtra a predvolené váženie (8 bitov) – priamo skalárne vzory z `interpolacia`
+
+#[inline]
+pub fn vodorovne8_jedna<const N: usize>(zdroj: &[Vzorka], koef: &[i16; N], ciel: &mut [Vzorka]) {
+    vodorovne8_jedna_skalarne(zdroj, koef, ciel);
+}
+
+#[inline]
+pub fn vodorovne8_dve<const N: usize>(zdroj: &[Vzorka], koef: &[i16; N], pred0: &[i16], ciel: &mut [Vzorka]) {
+    vodorovne8_dve_skalarne(zdroj, koef, pred0, ciel);
+}
+
+#[inline]
+pub fn zvislo8_jedna<const N: usize>(riadky: &[&[Vzorka]; N], koef: &[i16; N], ciel: &mut [Vzorka]) {
+    zvislo8_jedna_skalarne(riadky, koef, ciel);
+}
+
+#[inline]
+pub fn zvislo8_dve<const N: usize>(
+    riadky: &[&[Vzorka]; N],
+    koef: &[i16; N],
+    pred0: &[i16],
+    ciel: &mut [Vzorka],
+) {
+    zvislo8_dve_skalarne(riadky, koef, pred0, ciel);
+}
+
+#[inline]
+pub fn zvislo_medzi_jedna<const N: usize>(riadky: &[&[i16]; N], koef: &[i16; N], ciel: &mut [Vzorka]) {
+    zvislo_medzi_jedna_skalarne(riadky, koef, ciel);
+}
+
+#[inline]
+pub fn zvislo_medzi_dve<const N: usize>(
+    riadky: &[&[i16]; N],
+    koef: &[i16; N],
+    pred0: &[i16],
+    ciel: &mut [Vzorka],
+) {
+    zvislo_medzi_dve_skalarne(riadky, koef, pred0, ciel);
+}
+
+#[inline]
+pub fn cely_dve(zdroj: &[Vzorka], pred0: &[i16], ciel: &mut [Vzorka]) {
+    cely_dve_skalarne(zdroj, pred0, ciel);
 }
 
 /// SAO hranový posun – bez ručného NEON sa tu nespracuje nič (0 vzoriek), počíta skalárna cesta v `sao`.
