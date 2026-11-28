@@ -269,6 +269,155 @@ pub fn predvolene_jedna(pred: &[i16], ciel: &mut [Vzorka], pridaj: i32, shift: u
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Odblokovanie jasu (8.7.2.5.3, 8.7.2.5.6, 8.7.2.5.7): jeden úsek hrany = 4 línie v dráhach int16x4. Na Cortex-A53
+// má 64-bitový vektor plnú priepustnosť a 128-bitový polovičnú – 4 dráhy na úsek preto nič nestrácajú. Rozhodnutia
+// (dE, dEp, dEq) sa berú z línií 0 a 3 ako v norme a ich hodnoty sa vyberú z dráh; filtre idú pre všetky 4 línie
+// naraz, rozhodnutie slabého filtra po líniách (|Δ| < 10 · tC) je maska.
+// ---------------------------------------------------------------------------------------------------------------
+
+/// Rozhodnutia a filter úseku jasu (ako `filtruj_usek_jasu` v module `odblokovanie`): `v` = p3, p2, p1, p0, q0,
+/// q1, q2, q3 (dráha = línia, hodnoty 0 … 255). Vráti nové hodnoty (pred orezaním Clip1, ktoré urobí zúženie
+/// s nasýtením pri zápise) alebo `None`, ak sa úsek nefiltruje (d ≥ β). `bez` = [strana P, strana Q] sa nemení.
+#[inline(always)]
+fn filter_jasu(v: [int16x4_t; 8], beta: i32, tc: i32, bez: [bool; 2]) -> Option<[int16x4_t; 8]> {
+    // SAFETY: len aritmetika v registroch.
+    unsafe {
+        let [p3, p2, p1, p0, q0, q1, q2, q3] = v;
+        // 8.7.2.5.3: druhé diferencie, rozhodnutie dE z línií 0 a 3
+        let dp = vabs_s16(vadd_s16(vsub_s16(p2, vadd_s16(p1, p1)), p0));
+        let dq = vabs_s16(vadd_s16(vsub_s16(q2, vadd_s16(q1, q1)), q0));
+        let (dp0, dp3) = (i32::from(vget_lane_s16::<0>(dp)), i32::from(vget_lane_s16::<3>(dp)));
+        let (dq0, dq3) = (i32::from(vget_lane_s16::<0>(dq)), i32::from(vget_lane_s16::<3>(dq)));
+        let (dpq0, dpq3) = (dp0 + dq0, dp3 + dq3);
+        if dpq0 + dpq3 >= beta {
+            return None;
+        }
+        // 8.7.2.5.6: dSam pre línie 0 a 3
+        let okraj = vadd_s16(vabd_s16(p3, p0), vabd_s16(q0, q3));
+        let skok = vabd_s16(p0, q0);
+        let silna = |okraj: i16, skok: i16, dpq: i32| {
+            2 * dpq < (beta >> 2) && i32::from(okraj) < (beta >> 3) && i32::from(skok) < ((5 * tc + 1) >> 1)
+        };
+        let mut n = v;
+        if silna(vget_lane_s16::<0>(okraj), vget_lane_s16::<0>(skok), dpq0)
+            && silna(vget_lane_s16::<3>(okraj), vget_lane_s16::<3>(skok), dpq3)
+        {
+            // dE = 2: silný filter (8.7.2.5.7), každá nová hodnota v p ± 2 · tC; súčty ≤ 8 · 255 sú v i16
+            let t2 = vdup_n_s16((2 * tc) as i16);
+            let orez = |x: int16x4_t, s: int16x4_t| vmax_s16(vmin_s16(x, vadd_s16(s, t2)), vsub_s16(s, t2));
+            let sp = vadd_s16(vadd_s16(p1, p0), q0);
+            let sq = vadd_s16(vadd_s16(p0, q0), q1);
+            n[3] = orez(vrshr_n_s16::<3>(vadd_s16(vadd_s16(p2, q1), vadd_s16(sp, sp))), p0);
+            n[2] = orez(vrshr_n_s16::<2>(vadd_s16(p2, sp)), p1);
+            n[1] = orez(vrshr_n_s16::<3>(vadd_s16(vadd_s16(sp, p2), vshl_n_s16::<1>(vadd_s16(p3, p2)))), p2);
+            n[4] = orez(vrshr_n_s16::<3>(vadd_s16(vadd_s16(p1, q2), vadd_s16(sq, sq))), q0);
+            n[5] = orez(vrshr_n_s16::<2>(vadd_s16(sq, q2)), q1);
+            n[6] = orez(vrshr_n_s16::<3>(vadd_s16(vadd_s16(sq, q2), vshl_n_s16::<1>(vadd_s16(q2, q3)))), q2);
+        } else {
+            // dE = 1: slabý filter, Δ = (9 · (q0 − p0) − 3 · (q1 − p1) + 8) >> 4; línia s |Δ| ≥ 10 · tC sa nemení
+            let prah = (beta + (beta >> 1)) >> 3;
+            let (dep, deq) = (dp0 + dp3 < prah, dq0 + dq3 < prah);
+            let t1 = vdup_n_s16(tc as i16);
+            let delta = vrshr_n_s16::<4>(vmls_n_s16(vmul_n_s16(vsub_s16(q0, p0), 9), vsub_s16(q1, p1), 3));
+            let maska = vclt_s16(vabs_s16(delta), vdup_n_s16((10 * tc) as i16));
+            let d = vmax_s16(vmin_s16(delta, t1), vneg_s16(t1));
+            n[3] = vbsl_s16(maska, vadd_s16(p0, d), p0);
+            n[4] = vbsl_s16(maska, vsub_s16(q0, d), q0);
+            let t2 = vdup_n_s16((tc >> 1) as i16);
+            let orez = |x: int16x4_t| vmax_s16(vmin_s16(x, t2), vneg_s16(t2));
+            if dep {
+                // Δp = Clip3(−(tC >> 1), tC >> 1, ((((p2 + p0 + 1) >> 1) − p1 + Δ) >> 1)
+                let dp = orez(vshr_n_s16::<1>(vadd_s16(vsub_s16(vrhadd_s16(p2, p0), p1), d)));
+                n[2] = vbsl_s16(maska, vadd_s16(p1, dp), p1);
+            }
+            if deq {
+                let dq = orez(vshr_n_s16::<1>(vsub_s16(vsub_s16(vrhadd_s16(q2, q0), q1), d)));
+                n[5] = vbsl_s16(maska, vadd_s16(q1, dq), q1);
+            }
+        }
+        if bez[0] {
+            (n[1], n[2], n[3]) = (p2, p1, p0);
+        }
+        if bez[1] {
+            (n[4], n[5], n[6]) = (q0, q1, q2);
+        }
+        Some(n)
+    }
+}
+
+/// 8 vzoriek bez znamienka → dolná a horná štvorica ako i16.
+#[inline(always)]
+fn rozsir_u8x8(v: uint8x8_t) -> (int16x4_t, int16x4_t) {
+    // SAFETY: len aritmetika v registroch.
+    unsafe {
+        let w = vreinterpretq_s16_u16(vmovl_u8(v));
+        (vget_low_s16(w), vget_high_s16(w))
+    }
+}
+
+/// Úsek hrany jasu pre 8 bitov (Clip1Y = 255), bitovo ako `odblokovanie::odblokuj_usek_jasu_skalarne`: p3 prvej
+/// línie je `data[i]`; zvislá hrana – línia k je riadok `i + k · krok` (p3 … q3 za sebou), vodorovná – línia k je
+/// stĺpec `i + k` (vzorky po `krok`). Vráti `true` – úsek je vždy spracovaný.
+pub fn odblokuj_jas(
+    data: &mut [Vzorka],
+    i: usize,
+    krok: usize,
+    zvisla: bool,
+    beta: i32,
+    tc: i32,
+    bez: [bool; 2],
+) -> bool {
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        if zvisla {
+            assert!(i + 3 * krok + 8 <= data.len(), "HEVC: úsek hrany jasu mimo roviny");
+            let z = data.as_ptr();
+            // SAFETY: riadok k = 0 … 3 číta 8 vzoriek od i + k · krok ≤ data.len() − 8 (assert vyššie).
+            let r: [uint8x8_t; 4] = std::array::from_fn(|k| unsafe { vld1_u8(z.add(i + k * krok)) });
+            // transpozícia 4 × 8: stĺpce (p3 | q0), (p1 | q2), (p2 | q1), (p0 | q3), v každom 4 línie
+            let (t0, t1) =
+                (vreinterpret_u16_u8(vtrn1_u8(r[0], r[1])), vreinterpret_u16_u8(vtrn2_u8(r[0], r[1])));
+            let (t2, t3) =
+                (vreinterpret_u16_u8(vtrn1_u8(r[2], r[3])), vreinterpret_u16_u8(vtrn2_u8(r[2], r[3])));
+            let (p3, q0) = rozsir_u8x8(vreinterpret_u8_u16(vtrn1_u16(t0, t2)));
+            let (p1, q2) = rozsir_u8x8(vreinterpret_u8_u16(vtrn2_u16(t0, t2)));
+            let (p2, q1) = rozsir_u8x8(vreinterpret_u8_u16(vtrn1_u16(t1, t3)));
+            let (p0, q3) = rozsir_u8x8(vreinterpret_u8_u16(vtrn2_u16(t1, t3)));
+            let Some([p3, p2, p1, p0, q0, q1, q2, q3]) =
+                filter_jasu([p3, p2, p1, p0, q0, q1, q2, q3], beta, tc, bez)
+            else {
+                return true;
+            };
+            // späť: zúženie s nasýtením (Clip1Y) a opačná transpozícia
+            let u0 = vreinterpret_u16_u8(vqmovun_s16(vcombine_s16(p3, q0)));
+            let u1 = vreinterpret_u16_u8(vqmovun_s16(vcombine_s16(p1, q2)));
+            let u2 = vreinterpret_u16_u8(vqmovun_s16(vcombine_s16(p2, q1)));
+            let u3 = vreinterpret_u16_u8(vqmovun_s16(vcombine_s16(p0, q3)));
+            let (t0, t2) = (vreinterpret_u8_u16(vtrn1_u16(u0, u1)), vreinterpret_u8_u16(vtrn2_u16(u0, u1)));
+            let (t1, t3) = (vreinterpret_u8_u16(vtrn1_u16(u2, u3)), vreinterpret_u8_u16(vtrn2_u16(u2, u3)));
+            let w = [vtrn1_u8(t0, t1), vtrn2_u8(t0, t1), vtrn1_u8(t2, t3), vtrn2_u8(t2, t3)];
+            let c = data.as_mut_ptr();
+            for (k, &w) in w.iter().enumerate() {
+                // SAFETY: rovnaké miesto ako čítanie vyššie (8 vzoriek od i + k · krok); p3 a q3 sa nemenia.
+                unsafe { vst1_u8(c.add(i + k * krok), w) };
+            }
+        } else {
+            assert!(i + 7 * krok + 4 <= data.len(), "HEVC: úsek hrany jasu mimo roviny");
+            // riadok j = p3 … q3, dráha k = stĺpec i + k (číta sa 8 vzoriek, použijú sa 4)
+            let v: [int16x4_t; 8] = std::array::from_fn(|j| rozsir_u8x8(nacitaj_u8x8(data, i + j * krok)).0);
+            let Some(n) = filter_jasu(v, beta, tc, bez) else {
+                return true;
+            };
+            // p3 a q3 sa nemenia – zapíšu sa riadky p2 … q2
+            for (j, &n) in n.iter().enumerate().take(7).skip(1) {
+                uloz4_u8(data, i + j * krok, vqmovun_s16(vcombine_s16(n, n)));
+            }
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod testy {
     use super::*;
@@ -322,6 +471,43 @@ mod testy {
                 assert_eq!(a, b, "medzi N={N} w={w}");
             }
         }
+    }
+
+    /// Odblokovanie úseku jasu: NEON a skalárna cesta dávajú bitovo to isté – zvislé aj vodorovné hrany, silný aj
+    /// slabý filter (hladké oblasti so skokom na hrane a šumom), okraje rozsahu 0 a 255, strany bez filtra.
+    #[test]
+    fn odblokovanie_jasu_rovnako_ako_skalarne() {
+        use super::super::odblokovanie::odblokuj_usek_jasu_skalarne;
+        let mut n = Nahoda::zo_semienka(0x0d_b10c);
+        let mut filtrovanych = 0;
+        for pokus in 0..200_000 {
+            let krok = 8 + (n.dalsie() % 3) as usize * 8;
+            let (vyska, zvisla) = (8 + (n.dalsie() % 3) as usize, pokus % 2 == 0);
+            let zaklad = (n.dalsie() % 256) as i32;
+            let skok = (n.dalsie() % 41) as i32 - 20;
+            let sum = [0, 1, 2, 4, 8, 40, 255][(n.dalsie() % 7) as usize];
+            let mut data = vec![0u8; krok * vyska];
+            for (p, v) in data.iter_mut().enumerate() {
+                let (x, y) = (p % krok, p / krok);
+                let strana_q = if zvisla { x >= 4 } else { y >= 4 };
+                let s = if sum > 0 { (n.dalsie() % (2 * sum + 1)) as i32 - sum as i32 } else { 0 };
+                *v = (zaklad + if strana_q { skok } else { 0 } + s).clamp(0, 255) as u8;
+            }
+            let beta = [0, 6, 8, 12, 16, 24, 32, 48, 64][(n.dalsie() % 9) as usize];
+            let tc = 1 + (n.dalsie() % 24) as i32;
+            let bez = [n.dalsie().is_multiple_of(8), n.dalsie().is_multiple_of(8)];
+            let i = if zvisla {
+                (n.dalsie() % (vyska as u64 - 3)) as usize * krok
+            } else {
+                (n.dalsie() % 4) as usize
+            };
+            let (mut a, mut b) = (data.clone(), data.clone());
+            assert!(odblokuj_jas(&mut a, i, krok, zvisla, beta, tc, bez));
+            odblokuj_usek_jasu_skalarne(&mut b, i, krok, zvisla, beta, tc, bez, 255);
+            assert_eq!(a, b, "pokus {pokus}: zvisla={zvisla} beta={beta} tc={tc} bez={bez:?}");
+            filtrovanych += usize::from(b != data);
+        }
+        assert!(filtrovanych > 50_000, "skúška má filtrovať veľa úsekov: {filtrovanych}");
     }
 
     /// NEON a skalárny rozhodca dávajú bitovo to isté (všetky šírky blokov aj zvyšky, náhodné vzorky).
