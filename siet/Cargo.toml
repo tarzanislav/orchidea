@@ -12,6 +12,8 @@ authors.workspace = true
 vrstva = 2
 
 [dependencies]
+orchidea-kryptografia.workspace = true
+sklenik-korene.workspace = true
 
 [lints]
 workspace = true

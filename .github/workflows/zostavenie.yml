@@ -254,6 +254,10 @@ jobs:
           ! sudo ip netns exec skuska timeout 60 ./target/debug/klic --internet v1 --meno neexistuje.orchidea > /tmp/nic.txt
           grep -q 'neexistuje.orchidea neexistuje' /tmp/nic.txt
           { echo "### Internet (R268) – KLÍČ proti dnsmasq a chrony"; echo '```'; cat /tmp/internet.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: HTTPS – TLS 1.3 proti openssl s_server (A12, všetky tri šifrovacie sady)
+        run: |
+          openssl version
+          cargo test --locked -p orchidea-siet -- --ignored --nocapture
       - name: Záznam rozhodcu
         if: always()
         run: sudo journalctl -t dnsmasq -t dnsmasq-dhcp -t chronyd --no-pager | tail -80 || true

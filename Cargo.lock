@@ -91,6 +91,10 @@ dependencies = [
 [[package]]
 name = "orchidea-siet"
 version = "0.1.0"
+dependencies = [
+ "orchidea-kryptografia",
+ "sklenik-korene",
+]
 
 [[package]]
 name = "orchidea-teplo"
