@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 orchidea-pismo.workspace = true
+orchidea-siet.workspace = true
 orchidea-teplo.workspace = true
 orchidea-zariadenie.workspace = true
 sklenik-karta.workspace = true

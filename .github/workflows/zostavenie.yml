@@ -190,6 +190,59 @@ jobs:
           name: orchidea-rpi-32bit-armv6
           path: orchidea-rpi-32bit-armv6
 
+  internet:
+    # R268 (A9): vlastný klient DHCP, DNS a SNTP v správcovi systému (KLÍČ) proti nezávislým serverom –
+    # dnsmasq (DHCP, DNS) a chrony (NTP) v oddelenom sieťovom priestore; cudzie programy sú len rozhodcovia
+    name: Internet – KLÍČ proti dnsmasq a chrony (R268)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Prekladač podľa rust-toolchain.toml
+        run: rustup toolchain install && rustup show
+      - name: Rozhodcovia – dnsmasq a chrony
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q dnsmasq-base chrony
+          sudo systemctl stop chrony || true
+      - run: cargo build --locked -p sklenik-klic
+      - name: Sieť pre skúšku – priestor „skuska“, server 10.77.0.1
+        run: |
+          sudo ip netns add skuska
+          sudo ip link add v0 type veth peer name v1
+          sudo ip link set v1 netns skuska
+          sudo ip addr add 10.77.0.1/24 dev v0
+          sudo ip link set v0 up
+          sudo ip netns exec skuska ip link set lo up
+          sudo ip netns exec skuska ip link set v1 up
+          printf 'local stratum 8\nallow 10.77.0.0/24\nbindaddress 10.77.0.1\ncmdport 0\npidfile /tmp/chrony.pid\ndriftfile /tmp/chrony.drift\n' > /tmp/chrony.conf
+          sudo chronyd -x -f /tmp/chrony.conf
+          sudo dnsmasq --conf-file=/dev/null --interface=v0 --bind-interfaces \
+            --dhcp-range=10.77.0.50,10.77.0.99,255.255.255.0,2m --dhcp-option=option:ntp-server,10.77.0.1 \
+            --host-record=skuska.orchidea,10.77.0.7 --address=/priamo.orchidea/10.77.0.8 \
+            --cname=alias.orchidea,skuska.orchidea --cname=len-alias.orchidea,priamo.orchidea --local=/orchidea/ \
+            --no-resolv --no-hosts --log-dhcp --log-queries --log-facility=/tmp/dnsmasq.log \
+            --dhcp-leasefile=/tmp/dnsmasq.leases --pid-file=/tmp/dnsmasq.pid
+      - name: Skúška – adresa, trasa, mená, čas, obnova prenájmu
+        run: |
+          set -o pipefail
+          sudo ip netns exec skuska timeout 120 ./target/debug/klic --internet v1 --meno skuska.orchidea \
+            --meno alias.orchidea --meno len-alias.orchidea --meno priamo.orchidea | tee /tmp/internet.txt
+          grep -q '^INTERNET ADRESA 10\.77\.0\.[5-9][0-9]/24 brana=10\.77\.0\.1 dns=10\.77\.0\.1 ntp=10\.77\.0\.1' /tmp/internet.txt
+          grep -q '^INTERNET MENO skuska.orchidea 10.77.0.7$' /tmp/internet.txt
+          grep -q '^INTERNET MENO alias.orchidea 10.77.0.7$' /tmp/internet.txt
+          grep -q '^INTERNET MENO len-alias.orchidea 10.77.0.8$' /tmp/internet.txt
+          grep -q '^INTERNET CAS server=10.77.0.1 stratum=8' /tmp/internet.txt
+          grep -q '^INTERNET OBNOVA' /tmp/internet.txt
+          grep -q '^INTERNET VYSLEDOK ok$' /tmp/internet.txt
+          sudo ip netns exec skuska ip -4 route | tee -a /tmp/internet.txt | grep -q '^default via 10.77.0.1 dev v1 proto dhcp src'
+          # neexistujúce meno musí skončiť chybou (NXDOMAIN), nie adresou
+          ! sudo ip netns exec skuska timeout 60 ./target/debug/klic --internet v1 --meno neexistuje.orchidea > /tmp/nic.txt
+          grep -q 'neexistuje.orchidea neexistuje' /tmp/nic.txt
+          { echo "### Internet (R268) – KLÍČ proti dnsmasq a chrony"; echo '```'; cat /tmp/internet.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Záznam rozhodcu
+        if: always()
+        run: sudo tail -60 /tmp/dnsmasq.log || true
+
   sadic-iso:
     name: ORCHIDEA Zapisovač – formátovanie a ISO (Linux, nezávislé fsck)
     runs-on: ubuntu-latest

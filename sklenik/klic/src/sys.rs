@@ -42,6 +42,7 @@ unsafe extern "C" {
     fn syscall(cislo: std::ffi::c_long, ...) -> std::ffi::c_long;
     fn prctl(volba: c_int, ...) -> c_int;
     fn fcntl(fd: c_int, prikaz: c_int, ...) -> c_int;
+    fn setsockopt(fd: c_int, uroven: c_int, volba: c_int, hodnota: *const c_void, dlzka: u32) -> c_int;
     fn posix_fadvise(fd: c_int, posun: i64, dlzka: i64, rada: c_int) -> c_int;
 }
 
@@ -93,6 +94,8 @@ const RTMGRP_LINK: u32 = 1;
 const UEVENT_JADRA: u32 = 1;
 const POLLIN: i16 = 1;
 const MSG_DONTWAIT: c_int = 0x40;
+const SOL_SOCKET: c_int = 1;
+const SO_BINDTODEVICE: c_int = 25;
 
 /// Pripojí súborový systém.
 pub fn pripoj(zdroj: &str, ciel: &str, typ: &str, priznaky: c_ulong) -> io::Result<()> {
@@ -691,5 +694,83 @@ pub fn ioctl_raz<T: Copy>(fd: c_int, poziadavka: c_ulong, s: &mut T) -> io::Resu
         if e.raw_os_error() != Some(4) {
             return Err(e);
         }
+    }
+}
+
+/// R268 (A9): zásuvka bude posielať a prijímať len cez rozhranie `meno` – klient DHCP pred pridelením adresy
+/// (správy na 255.255.255.255 musia ísť cez káblové rozhranie, nie inam).
+pub fn viaz_na_rozhranie(fd: c_int, meno: &str) -> io::Result<()> {
+    if meno.is_empty() || meno.len() >= 16 || meno.contains('\0') {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "neplatné meno rozhrania"));
+    }
+    let mut m = [0u8; 16];
+    m[..meno.len()].copy_from_slice(meno.as_bytes());
+    // SAFETY: m je platné pole 16 B (IFNAMSIZ) s menom ukončeným nulou, žije počas volania.
+    if unsafe { setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, m.as_ptr() as *const c_void, 16) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// R268 (A9): zásuvka rtnetlink (NETLINK_ROUTE) ako súbor – zápis = požiadavka jadru, čítanie = odpoveď alebo
+/// udalosť. `skupiny` = odber udalostí (1 = rozhrania – kábel pripojený/odpojený), 0 = len príkazy.
+pub fn netlink_route(skupiny: u32) -> io::Result<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: obyčajné volanie jadra s konštantami; výsledok sa kontroluje.
+    let fd = unsafe { socket(AF_NETLINK as c_int, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut adresa = [0u8; 12];
+    adresa[..2].copy_from_slice(&AF_NETLINK.to_ne_bytes());
+    adresa[8..12].copy_from_slice(&skupiny.to_ne_bytes());
+    // SAFETY: adresa je platná struct sockaddr_nl (12 B), žije počas volania.
+    if unsafe { bind(fd, adresa.as_ptr() as *const c_void, 12) } < 0 {
+        let e = io::Error::last_os_error();
+        // SAFETY: fd je náš otvorený deskriptor, zatvára sa raz.
+        unsafe { close(fd) };
+        return Err(e);
+    }
+    // SAFETY: fd je platný otvorený deskriptor, ktorý odteraz vlastní len File.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+/// R268 (A9): čaká, kým bude niektorý deskriptor pripravený na čítanie; `ms` = `None` čaká bez limitu (spánok
+/// bez budenia). Vráti príznak pre každý deskriptor (všetky `false` = vypršal čas alebo prerušenie signálom).
+pub fn cakaj_na_citanie(fds: &[c_int], ms: Option<u64>) -> io::Result<Vec<bool>> {
+    let mut p: Vec<PollFd> = fds.iter().map(|&fd| PollFd { fd, udalosti: POLLIN, vratene: 0 }).collect();
+    let ms = ms.map_or(-1, |m| m.min(i32::MAX as u64) as c_int);
+    // SAFETY: p je platné pole struct pollfd s dĺžkou p.len(), žije počas volania.
+    let n = unsafe { poll(p.as_mut_ptr(), p.len() as c_ulong, ms) };
+    if n < 0 {
+        let e = io::Error::last_os_error();
+        return if e.raw_os_error() == Some(4) { Ok(vec![false; fds.len()]) } else { Err(e) };
+    }
+    Ok(p.iter().map(|x| x.vratene != 0).collect())
+}
+
+/// R268 (A9): nastaví systémový čas (CLOCK_REALTIME) na `cas` od 1. 1. 1970. Volá sa priamo jadro
+/// (`clock_settime`, na 32-bitovom ARM `clock_settime64`) – 64-bitové sekundy aj na 32-bitových doskách (rok 2038).
+pub fn nastav_cas(cas: std::time::Duration) -> io::Result<()> {
+    #[cfg(target_arch = "aarch64")]
+    const CISLO: std::ffi::c_long = 112;
+    #[cfg(target_arch = "arm")]
+    const CISLO: std::ffi::c_long = 404;
+    #[cfg(target_arch = "x86_64")]
+    const CISLO: std::ffi::c_long = 227;
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "arm", target_arch = "x86_64")))]
+    {
+        let _ = cas;
+        return Err(io::Error::new(io::ErrorKind::Unsupported, "nastavenie času nie je pre tento procesor"));
+    }
+    #[cfg(any(target_arch = "aarch64", target_arch = "arm", target_arch = "x86_64"))]
+    {
+        // struct __kernel_timespec: 64-bitové sekundy a nanosekundy na každom procesore
+        let ts: [i64; 2] = [cas.as_secs() as i64, cas.subsec_nanos() as i64];
+        // SAFETY: CLOCK_REALTIME (0) a ukazovateľ na platnú štruktúru 16 B, ktorá žije počas volania.
+        if unsafe { syscall(CISLO, 0 as std::ffi::c_long, ts.as_ptr()) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 }

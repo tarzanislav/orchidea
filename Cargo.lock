@@ -112,6 +112,7 @@ name = "sklenik-klic"
 version = "0.1.0"
 dependencies = [
  "orchidea-pismo",
+ "orchidea-siet",
  "orchidea-teplo",
  "orchidea-zariadenie",
  "sklenik-karta",

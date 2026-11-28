@@ -76,6 +76,8 @@ pub enum Odpoved {
     Neexistuje { ttl: u32 },
     /// meno existuje, ale záznam tohto typu nemá (NODATA)
     BezZaznamu { ttl: u32 },
+    /// odpoveď končí prezývkou (CNAME) bez adries cieľa – treba sa spýtať na `kanonicke` (RFC 1034 5.3.3)
+    Prezyvka { kanonicke: String, ttl: u32 },
     /// odpoveď sa nezmestila do UDP (TC) – treba TCP alebo iný server
     Skratena,
     /// server odpovedal chybou (RCODE: 1 zlá otázka, 2 zlyhanie servera, 5 odmietnutie …)
@@ -272,7 +274,7 @@ pub fn precitaj(d: &[u8], id: u16, meno: &str, typ: Typ) -> Result<Odpoved, Chyb
         r => return Ok(Odpoved::ChybaServera(r)),
     }
     // reťaz od pýtaného mena: CNAME → … → adresy (RFC 1034 3.6.2); iné mená sa ignorujú (RFC 5452 6)
-    let mut sucasne = pytane;
+    let mut sucasne = pytane.clone();
     let mut ttl = u32::MAX;
     for _ in 0..=NAJDLHSIA_RETAZ {
         let adresy: Vec<(IpAddr, u32)> = odpovede
@@ -312,6 +314,9 @@ pub fn precitaj(d: &[u8], id: u16, meno: &str, typ: Typ) -> Result<Odpoved, Chyb
             Some((Err(e), _)) => return Err(e),
             None => break,
         }
+    }
+    if sucasne != pytane && !autority.iter().any(|z| z.typ == TYP_SOA) {
+        return Ok(Odpoved::Prezyvka { kanonicke: sucasne, ttl: ttl.min(NAJDLHSIE_TTL) });
     }
     Ok(Odpoved::BezZaznamu { ttl: negativne_ttl(d, &autority) })
 }
@@ -427,10 +432,13 @@ impl Prekladac {
             return Err(ChybaPrekladu::BezServera);
         }
         let mut posledna = String::from("bez odpovede");
-        for &server in &self.servery.clone() {
-            for edns in [true, false] {
+        let mut pytane = m.clone();
+        let mut prezyvok = 0;
+        'servery: for &server in &self.servery.clone() {
+            let mut edns = true;
+            loop {
                 let id = nahoda();
-                let Ok(q) = otazka(id, &m, typ, edns) else { break };
+                let Ok(q) = otazka(id, &pytane, typ, edns) else { break };
                 let adresa = SocketAddr::new(server, PORT);
                 let odpoved = match prenos(adresa, &q) {
                     Ok(o) => o,
@@ -439,7 +447,7 @@ impl Prekladac {
                         break;
                     }
                 };
-                match precitaj(&odpoved, id, &m, typ) {
+                match precitaj(&odpoved, id, &pytane, typ) {
                     Ok(Odpoved::Adresy { adresy, ttl, .. }) => {
                         self.pamat.uloz(&m, typ, Vysledok::Adresy(adresy.clone()), ttl, teraz);
                         return Ok(adresy);
@@ -448,8 +456,19 @@ impl Prekladac {
                         self.pamat.uloz(&m, typ, Vysledok::Nic, ttl, teraz);
                         return Err(ChybaPrekladu::Neexistuje(m));
                     }
+                    Ok(Odpoved::Prezyvka { kanonicke, .. }) if prezyvok < NAJDLHSIA_RETAZ => {
+                        // server poslal len prezývku – ten istý server sa spýta na cieľové meno
+                        prezyvok += 1;
+                        pytane = kanonicke;
+                        continue;
+                    }
+                    Ok(Odpoved::Prezyvka { .. }) => {
+                        posledna = format!("{server}: priveľa prezývok (CNAME)");
+                        break 'servery;
+                    }
                     Ok(Odpoved::ChybaServera(1)) if edns => {
                         posledna = format!("{server}: nepozná EDNS");
+                        edns = false;
                         continue;
                     }
                     Ok(Odpoved::ChybaServera(r)) => {
@@ -619,6 +638,38 @@ mod testy {
         // záznam A so zlou dĺžkou sa ignoruje
         let zla = odpoved(&q, 0, false, 1, 0, &zaznam(&OTAZKA, 1, 60, &[1, 1, 1]));
         assert_eq!(precitaj(&zla, 5, "a.sk", Typ::A), Ok(Odpoved::BezZaznamu { ttl: 60 }));
+    }
+
+    #[test]
+    fn len_prezyvka_sa_dopyta() {
+        // dnsmasq s --cname na meno z --address vráti len CNAME bez adresy (zmerané 28. 11. 2026)
+        let q = otazka(4, "alias.orchidea", Typ::A, false).unwrap();
+        let cname = zaznam(&OTAZKA, TYP_CNAME, 0, &[6, b's', b'k', b'u', b's', b'k', b'a', 0xC0, 18]);
+        let o = precitaj(&odpoved(&q, 0, false, 1, 0, &cname), 4, "alias.orchidea", Typ::A).unwrap();
+        assert_eq!(o, Odpoved::Prezyvka { kanonicke: "skuska.orchidea".into(), ttl: 0 });
+        let mut k = Prekladac::novy(vec!["10.77.0.1".parse().unwrap()]);
+        let mut pytane = Vec::new();
+        let mut prenos = |_: SocketAddr, q: &[u8]| -> io::Result<Vec<u8>> {
+            let bez_opt = &q[..q.len() - 11];
+            let (meno, _) = citaj_meno(bez_opt, 12).unwrap();
+            pytane.push(meno.clone());
+            Ok(if meno == "alias.orchidea" {
+                odpoved(
+                    bez_opt,
+                    0,
+                    false,
+                    1,
+                    0,
+                    &zaznam(&OTAZKA, TYP_CNAME, 0, &[6, b's', b'k', b'u', b's', b'k', b'a', 0xC0, 18]),
+                )
+            } else {
+                odpoved(bez_opt, 0, false, 1, 0, &zaznam(&OTAZKA, 1, 0, &[10, 77, 0, 7]))
+            })
+        };
+        let mut n = || 9u16;
+        let a = k.preloz("alias.orchidea", Typ::A, Duration::ZERO, &mut prenos, &mut n).unwrap();
+        assert_eq!(a, vec!["10.77.0.7".parse::<IpAddr>().unwrap()]);
+        assert_eq!(pytane, ["alias.orchidea", "skuska.orchidea"]);
     }
 
     #[test]

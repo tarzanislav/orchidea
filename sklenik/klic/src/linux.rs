@@ -2180,6 +2180,7 @@ pub fn spusti() {
     // R223: meranie vlastného dekodéra HEVC (spolu s prvým pokusom na zariadení)
     let hevc_riadky: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let mut hevc_spustene = false;
+    let mut internet_spusteny = false;
     // R244: vlákna skúšok (video, zvuk, HEVC) – záverečný záznam rýchlej skúšky počká, kým dobehnú
     let mut skusky: Vec<std::thread::JoinHandle<()>> = Vec::new();
     // R247: zberač meraní zapnutý (alebo ohlásené, že karta nemá kľúč)
@@ -2329,7 +2330,8 @@ pub fn spusti() {
                 // R170: čip siete bez kábla spí; raz za 30 s sa na chvíľu zobudí a hľadá kábel
                 // R191: sieť zatiaľ nič nepotrebuje (SKLENÍK nemá sieťové služby) – spí aj s káblom
                 // R247: zberač meraní práve posiela – sieť je potrebná a spiaci čip siete sa zobudí hneď
-                let zber_treba = crate::zber::treba_siet();
+                // R268: internet hľadá alebo obnovuje adresu – čip siete sa zobudí tiež
+                let zber_treba = crate::zber::treba_siet() || crate::internet::treba_siet();
                 let siet_potrebna = !(novinka(&nastavenie, "siet_spi") && siet_spi_faza) || zber_treba;
                 if tv && periferie_teraz == Some(true) && novinka(&nastavenie, "siet") {
                     for r in supis.siet.iter().filter(|r| !r.bezdrotove && !siet_chyby.contains(&r.meno)) {
@@ -2667,6 +2669,11 @@ pub fn spusti() {
                 }
             }));
             pokoj_stav = Some((pokoj::Stav::Overene, true, n));
+        }
+        // R268 (A9): internet – adresa z routera, preklad mien, čas zo siete (vlákno spí, kým nie je čo robiť)
+        if pid1 && !skuska && !internet_spusteny && nastavenie.is_some() && novinka(&nastavenie, "internet") {
+            internet_spusteny = true;
+            crate::internet::spusti(hlas);
         }
         // R247: zberač meraní – karta s kľúčom domácnosti (zapísaná ORCHIDEA Zapisovačom od R247)
         if pid1
@@ -3842,6 +3849,7 @@ pub fn spusti() {
                             cec.as_ref().map_or_else(|| cec_stav.clone(), |c| c.popis())
                         );
                         text += &format!("  zberač meraní (R247): {}{NL}", crate::zber::popis());
+                        text += &format!("  internet (R268): {}{NL}", crate::internet::popis());
                         if pokus {
                             let r: Vec<String> =
                                 (0..pocet_faz).filter(|&i| rusene[i]).map(|i| (i + 1).to_string()).collect();

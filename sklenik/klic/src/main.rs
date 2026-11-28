@@ -79,6 +79,9 @@ mod zber;
 // R264: aktualizácia systému v pamäti po sieti (štartér, skúška, návrat)
 #[cfg(target_os = "linux")]
 mod aktualizacia;
+// R268 (A9): internet – adresa z routera (DHCP), preklad mien (DNS), čas zo siete (SNTP)
+#[cfg(target_os = "linux")]
+mod internet;
 #[cfg(target_os = "linux")]
 mod zvuk;
 // R230: cesta zvuku na kartách ASoC s prepínačmi (Amlogic)
@@ -100,6 +103,11 @@ const VERZIA: &str = match option_env!("SKLENIK_VERZIA") {
 
 #[cfg(target_os = "linux")]
 fn main() {
+    // R268: skúška internetu pre CI a ručné overenie – `klic --internet <rozhranie> [--meno <meno>]…`
+    let argumenty: Vec<String> = std::env::args().collect();
+    if argumenty.iter().any(|a| a == "--internet") {
+        std::process::exit(internet::skuska(&argumenty));
+    }
     linux::spusti();
 }
 
