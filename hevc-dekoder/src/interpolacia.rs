@@ -281,10 +281,7 @@ fn oblast<'a, 'b, Z: Zdroj + ?Sized>(
 ) -> &'b [&'a [Vzorka]] {
     let riadky = &mut zoznam[..sh];
     if sx >= 0 && sx as usize + sw <= rovina.sirka() {
-        let (x, vyska) = (sx as usize, rovina.vyska() as i32);
-        for (j, r) in riadky.iter_mut().enumerate() {
-            *r = &rovina.riadok((sy + j as i32).clamp(0, vyska - 1) as usize)[x..];
-        }
+        rovina.riadky_od(sy, sx as usize, riadky);
     } else {
         kopiruj_s_orezanim(rovina, sx, sy, sw, sh, okraj, sw);
         let okraj: &'a [Vzorka] = okraj;

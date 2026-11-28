@@ -338,7 +338,7 @@ fn odblokuj_usek_jasu(data: &mut [Vzorka], i: usize, krok: usize, zvisla: bool, 
 /// Skalárny úsek hrany jasu (ako [`odblokuj_usek_jasu`]) – aj rozhodca pre skúšku NEON. `bez` = [nDp = 0,
 /// nDq = 0] (strana P či Q sa nemení), `max` = Clip1Y.
 #[allow(clippy::too_many_arguments)]
-#[inline]
+#[inline(always)]
 pub(super) fn odblokuj_usek_jasu_skalarne(
     data: &mut [Vzorka],
     i: usize,
