@@ -401,18 +401,18 @@ mod skusky {
     fn r257_mac_doplnena_pri_odoslani() {
         let i = Identita {
             zariadenie: "Raspberry Pi 3 Model B Plus Rev 1.4".into(),
-            id: "00000000d7a60416".into(),
+            id: "00000000d7000003".into(),
             ..Default::default()
         };
         let mut s = s_identitou(&i).s("zaznam", "0");
         assert_eq!(s.pole("mac"), Some(""));
-        doplni_mac(&mut s, "b8:27:eb:a6:04:16");
-        assert_eq!(s.pole("mac"), Some("b8:27:eb:a6:04:16"));
+        doplni_mac(&mut s, "b8:27:eb:00:00:03");
+        assert_eq!(s.pole("mac"), Some("b8:27:eb:00:00:03"));
         doplni_mac(&mut s, "11:22:33:44:55:66");
-        assert_eq!(s.pole("mac"), Some("b8:27:eb:a6:04:16"), "vyplnenú MAC nemení");
+        assert_eq!(s.pole("mac"), Some("b8:27:eb:00:00:03"), "vyplnenú MAC nemení");
         let mut bez = Sprava::nova().s("zaznam", "hotove");
-        doplni_mac(&mut bez, "b8:27:eb:a6:04:16");
-        assert_eq!(bez.pole("mac"), Some("b8:27:eb:a6:04:16"));
+        doplni_mac(&mut bez, "b8:27:eb:00:00:03");
+        assert_eq!(bez.pole("mac"), Some("b8:27:eb:00:00:03"));
     }
 
     #[test]

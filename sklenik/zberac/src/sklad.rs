@@ -4,7 +4,7 @@
 //! MERANIA\
 //!   _prehlad.txt                          ← riadok na každý začiatok a koniec merania
 //!   _zariadenia.txt                       ← zoznam zariadení (HERBÁR, R254): číslo | MAC | názov
-//!   01 ODROID C4 (00-1e-06-48-4d-60)\     ← zariadenie podľa MAC adresy siete LAN (R254)
+//!   01 ODROID C4 (00-1e-06-00-00-01)\     ← zariadenie podľa MAC adresy siete LAN (R254)
 //!     2026-11-27 17-06 f5cd597\           ← jedno meranie = jeden štart krabičky (+ „ – meno“ zo Zapisovača)
 //!       01-Hardkernel-ODROID-C4-SD.txt    ← záznamy presne ako na karte (pripájajú sa)
 //!       HOTOVE.txt                        ← meranie dobehlo (HOTOVÉ na krabičke)
@@ -180,7 +180,7 @@ impl Sklad {
         Ok((cesta, true, nove_zariadenie))
     }
 
-    /// R264: kto poslal správu – meno priečinka zariadenia (napr. „02 X96 Max Plus (46-27-29-f7-03-ef)“).
+    /// R264: kto poslal správu – meno priečinka zariadenia (napr. „02 X96 Max Plus (46-00-00-00-00-02)“).
     pub fn kto(&self, s: &Sprava) -> String {
         self.priecinok_zariadenia(s)
             .ok()
@@ -283,7 +283,7 @@ mod skusky {
         Sprava::nova()
             .s("zariadenie", "Hardkernel ODROID-C4")
             .s("meno", "odroid-tv")
-            .s("id", "00:1e:06:48:4d:60")
+            .s("id", "00:1e:06:00:00:01")
             .s("verzia", "f5cd597")
             .s("beh", "b0a1-77")
             .s("subor", "01-Hardkernel-ODROID-C4-SD.txt")
@@ -312,7 +312,7 @@ mod skusky {
         assert_eq!(m1, m3);
         assert!(popis.contains("už prijaté"));
         assert!(
-            m1.ends_with("01 ODROID C4 (00-1e-06-48-4d-60)/2026-11-27 17-06 f5cd597 – odroid-tv"),
+            m1.ends_with("01 ODROID C4 (00-1e-06-00-00-01)/2026-11-27 17-06 f5cd597 – odroid-tv"),
             "{}",
             m1.display()
         );
@@ -341,12 +341,12 @@ mod skusky {
     fn r254_zoznam_zariadeni() {
         let d = docasny("herbar");
         fs::create_dir_all(
-            d.join("amediatech-x96-max-plus (46_27_29_f7_03_ef)").join("2026-11-27 18-33 680ce01"),
+            d.join("amediatech-x96-max-plus (46_00_00_00_00_02)").join("2026-11-27 18-33 680ce01"),
         )
         .unwrap();
         let sk = Sklad::novy(&d).unwrap();
-        assert!(d.join("02 X96 Max Plus (46-27-29-f7-03-ef)").join("2026-11-27 18-33 680ce01").is_dir());
-        assert!(!d.join("amediatech-x96-max-plus (46_27_29_f7_03_ef)").exists());
+        assert!(d.join("02 X96 Max Plus (46-00-00-00-00-02)").join("2026-11-27 18-33 680ce01").is_dir());
+        assert!(!d.join("amediatech-x96-max-plus (46_00_00_00_00_02)").exists());
         assert_eq!(sk.zoznam.polozky().len(), 6);
         let t = (2026, 11, 27, 19, 0, 0);
         // RPi 3 B+ s kovovým chladičem – nová karta posiela pole mac, id je sériové číslo
@@ -354,8 +354,8 @@ mod skusky {
             Sprava::nova()
                 .s("zariadenie", "Raspberry Pi 3 Model B Plus Rev 1.4")
                 .s("meno", "ventilátor")
-                .s("id", "00000000a6041600")
-                .s("mac", "b8:27:eb:a6:04:16")
+                .s("id", "0000000000000300")
+                .s("mac", "b8:27:eb:00:00:03")
                 .s("verzia", "7d426ee")
                 .s("beh", "rpi-1")
                 .s("zaznam", zaznam)
@@ -363,7 +363,7 @@ mod skusky {
         };
         let (m, popis) = sk.prijmi(&rpi("0"), t).unwrap();
         assert!(m.ends_with(
-            "03 RPi 3 B+ kovový chladič (b8-27-eb-a6-04-16)/2026-11-27 19-00 7d426ee – ventilátor"
+            "03 RPi 3 B+ kovový chladič (b8-27-eb-00-00-03)/2026-11-27 19-00 7d426ee – ventilátor"
         ));
         assert!(!popis.contains("nové zariadenie"), "{popis}");
         // neznáme zariadenie → č. 7, názov podľa modelu, riadok v prehľade
@@ -413,27 +413,27 @@ mod skusky {
         fs::create_dir_all(&d).unwrap();
         fs::write(
             d.join(crate::zoznam::SUBOR),
-            "# môj zoznam\r\n1 | 00:1e:06:48:4d:60 | ODROID C4\r\n3 | b8:27:eb:a6:04:16 | RPi 3 B+ kovový chladič\r\n\
-             4 | b8:27:eb:6b:7c:76 | Moja plastová\r\n",
+            "# môj zoznam\r\n1 | 00:1e:06:00:00:01 | ODROID C4\r\n3 | b8:27:eb:00:00:03 | RPi 3 B+ kovový chladič\r\n\
+             4 | b8:27:eb:00:00:04 | Moja plastová\r\n",
         )
         .unwrap();
         let stary =
-            d.join("raspberry-pi-3-model-b-plus-rev-1-4 (00000000d7a60416)").join("2026-11-27 20-52 85092ea");
+            d.join("raspberry-pi-3-model-b-plus-rev-1-4 (00000000d7000003)").join("2026-11-27 20-52 85092ea");
         fs::create_dir_all(&stary).unwrap();
         let sk = Sklad::novy(&d).unwrap();
         let text = fs::read_to_string(d.join(crate::zoznam::SUBOR)).unwrap();
         assert!(text.starts_with("# môj zoznam"), "{text}");
         assert!(
-            text.contains("3 | b8:27:eb:a6:04:16 | RPi 3 B+ kovový chladič | 00000000d7a60416"),
+            text.contains("3 | b8:27:eb:00:00:03 | RPi 3 B+ kovový chladič | 00000000d7000003"),
             "{text}"
         );
         assert!(
-            text.contains("4 | b8:27:eb:6b:7c:76 | Moja plastová | 00000000296b7c76"),
+            text.contains("4 | b8:27:eb:00:00:04 | Moja plastová | 0000000029000004"),
             "vlastný názov: {text}"
         );
-        assert!(text.contains("6 | 2c:cf:67:40:c9:32 | RPi 5 | 166191d6d9171f2f"), "{text}");
+        assert!(text.contains("6 | 2c:cf:67:00:00:06 | RPi 5 | 1661000000000006"), "{text}");
         assert!(
-            d.join("03 RPi 3 B+ kovový chladič (b8-27-eb-a6-04-16)")
+            d.join("03 RPi 3 B+ kovový chladič (b8-27-eb-00-00-03)")
                 .join("2026-11-27 20-52 85092ea")
                 .is_dir()
         );
@@ -443,14 +443,14 @@ mod skusky {
         // správa bez MAC (karta 85092ea) – podľa sériového čísla
         let bez_mac = Sprava::nova()
             .s("zariadenie", "Raspberry Pi 3 Model B Plus Rev 1.3")
-            .s("id", "00000000296b7c76")
+            .s("id", "0000000029000004")
             .s("mac", "")
             .s("verzia", "85092ea")
             .s("beh", "rpi3p-1")
             .s("zaznam", "0")
             .s_obsahom(b"z\n".to_vec());
         let (m, _) = sk.prijmi(&bez_mac, (2026, 11, 27, 20, 56, 0)).unwrap();
-        assert!(m.parent().unwrap().ends_with("04 Moja plastová (b8-27-eb-6b-7c-76)"), "{}", m.display());
+        assert!(m.parent().unwrap().ends_with("04 Moja plastová (b8-27-eb-00-00-04)"), "{}", m.display());
         let _ = fs::remove_dir_all(&d);
     }
 

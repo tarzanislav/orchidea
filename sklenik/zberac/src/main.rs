@@ -487,7 +487,7 @@ mod skusky {
         let identita_s_casom = |verzia: &str, cas: &str| {
             Sprava::nova()
                 .s("zariadenie", "Raspberry Pi 5 Model B Rev 1.0")
-                .s("mac", "2c:cf:67:40:c9:32")
+                .s("mac", "2c:cf:67:00:00:06")
                 .s("verzia", verzia)
                 .s("beh", "beh-r264")
                 .s("aktualizacia", "1")

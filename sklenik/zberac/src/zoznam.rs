@@ -1,7 +1,7 @@
 //! Zoznam zariadení (HERBÁR, R254) – stále číslo a názov každej krabičky podľa MAC adresy siete LAN.
 //!
 //! Súbor `_zariadenia.txt` v koreni priečinka MERANIA (riadok `číslo | MAC adresa | názov`). Pri prvom spustení
-//! ho zberač vytvorí zo zoznamu známeho zariadení vlastníka (`sklenik/zariadenia.txt`); nové zariadenie pridá
+//! ho zberač vytvorí (od 28. 11. prázdny – adresy krabičiek do repozitára nepatria); nové zariadenie pridá
 //! sám s ďalším číslom a názvom podľa modelu – názov potom môže vlastník v súbore prepísať (číta sa pri každej
 //! správe, zberač netreba reštartovať).
 
@@ -13,8 +13,16 @@ use std::sync::Mutex;
 /// Súbor zoznamu v koreni priečinka MERANIA.
 pub const SUBOR: &str = "_zariadenia.txt";
 
-/// Známe zariadenia vlastníka (27. 11. 2026) – základ nového zoznamu.
+/// Základ nového zoznamu. Skutočné adresy krabičiek vlastníka sú **len** v `_zariadenia.txt` na jeho počítači
+/// (pokyny projektu: podrobnosti prostredia nepatria do repozitára) – `sklenik/zariadenia.txt` má len hlavičku.
+#[cfg(not(test))]
 const ZAKLAD: &str = include_str!("../../zariadenia.txt");
+/// Skúšobný základ s vymyslenými adresami (tvar ako skutočný zoznam: RPi 3 B+ MAC = b8:27:eb + koniec sériového čísla).
+#[cfg(test)]
+const ZAKLAD: &str = "1 | 00:1e:06:00:00:01 | ODROID C4\n2 | 46:00:00:00:00:02 | X96 Max Plus\n\
+3 | b8:27:eb:00:00:03 | RPi 3 B+ kovový chladič | 00000000d7000003\n\
+4 | b8:27:eb:00:00:04 | RPi 3 B+ plastová krabička | 0000000029000004\n\
+5 | e4:5f:01:00:00:05 | RPi 400 | 1000000000000005\n6 | 2c:cf:67:00:00:06 | RPi 5 | 1661000000000006\n";
 
 const HLAVICKA: &str = "# Zoznam zariadení (HERBÁR) – číslo | MAC adresa siete LAN | názov.\r\n\
 # Nové zariadenie pridá zberač sám s ďalším číslom. Názov môžete prepísať (číslo a MAC nechajte).\r\n";
@@ -22,7 +30,7 @@ const HLAVICKA: &str = "# Zoznam zariadení (HERBÁR) – číslo | MAC adresa s
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Zariadenie {
     pub cislo: u32,
-    /// Malé písmená, dvojbodky (`00:1e:06:48:4d:60`).
+    /// Malé písmená, dvojbodky (`00:1e:06:00:00:01`).
     pub mac: String,
     pub nazov: String,
     /// R258: sériové číslo dosky (RPi), ak ho má – druhý spôsob, ako krabičku spoznať.
@@ -30,7 +38,7 @@ pub struct Zariadenie {
 }
 
 impl Zariadenie {
-    /// Meno priečinka zariadenia: `01 ODROID C4 (00-1e-06-48-4d-60)` (dvojbodku Windows v mene nedovolí).
+    /// Meno priečinka zariadenia: `01 ODROID C4 (00-1e-06-00-00-01)` (dvojbodku Windows v mene nedovolí).
     pub fn priecinok(&self) -> String {
         crate::sklad::bezpecne_meno(&format!(
             "{:02} {} ({})",
@@ -186,9 +194,9 @@ mod skusky {
 
     #[test]
     fn mac_v_roznych_zapisoch() {
-        assert_eq!(mac("00:1E:06:48:4D:60").as_deref(), Some("00:1e:06:48:4d:60"));
-        assert_eq!(mac("00_1e_06_48_4d_60").as_deref(), Some("00:1e:06:48:4d:60"));
-        assert_eq!(mac("00-1e-06-48-4d-60").as_deref(), Some("00:1e:06:48:4d:60"));
+        assert_eq!(mac("00:1E:06:00:00:01").as_deref(), Some("00:1e:06:00:00:01"));
+        assert_eq!(mac("00_1e_06_00_00_01").as_deref(), Some("00:1e:06:00:00:01"));
+        assert_eq!(mac("00-1e-06-00-00-01").as_deref(), Some("00:1e:06:00:00:01"));
         assert_eq!(mac("00:00:00:00:00:00"), None);
         assert_eq!(mac("odroid-tv"), None);
         assert_eq!(mac("100000001234abcd"), None, "sériové číslo RPi nie je MAC");
@@ -202,21 +210,21 @@ mod skusky {
             z[0],
             Zariadenie {
                 cislo: 1,
-                mac: "00:1e:06:48:4d:60".into(),
+                mac: "00:1e:06:00:00:01".into(),
                 nazov: "ODROID C4".into(),
                 seriove: None
             }
         );
-        assert_eq!(z[0].priecinok(), "01 ODROID C4 (00-1e-06-48-4d-60)");
+        assert_eq!(z[0].priecinok(), "01 ODROID C4 (00-1e-06-00-00-01)");
         assert_eq!(z[2].nazov, "RPi 3 B+ kovový chladič");
         // R258: RPi 3 B+ – MAC je b8:27:eb + posledných 6 číslic sériového čísla
         for i in [2, 3] {
             let s = z[i].seriove.as_deref().unwrap();
             assert_eq!(z[i].mac.replace(':', "")[6..], s[s.len() - 6..], "č. {}", z[i].cislo);
         }
-        assert_eq!(z[5].seriove.as_deref(), Some("166191d6d9171f2f"));
-        assert_eq!(seriove("00000000D7A60416").as_deref(), Some("00000000d7a60416"));
-        assert_eq!(seriove("00:1e:06:48:4d:60"), None);
+        assert_eq!(z[5].seriove.as_deref(), Some("1661000000000006"));
+        assert_eq!(seriove("00000000D7000003").as_deref(), Some("00000000d7000003"));
+        assert_eq!(seriove("00:1e:06:00:00:01"), None);
         assert_eq!(seriove("odroid-tv"), None);
         let mut macy: Vec<&str> = z.iter().map(|x| x.mac.as_str()).collect();
         macy.sort();
