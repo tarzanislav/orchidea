@@ -5,9 +5,11 @@
 //!
 //! Postup pre jeden blok a jednu referenciu:
 //! 1. **oblasť zdroja** – blok aj s okrajom filtra (jas 3 vzorky vľavo či hore a 4 vpravo či dole, farba 1 a 2;
-//!    okraj len v smere, v ktorom je zlomok). Ak celá oblasť leží vnútri referenčnej roviny, filtre čítajú
-//!    priamo z nej (rýchla cesta). Inak sa oblasť skopíruje do pracovného poľa s orezaním každej súradnice
-//!    Clip3 (8.5.3.3.3.2, 8.5.3.3.3.3) – výsledok je totožný s orezávaním pri každom čítaní,
+//!    okraj len v smere, v ktorom je zlomok) ako zoznam riadkov. Ak stĺpce oblasti ležia vnútri referenčnej
+//!    roviny, filtre čítajú riadky priamo z nej – aj cez hranicu pásov zverejňovaného obrazu a aj nad či pod
+//!    rovinou (riadok mimo je podľa Clip3 okrajový riadok, bez kópie). Inak sa oblasť skopíruje do pracovného
+//!    poľa s orezaním každej súradnice Clip3 (8.5.3.3.3.2, 8.5.3.3.3.3) – výsledok je totožný s orezávaním pri
+//!    každom čítaní,
 //! 2. **interpolácia** (8.5.3.3.3) – štyri oddelené cesty: celočíselný vektor, len vodorovný zlomok, len zvislý
 //!    zlomok, oba zlomky (najprv vodorovne do medzipoľa, potom zvislo),
 //! 3. **váženie** (8.5.3.3.4) – predvolené alebo explicitné, s orezaním na rozsah vzoriek.
@@ -33,6 +35,8 @@ use std::cell::RefCell;
 const MAX_BLOK: usize = 64;
 /// Najväčší okraj filtra v jednom smere: 8 bodov → 7 vzoriek navyše (3 pred, 4 za).
 const MAX_OKRAJ: usize = 7;
+/// Najviac riadkov oblasti zdroja (blok a okraj filtra).
+const MAX_RIADKOV: usize = MAX_BLOK + MAX_OKRAJ;
 /// Posun uložených medzivýsledkov: v i16 sa ukladá predSample − 8192 (pozri dokumentáciu modulu).
 const POSUN_MEDZI: i32 = 1 << 13;
 /// shift2 druhého stupňa 2D interpolácie (8.5.3.3.3.2).
@@ -228,32 +232,33 @@ fn interpoluj<const N: usize, Z: Zdroj + ?Sized>(
     let pred_okraj = (N / 2 - 1) as i32;
     let (sx, sw) = if fx != 0 { (x_int - pred_okraj, w + N - 1) } else { (x_int, w) };
     let (sy, sh) = if fy != 0 { (y_int - pred_okraj, h + N - 1) } else { (y_int, h) };
-    let (zdroj, krok) = oblast(rovina, sx, sy, sw, sh, okraj);
+    let mut zoznam: [&[Vzorka]; MAX_RIADKOV] = [&[]; MAX_RIADKOV];
+    let riadky = oblast(rovina, sx, sy, sw, sh, okraj, &mut zoznam);
 
     let shift1 = (bitova_hlbka - 8).min(4);
     let shift3 = 14u32.saturating_sub(bitova_hlbka).max(2);
     let pred = &mut pred[..w * h];
     match (fx, fy) {
         (0, 0) => {
-            for (j, p) in pred.chunks_exact_mut(w).enumerate() {
-                riadok_cely(&zdroj[j * krok..], p, shift3);
+            for (p, r) in pred.chunks_exact_mut(w).zip(riadky) {
+                riadok_cely(r, p, shift3);
             }
         }
         (_, 0) => {
-            for (j, p) in pred.chunks_exact_mut(w).enumerate() {
-                riadok_vodorovne(&zdroj[j * krok..], &filtre[fx], p, shift1, POSUN_MEDZI);
+            for (p, r) in pred.chunks_exact_mut(w).zip(riadky) {
+                riadok_vodorovne(r, &filtre[fx], p, shift1, POSUN_MEDZI);
             }
         }
         (0, _) => {
             for (j, p) in pred.chunks_exact_mut(w).enumerate() {
-                riadok_zvislo(&zdroj[j * krok..], krok, &filtre[fy], p, shift1, POSUN_MEDZI);
+                riadok_zvislo(&riadky[j..], &filtre[fy], p, shift1, POSUN_MEDZI);
             }
         }
         _ => {
             // temp[n] pre riadky yInt − 3 … yInt + 4 (jas), ich zvislý filter >> shift2
             let medzi = &mut medzi[..sh * w];
-            for (j, m) in medzi.chunks_exact_mut(w).enumerate() {
-                riadok_vodorovne(&zdroj[j * krok..], &filtre[fx], m, shift1, 0);
+            for (m, r) in medzi.chunks_exact_mut(w).zip(riadky) {
+                riadok_vodorovne(r, &filtre[fx], m, shift1, 0);
             }
             for (j, p) in pred.chunks_exact_mut(w).enumerate() {
                 riadok_zvislo_medzi(&medzi[j * w..], &filtre[fy], p);
@@ -262,23 +267,32 @@ fn interpoluj<const N: usize, Z: Zdroj + ?Sized>(
     }
 }
 
-/// Oblasť zdroja `sw` × `sh` s ľavým horným rohom (`sx`, `sy`) ako (vzorky, krok riadka): priamo z roviny, ak v nej
-/// leží celá, inak kópia s orezanými súradnicami v `okraj`.
-fn oblast<'a, Z: Zdroj + ?Sized>(
+/// Oblasť zdroja `sw` × `sh` s ľavým horným rohom (`sx`, `sy`) ako zoznam `sh` riadkov, každý aspoň so `sw`
+/// vzorkami: riadok j = vzorky od stĺpca sx riadka Clip3(0, výška − 1, sy + j). Ak stĺpce sx … sx + sw − 1 ležia
+/// v rovine, riadky sú priamo z roviny (aj z rôznych pásov), inak kópia s orezanými súradnicami v `okraj`.
+fn oblast<'a, 'b, Z: Zdroj + ?Sized>(
     rovina: &'a Z,
     sx: i32,
     sy: i32,
     sw: usize,
     sh: usize,
     okraj: &'a mut [Vzorka],
-) -> (&'a [Vzorka], usize) {
-    let vnutri =
-        sx >= 0 && sy >= 0 && sx as usize + sw <= rovina.sirka() && sy as usize + sh <= rovina.vyska();
-    if vnutri && let Some((d, krok)) = rovina.riadky(sy as usize, sh) {
-        return (&d[sx as usize..], krok);
+    zoznam: &'b mut [&'a [Vzorka]; MAX_RIADKOV],
+) -> &'b [&'a [Vzorka]] {
+    let riadky = &mut zoznam[..sh];
+    if sx >= 0 && sx as usize + sw <= rovina.sirka() {
+        let (x, vyska) = (sx as usize, rovina.vyska() as i32);
+        for (j, r) in riadky.iter_mut().enumerate() {
+            *r = &rovina.riadok((sy + j as i32).clamp(0, vyska - 1) as usize)[x..];
+        }
+    } else {
+        kopiruj_s_orezanim(rovina, sx, sy, sw, sh, okraj, sw);
+        let okraj: &'a [Vzorka] = okraj;
+        for (r, d) in riadky.iter_mut().zip(okraj.chunks_exact(sw)) {
+            *r = d;
+        }
     }
-    kopiruj_s_orezanim(rovina, sx, sy, sw, sh, okraj, sw);
-    (&okraj[..sw * sh], sw)
+    riadky
 }
 
 /// Kópia oblasti `sw` × `sh` z (`sx`, `sy`) do `ciel` (riadok j na `[j * krok..]`) s orezaním súradníc
@@ -347,19 +361,18 @@ fn riadok_vodorovne<const N: usize>(
 }
 
 /// Zvislý filter jedného riadka zo vzoriek (N bodov): `ciel[i] = ((Σ_k koef[k] · R_k[i]) >> shift1) − odcitaj`,
-/// kde R_k je riadok `zdroj[k * krok..]` (riadok 0 = yInt − (N/2 − 1)).
+/// kde R_k je `zdroj[k]` (riadok 0 = yInt − (N/2 − 1)).
 #[allow(clippy::needless_range_loop)]
 fn riadok_zvislo<const N: usize>(
-    zdroj: &[Vzorka],
-    krok: usize,
+    zdroj: &[&[Vzorka]],
     koef: &[i16; N],
     ciel: &mut [i16],
     shift1: u32,
     odcitaj: i32,
 ) {
     let w = ciel.len();
-    // riadky nechané dlhšie (zvyšok roviny) – NEON číta po 8 vzorkách aj pri užšom bloku bez kópie
-    let riadky: [&[Vzorka]; N] = std::array::from_fn(|k| &zdroj[k * krok..]);
+    // riadky nechané dlhšie (zvyšok riadka roviny) – NEON číta po 8 vzorkách aj pri užšom bloku bez kópie
+    let riadky: [&[Vzorka]; N] = std::array::from_fn(|k| zdroj[k]);
     if shift1 == 0 {
         // 8 bitov: presné v i16 (pozri riadok_vodorovne)
         zvislo8(&riadky, koef, ciel, odcitaj as i16);
@@ -598,7 +611,7 @@ fn riadok_explicitne_dve(
 
 #[cfg(test)]
 mod testy {
-    use super::super::obraz::Rovina;
+    use super::super::obraz::{Rovina, RovinaPasov};
     use super::*;
     use orchidea_jadro::nahoda::Nahoda;
 
@@ -975,6 +988,38 @@ mod testy {
         }
         // náhodné prípady samy obsahujú medzivýsledky mimo rozsahu i16
         assert!(nad_i16 > 0, "žiadny medzivýsledok nad i16::MAX");
+    }
+
+    /// Rovina zverejňovaná po pásoch výšky `vp` s rovnakými vzorkami ako `r`.
+    fn na_pasy(r: &Rovina, vp: usize) -> RovinaPasov {
+        let p = RovinaPasov::nova(r.sirka, r.vyska, vp);
+        for i in 0..p.pocet_pasov() {
+            let mut d = Vec::new();
+            for y in p.riadky_pasu(i) {
+                d.extend_from_slice(r.riadok(y));
+            }
+            p.zverejni(i, d.into_boxed_slice());
+        }
+        p
+    }
+
+    /// Referencia zverejňovaná po pásoch dá tú istú predikciu ako súvislá rovina – aj keď oblasť zdroja zasahuje
+    /// do viacerých pásov (riadky sa čítajú priamo z pásov, bez kópie) alebo nad či pod rovinu.
+    #[test]
+    fn predikcia_z_pasov_ako_zo_suvislej_roviny() {
+        let mut n = Nahoda::zo_semienka(0x1A7E_2B05);
+        for _ in 0..2000 {
+            let p = nahodny_pripad(&mut n);
+            let vp = 1 + n.mensie_ako(20) as usize;
+            let pasy = |r: &Option<(Rovina, [i32; 2])>| r.as_ref().map(|(r, mv)| (na_pasy(r, vp), *mv));
+            let (q0, q1) = (pasy(&p.r0), pasy(&p.r1));
+            let krok = p.w + 3;
+            let (mut a, mut b) = (vec![0; p.h * krok], vec![0; p.h * krok]);
+            p.predikuj(&mut a, krok);
+            let (q0, q1) = (q0.as_ref().map(|(r, mv)| (r, *mv)), q1.as_ref().map(|(r, mv)| (r, *mv)));
+            predikuj(p.jas, q0, q1, p.x, p.y, p.w, p.h, p.vahy.as_ref(), 8, &mut b, krok);
+            assert_eq!(a, b, "jas {}, blok {}×{} na ({}, {}), pásy po {vp}", p.jas, p.w, p.h, p.x, p.y);
+        }
     }
 
     /// Celá predikcia (uni aj bi, predvolené aj explicitné váhy) sa zhoduje s normou a nemení okolie bloku.
