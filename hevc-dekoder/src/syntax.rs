@@ -238,9 +238,8 @@ impl StavObrazu {
             }
             return;
         }
-        let pas = |rp: &RovinaPasov| {
-            if r < rp.pocet_pasov() { vec![0; rp.riadky_pasu(r).len() * rp.sirka] } else { Vec::new() }
-        };
+        // SAO zapíše každú vzorku pásu – pás z obnovy nemusí byť vynulovaný
+        let pas = |rp: &RovinaPasov| if r < rp.pocet_pasov() { rp.novy_pas(r) } else { Box::default() };
         let [mut a, mut b, mut c] = [pas(&ciel.roviny[0]), pas(&ciel.roviny[1]), pas(&ciel.roviny[2])];
         {
             let ciel_sao =
@@ -255,7 +254,7 @@ impl StavObrazu {
         }
         for (i, d) in [a, b, c].into_iter().enumerate() {
             if r < ciel.roviny[i].pocet_pasov() {
-                ciel.roviny[i].zverejni(r, d.into_boxed_slice());
+                ciel.roviny[i].zverejni(r, d);
             }
         }
     }

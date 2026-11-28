@@ -8,13 +8,32 @@
 //! v slučke. Ďalší obraz, ktorý ho má ako referenciu, môže bežať súčasne v inom vlákne: čítanie riadka pásu,
 //! ktorý ešte nie je hotový, počká ([`OnceLock::wait`]) – nehotové vzorky sa teda nedajú prečítať, bez `unsafe`.
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// Jedna vzorka obrazu (u8 pre 8 bitov, u16 pre Main 10) – určuje nadradený modul.
 pub use super::Vzorka;
 
 /// Zarovnanie kroku riadka v prvkoch – riadky začínajú na hranici 32 bajtov (rýchle vektorové čítanie, NEON).
 const ZAROVNANIE: usize = 32;
+
+/// Zásoba pásov uvoľnených obrazov (pozri [`novy_pas`]) – najviac toľko bajtov (≈ dva obrazy 1080p).
+const ZASOBA_BAJTOV: usize = 8 << 20;
+
+/// Pásy uvoľnených obrazov na opätovné použitie a ich súčet v prvkoch.
+static ZASOBA: Mutex<(Vec<Box<[Vzorka]>>, usize)> = Mutex::new((Vec::new(), 0));
+
+/// Pás s `n` vzorkami na zápis: z pásov uvoľnených obrazov (so starými vzorkami – volajúci prepíše každú), inak
+/// nový. Šetrí nulovanie a pridelenie pamäte pri každom riadku CTB – v ustálenom stave prehrávania sa pamäť pásov
+/// len obieha (chladný systém: menej zápisov do pamäte, menej výpadkov stránok).
+pub fn novy_pas(n: usize) -> Box<[Vzorka]> {
+    if let Ok(mut z) = ZASOBA.lock()
+        && let Some(i) = z.0.iter().rposition(|p| p.len() == n)
+    {
+        z.1 -= n;
+        return z.0.swap_remove(i);
+    }
+    vec![0; n].into_boxed_slice()
+}
 
 /// Rovina vzoriek: riadok `y` začína na `data[y * krok]`, platných je `sirka` vzoriek.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,12 +204,32 @@ impl RovinaPasov {
         }
     }
 
+    /// Pás `i` na zápis: riadky pásu po šírke, obsah nedefinovaný (z [`novy_pas`]).
+    pub fn novy_pas(&self, i: usize) -> Box<[Vzorka]> {
+        novy_pas(self.riadky_pasu(i).len() * self.sirka)
+    }
+
     /// Doplní nezverejnené pásy hodnotou `hodnota` (obraz s chybou – nikto nesmie čakať naveky).
     pub fn dopln(&self, hodnota: Vzorka) {
         for i in 0..self.pasy.len() {
             if !self.je_zverejneny(i) {
                 self.zverejni(i, vec![hodnota; self.riadky_pasu(i).len() * self.sirka].into_boxed_slice());
             }
+        }
+    }
+}
+
+/// Uvoľnený obraz vráti svoje pásy do zásoby (najviac [`ZASOBA_BAJTOV`]); ostatné sa uvoľnia.
+impl Drop for RovinaPasov {
+    fn drop(&mut self) {
+        let Ok(mut z) = ZASOBA.lock() else { return };
+        let max = ZASOBA_BAJTOV / size_of::<Vzorka>();
+        for p in self.pasy.drain(..).filter_map(OnceLock::into_inner) {
+            if z.1 + p.len() > max {
+                break;
+            }
+            z.1 += p.len();
+            z.0.push(p);
         }
     }
 }
@@ -259,11 +298,11 @@ impl ObrazPasov {
         if i >= r.pocet_pasov() {
             return;
         }
-        let mut d = Vec::with_capacity(r.riadky_pasu(i).len() * r.sirka);
-        for y in r.riadky_pasu(i) {
-            d.extend_from_slice(&zdroj.riadok(y)[..r.sirka]);
+        let mut d = r.novy_pas(i);
+        for (riadok, y) in d.chunks_exact_mut(r.sirka).zip(r.riadky_pasu(i)) {
+            riadok.copy_from_slice(&zdroj.riadok(y)[..r.sirka]);
         }
-        r.zverejni(i, d.into_boxed_slice());
+        r.zverejni(i, d);
     }
 
     pub fn sirka(&self) -> usize {
