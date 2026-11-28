@@ -614,6 +614,18 @@ pub fn skuska(argumenty: &[String]) -> i32 {
         return 1;
     };
     let _ = crate::sys::zapni_rozhranie(meno);
+    // Kontrola zdroja (RFC 3704, rp_filter): pri hodnote 1 jadro zahodí odpoveď DHCP, kým rozhranie nemá adresu a
+    // k serveru nevedie trasa (zmerané 28. 11. 2026 v CI aj lokálne). Jadro krabičky má predvolenú 0.
+    let rp = |cesta: &str| {
+        std::fs::read_to_string(format!("/proc/sys/net/ipv4/conf/{cesta}/rp_filter"))
+            .ok()
+            .and_then(|t| t.trim().parse::<u8>().ok())
+            .unwrap_or(0)
+    };
+    let kontrola_zdroja = rp("all").max(rp(meno));
+    if kontrola_zdroja == 1 {
+        println!("INTERNET POZOR rp_filter=1 – jadro môže zahodiť odpoveď DHCP, kým {meno} nemá adresu");
+    }
     let mut r = match Rozhranie::otvor(meno, cislo) {
         Ok(r) => r,
         Err(e) => {
@@ -635,7 +647,8 @@ pub fn skuska(argumenty: &[String]) -> i32 {
         }
     }
     let Some(p) = prenajom else {
-        println!("INTERNET CHYBA bez adresy po 60 s – {}", klient.popis());
+        let rada = if kontrola_zdroja == 1 { " (rp_filter=1 – pozri POZOR)" } else { "" };
+        println!("INTERNET CHYBA bez adresy po 60 s – {}{rada}", klient.popis());
         return 1;
     };
     println!(

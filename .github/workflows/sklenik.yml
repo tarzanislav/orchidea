@@ -936,9 +936,18 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           tar -czf aktualizacia-klic-aarch64.tar.gz -C aktualizacia klic-aarch64
+          # Príčina HTTP 403 pri tvorbe (28. 11. 2026, behy d82cc2b a ae1f1ed): GITHUB_TOKEN nesmie vytvoriť značku na
+          # commite, ktorého pracovné postupy CI (.github/workflows) sa líšia od main – stalo sa vždy, keď medzitým
+          # prišiel push so zmenou CI. Vtedy sa staré vydanie NEZMAŽE a vydá ho novší beh (ten už má rovnaké CI ako main).
+          zmenene=$(gh api "repos/$GH_REPO/compare/$GITHUB_SHA...main" \
+            --jq '[.files[]?.filename | select(startswith(".github/workflows/"))] | length') || zmenene=0
+          if [ "$zmenene" != "0" ]; then
+            echo "### ⏭ Vydanie aktualizacia-klic preskočené: main má novšie CI ($zmenene súborov) – vydá ho novší beh" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           gh release delete aktualizacia-klic --yes --cleanup-tag || true
-          # 28. 11. 2026 (beh 46124778886): jednorazové HTTP 403 pri tvorbe po zmazaní – vydanie potom chýbalo.
-          # Tvorba sa preto skúsi až 4× s pauzou 20, 40, 60 s; až potom úloha zlyhá.
+          # Pre istotu (napr. push so zmenou CI práve teraz) sa tvorba skúsi až 4× s pauzou 20, 40, 60 s.
           for pokus in 1 2 3 4; do
             [ "$pokus" -gt 1 ] && { echo "pokus $pokus o vydanie aktualizacia-klic"; sleep $(( (pokus - 1) * 20 )); }
             gh release create aktualizacia-klic aktualizacia-klic-aarch64.tar.gz --prerelease --target "$GITHUB_SHA" \
