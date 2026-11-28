@@ -593,7 +593,7 @@ fn vyber_udalosti(u: &std::fs::File) {
     }
 }
 
-/// Skúška pre CI a ručné overenie: `klic --internet <rozhranie> [--meno <meno>]… [--nastav-cas]`.
+/// Skúška pre CI a ručné overenie: `klic --internet <rozhranie> [--meno <meno>]… [--stiahni <url>]… [--uloz <priečinok>] [--nastav-cas]`.
 /// Získa adresu (najviac 60 s), nastaví ju, preloží mená a opýta sa na čas; vypíše riadky `INTERNET …`.
 /// Návratový kód 0 = adresa, všetky mená aj čas (ak server času existuje) v poriadku.
 pub fn skuska(argumenty: &[String]) -> i32 {
@@ -688,6 +688,48 @@ pub fn skuska(argumenty: &[String]) -> i32 {
             Err(e) => {
                 ok = false;
                 println!("INTERNET CHYBA čas: {e}");
+            }
+        }
+    }
+    // sťahovanie cez HTTP (rozhranie R6) – dĺžka a odtlačok BLAKE3 na porovnanie s rozhodcom
+    let adresy: Vec<&String> = argumenty.windows(2).filter(|w| w[0] == "--stiahni").map(|w| &w[1]).collect();
+    for a in adresy {
+        let mut n = nahoda16;
+        match orchidea_siet::http::stiahni(a, &[], &mut prekladac, od.elapsed(), &mut n, Default::default()) {
+            Ok(mut o) => match o.telo.cele(64 << 20) {
+                Ok(t) => {
+                    let odtlacok: String = sklenik_korene::aktualizacia::odtlacok(&t)
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    println!(
+                        "INTERNET STIAHNUTE {a} stav={} bajtov={} blake3={odtlacok} z={}",
+                        o.hlavicka.stav,
+                        t.len(),
+                        o.url
+                    );
+                    if o.hlavicka.stav != 200 {
+                        ok = false;
+                    }
+                    // `--uloz <priečinok>`: telo do súboru s menom posledného úseku cesty (rozhodca ho porovná `cmp`)
+                    if let Some(kam) = argumenty.windows(2).find(|w| w[0] == "--uloz").map(|w| &w[1]) {
+                        let meno =
+                            o.url.cesta.split('?').next().unwrap_or("").rsplit('/').next().unwrap_or("");
+                        let meno = if meno.is_empty() { "index" } else { meno };
+                        if let Err(e) = std::fs::write(std::path::Path::new(kam).join(meno), &t) {
+                            ok = false;
+                            println!("INTERNET CHYBA uloženie {meno}: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    ok = false;
+                    println!("INTERNET CHYBA telo {a}: {e}");
+                }
+            },
+            Err(e) => {
+                ok = false;
+                println!("INTERNET CHYBA stiahni {a}: {e}");
             }
         }
     }

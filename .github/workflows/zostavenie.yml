@@ -218,15 +218,27 @@ jobs:
           sudo chronyd -x -f /tmp/chrony.conf
           sudo dnsmasq --conf-file=/dev/null --interface=v0 --bind-interfaces \
             --dhcp-range=10.77.0.50,10.77.0.99,255.255.255.0,2m --dhcp-option=option:ntp-server,10.77.0.1 \
-            --host-record=skuska.orchidea,10.77.0.7 --address=/priamo.orchidea/10.77.0.8 \
+            --host-record=skuska.orchidea,10.77.0.7 --host-record=web.orchidea,10.77.0.1 \
+            --address=/priamo.orchidea/10.77.0.8 \
             --cname=alias.orchidea,skuska.orchidea --cname=len-alias.orchidea,priamo.orchidea --local=/orchidea/ \
             --no-resolv --no-hosts --log-dhcp --log-queries --log-facility=/tmp/dnsmasq.log \
             --dhcp-leasefile=/tmp/dnsmasq.leases --pid-file=/tmp/dnsmasq.pid
-      - name: Skúška – adresa, trasa, mená, čas, obnova prenájmu
+          # rozhodca HTTP: server Pythonu (Content-Length, presmerovanie /nove → /nove/)
+          mkdir -p /tmp/web/nove /tmp/stiahnute
+          printf '#EXTM3U\n#EXTINF:-1,Skuska\nhttp://10.77.0.1:8080/prud.ts\n' > /tmp/web/nove/zoznam.m3u
+          head -c 3145745 /dev/urandom > /tmp/web/velky.bin
+          (cd /tmp/web && python3 -m http.server 8080 --bind 10.77.0.1 > /tmp/web.log 2>&1 &)
+          sleep 1
+      - name: Skúška – adresa, trasa, mená, čas, sťahovanie, obnova prenájmu
         run: |
           set -o pipefail
           sudo ip netns exec skuska timeout 120 ./target/debug/klic --internet v1 --meno skuska.orchidea \
-            --meno alias.orchidea --meno len-alias.orchidea --meno priamo.orchidea | tee /tmp/internet.txt
+            --meno alias.orchidea --meno len-alias.orchidea --meno priamo.orchidea \
+            --stiahni http://web.orchidea:8080/nove/zoznam.m3u --stiahni http://10.77.0.1:8080/velky.bin \
+            --stiahni http://web.orchidea:8080/nove --uloz /tmp/stiahnute | tee /tmp/internet.txt
+          cmp /tmp/stiahnute/zoznam.m3u /tmp/web/nove/zoznam.m3u
+          cmp /tmp/stiahnute/velky.bin /tmp/web/velky.bin
+          grep -q '^INTERNET STIAHNUTE http://web.orchidea:8080/nove stav=200 .* z=http://web.orchidea:8080/nove/$' /tmp/internet.txt
           grep -q '^INTERNET ADRESA 10\.77\.0\.[5-9][0-9]/24 brana=10\.77\.0\.1 dns=10\.77\.0\.1 ntp=10\.77\.0\.1' /tmp/internet.txt
           grep -q '^INTERNET MENO skuska.orchidea 10.77.0.7$' /tmp/internet.txt
           grep -q '^INTERNET MENO alias.orchidea 10.77.0.7$' /tmp/internet.txt

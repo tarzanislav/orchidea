@@ -1,6 +1,6 @@
 [package]
 name = "orchidea-siet"
-description = "Sieť ORCHIDEA – vlastné protokoly internetu podľa RFC: adresa z routera (DHCPv4), preklad mien (DNS), čas zo siete (SNTP); bez cudzích knižníc"
+description = "Sieť ORCHIDEA – vlastné protokoly internetu podľa RFC: adresa z routera (DHCPv4), preklad mien (DNS), čas zo siete (SNTP), sťahovanie (HTTP/1.1); bez cudzích knižníc"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
