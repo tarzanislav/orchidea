@@ -20,7 +20,7 @@ sequence“) – dva správne dekodéry sa líšia v šume ditheru. Preto:
    `ac3_fixed`; meraním, kód FFmpeg sa nečíta) – ďalšie také bloky už správne. Preto sa do každého porovnávaného
    toku s viac kanálmi pridá **zahrievací krátky blok** v bloku 0 kanála 0 (`--blksw-pridaj 0:0`): udalosť
    rozhodcu nastane v bloku 0, kde je prekrytie nulové a chyba sa neprejaví; ďalej sa porovnáva všetko.
-5. **Kontajnery:** AC-3 v Matroske, MP4 a MPEG-TS cez `kontajner::otvor` a `DekoderZvuku` (`media_mpa
+5. **Kontajnery:** surový súbor .ac3 a AC-3 v Matroske, MP4 a MPEG-TS cez `kontajner::otvor` a `DekoderZvuku` (`media_mpa
    --kontajner`) – dĺžka presne ako rozhodca a rovnaká presnosť.
 6. **Skúšobné súbory FATE** (voliteľne, adresár so súbormi `*.ac3` – len údaje, skutočné kodéry: prepnutie
    bloku, delta rozdelenia bitov, dynrng …): rovnaká presnosť bez ditheru.
@@ -228,7 +228,8 @@ def kontajnery():
     print("|---|---|---|---|---|")
     for meno in ("stereo_48_192", "s51_448"):
         bez = os.path.join(PRAC, meno + ".bez.ac3")
-        for kont in ("mkv", "mp4", "ts"):
+        # surový .ac3 (LÝRA ho otvorí priamo – `media::ac3_subor`) a tri kontajnery
+        for kont in ("surovy.ac3", "mkv", "mp4", "ts"):
             cesta = bez[:-4] + "." + kont
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", bez, "-c", "copy", cesta], check=True)
             ref = ffmpeg_dekoduj(cesta, cesta + ".ff.f32")

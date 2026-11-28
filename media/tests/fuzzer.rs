@@ -978,3 +978,47 @@ fn ac3_ramce() {
     // generátor musí naozaj vytvárať platné rámce (inak by fuzzer skúšal len odmietnutie hlavičky)
     assert!(tichych * 5 > pocet_pokusov() / 4, "platných rámcov {uspesnych}, tichých {tichych}");
 }
+
+#[test]
+fn surovy_ac3_subor() {
+    use orchidea_media::zvuk::dekoder_zvuku;
+    let mut n = nahoda(24);
+    // súbor .ac3 z platných rámcov generátora (aj s CRC – dekodér ich kontroluje), s odpadom pred prvým rámcom
+    let zaklady: Vec<Vec<u8>> = (0..4)
+        .map(|i| {
+            let mut d = bajty(&mut n, 40 * i as u64);
+            for _ in 0..(6 + 4 * i) {
+                d.extend(ramec_ac3(&mut n, i % 2 == 0));
+            }
+            d
+        })
+        .collect();
+    for i in 0..pocet_pokusov() / 10 {
+        let d = if i % 8 == 0 { zaklady[i % 4].clone() } else { zmutuj(&zaklady[i % 4], &mut n) };
+        let Ok(mut k) = orchidea_media::kontajner::otvor(PametovyZdroj::novy(d), Limity::default()) else {
+            continue;
+        };
+        let _ = k.trvanie_ns();
+        let mut dek = k.stopy().first().and_then(|s| dekoder_zvuku(s).ok());
+        let mut blok = BlokZvuku::f32(48_000, RozlozenieKanalov::STEREO);
+        let mut predosly = i64::MIN;
+        for _ in 0..200 {
+            match k.dalsi_paket() {
+                Ok(Some(p)) => {
+                    // čas stúpa (aj po strate synchronizácie) a paket nie je prázdny
+                    let t = p.pts.unwrap_or(0);
+                    assert!(t > predosly && !p.data.is_empty());
+                    predosly = t;
+                    if let Some(dek) = dek.as_mut() {
+                        let _ = dek.dekoduj(&p, &mut blok);
+                    }
+                }
+                _ => break,
+            }
+        }
+        let _ = k.posun(n.mensie_ako(2_000_000_000) as i64, Posun::Presny);
+        for _ in 0..3 {
+            let _ = k.dalsi_paket();
+        }
+    }
+}

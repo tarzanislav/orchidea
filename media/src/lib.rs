@@ -26,6 +26,7 @@
 #![forbid(unsafe_code)]
 
 pub mod ac3;
+pub mod ac3_subor;
 pub mod cas;
 pub mod flac;
 pub mod flac_subor;

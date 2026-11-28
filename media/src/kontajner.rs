@@ -30,6 +30,10 @@ pub enum FormatKontajnera {
     MpegAudio,
     /// Ogg (RFC 3533) – `.opus`, `.ogg`, `.oga`.
     Ogg,
+    /// Surový tok AC-3 alebo E-AC-3 (`.ac3`, `.eac3`, `.ec3`) – rámce za sebou (ATSC A/52).
+    Ac3 {
+        eac3: bool,
+    },
 }
 
 impl FormatKontajnera {
@@ -44,6 +48,8 @@ impl FormatKontajnera {
             FormatKontajnera::Flac => "FLAC",
             FormatKontajnera::MpegAudio => "MPEG audio",
             FormatKontajnera::Ogg => "Ogg",
+            FormatKontajnera::Ac3 { eac3: false } => "AC-3",
+            FormatKontajnera::Ac3 { eac3: true } => "E-AC-3",
         }
     }
 }
@@ -88,6 +94,10 @@ pub fn rozpoznaj(zaciatok: &[u8]) -> Option<FormatKontajnera> {
         if (0..pocet).all(|k| zaciatok.get(posun + k * velkost) == Some(&0x47)) {
             return Some(FormatKontajnera::MpegTs { velkost_paketu: velkost as u16 });
         }
+    }
+    // surový AC-3 / E-AC-3: synchronizácia 0x0B77, platná hlavička a za ňou ďalšia zhodná (ak sa zmestí)
+    if let Some(eac3) = crate::ac3_subor::je_tok(zaciatok) {
+        return Some(FormatKontajnera::Ac3 { eac3 });
     }
     // MPEG audio: platná hlavička rámca a za ním ďalšia zhodná (ak sa zmestí do začiatku)
     if crate::mpa_subor::je_tok(zaciatok) {
@@ -153,15 +163,20 @@ pub fn otvor<Z: ZdrojBajtov + 'static>(zdroj: Z, limity: Limity) -> Vysledok<Box
         Some(FormatKontajnera::MpegTs { .. }) => Ok(Box::new(crate::ts::Ts::otvor(zdroj, limity)?)),
         Some(FormatKontajnera::MpegAudio) => Ok(Box::new(crate::mpa_subor::SuborMpa::otvor(zdroj, limity)?)),
         Some(FormatKontajnera::Ogg) => Ok(Box::new(crate::ogg::Ogg::otvor(zdroj, limity)?)),
+        Some(FormatKontajnera::Ac3 { .. }) => Ok(Box::new(crate::ac3_subor::SuborAc3::otvor(zdroj, limity)?)),
         // posledný pokus: tok FLAC s neparsovateľnými údajmi na začiatku (rámec overí CRC-8 aj CRC-16)
         None => {
             let zdroj = std::sync::Arc::new(zdroj);
             match crate::flac_subor::FlacSubor::otvor(zdroj.clone(), limity) {
                 Ok(f) => Ok(Box::new(f)),
                 // súbor MPEG audio s neparsovateľnými údajmi pred rámcami (hľadanie s overením ďalšieho rámca)
-                Err(_) => match crate::mpa_subor::SuborMpa::otvor(zdroj, limity) {
+                Err(_) => match crate::mpa_subor::SuborMpa::otvor(zdroj.clone(), limity) {
                     Ok(m) => Ok(Box::new(m)),
-                    Err(_) => Err(Chyba::PoskodeneData("neznámy formát kontajnera".into())),
+                    // surový AC-3 / E-AC-3 s údajmi pred prvým rámcom
+                    Err(_) => match crate::ac3_subor::SuborAc3::otvor(zdroj, limity) {
+                        Ok(a) => Ok(Box::new(a)),
+                        Err(_) => Err(Chyba::PoskodeneData("neznámy formát kontajnera".into())),
+                    },
                 },
             }
         }

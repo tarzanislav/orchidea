@@ -97,6 +97,12 @@ VARIANTY = [
                              "-af", "pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0", "-c:a", "libopus"]),
     ("ogg_flac", "oga", ZVUK44 + ["-c:a", "flac"]),
     ("ogg_vorbis", "ogg", ZVUK + ["-c:a", "libvorbis"]),
+    # surové toky AC-3 a E-AC-3 (`media::ac3_subor`): FFmpeg počíta čas v 1/90 000 s – pri 48 a 32 kHz presne
+    ("surovy_ac3_51", "ac3", ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3", "-ac", "6",
+                               "-c:a", "ac3", "-b:a", "448k"]),
+    ("surovy_ac3_32k", "ac3", ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=32000:duration=3", "-ac", "2",
+                                "-c:a", "ac3"]),
+    ("surovy_eac3", "eac3", ZVUK + ["-c:a", "eac3"]),
 ]
 
 
@@ -130,6 +136,16 @@ def rozhodca(cesta):
             "md5": p.get("data_hash", "").split(":")[-1],
         })
     kodeky = {s["index"]: s.get("codec_name", "") for s in j.get("streams", [])}
+    if cesta.endswith((".ac3", ".eac3")):
+        # surový tok: náš čas je v 1/frekvencia (presne z počtu vzoriek), FFmpeg v time_base prúdu (1/90 000)
+        for s in j.get("streams", []):
+            cit, men = (int(x) for x in s["time_base"].split("/"))
+            f = int(s["sample_rate"])
+            for p in pakety:
+                if p["stopa"] == s["index"]:
+                    for k in ("pts", "dts", "trvanie"):
+                        if p[k] is not None and (p[k] * f * cit) % men == 0:
+                            p[k] = p[k] * f * cit // men
     return pakety, pcm, kodeky
 
 
