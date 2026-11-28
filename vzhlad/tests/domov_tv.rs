@@ -47,9 +47,10 @@ fn text_domova_je_citatelny_a_v_bezpecnej_ploche_pri_kazdej_velkosti_pisma() {
         // 50″ z EDID a zvolená veľkosť písma; Panoráma sa prispôsobuje stupnici
         let st = StupnicaTv::pre(&MeraniaObrazovky::z_edid(111, 62, v));
         over_text(&format!("domov_1 ({})", v.text()), &NOC, '1', &st, &foto);
+        over_text(&format!("domov_2 ({})", v.text()), &NOC, '2', &st, &foto);
     }
     if cfg!(target_arch = "x86_64") {
-        for c in ['2', '3', 'p', 's'] {
+        for c in ['3', '4', 'p', 's'] {
             over_text(&format!("domov_{c}"), &NOC, c, &StupnicaTv::REFERENCNA, &foto);
         }
     }
@@ -88,7 +89,7 @@ fn domov_ma_prave_jedno_zameranie() {
     let foto = obrazky::fotka(1200, 800);
     let temy: Vec<&Tema> = if cfg!(target_arch = "x86_64") { TEMY.to_vec() } else { vec![&NOC] };
     for t in temy {
-        for c in ['1', '2', '3', 'p'] {
+        for c in ['1', '2', '3', '4', 'p'] {
             let k = domov::obrazovka(t, c, 1.0, &StupnicaTv::REFERENCNA, &foto);
             let meno = format!("domov_{c} ({})", t.meno);
             let ramiky: Vec<_> = oblasti(&k.p, t.zameranie)
@@ -105,6 +106,41 @@ fn domov_ma_prave_jedno_zameranie() {
                     o.0 > r.0 && o.1 > r.1 && o.2 < r.2 && o.3 < r.3,
                     "{meno}: akcent {o:?} mimo rámika {r:?}"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn text_mozaiky_nepresahuje_okraj_panela() {
+    // text, ktorý zasahuje do panela, musí byť celý vnútri panela s okrajom 12 bodov (kritika A: orezaný popis)
+    let foto = obrazky::fotka(1200, 800);
+    let temy: Vec<&Tema> = if cfg!(target_arch = "x86_64") { TEMY.to_vec() } else { vec![&NOC] };
+    for t in temy {
+        for c in ['2', '4'] {
+            merat_kontrast(true);
+            let k = domov::obrazovka(t, c, 1.0, &StupnicaTv::REFERENCNA, &foto);
+            merat_kontrast(false);
+            for m in k.merania.expect("meranie").iter().filter(|m| !m.ikona) {
+                for (px, py, pw, ph) in domov::panely_mozaiky() {
+                    let zasahuje = m.x < px + pw && m.x + m.w > px && m.y < py + ph && m.y + m.h > py;
+                    if zasahuje {
+                        let o = 12.0;
+                        assert!(
+                            m.x >= px + o
+                                && m.x + m.w <= px + pw - o
+                                && m.y >= py + o
+                                && m.y + m.h <= py + ph - o,
+                            "domov_{c} ({}): „{}“ ({:.0}, {:.0}, {:.0} × {:.0}) presahuje okraj panela ({px}, {py}, {pw} × {ph})",
+                            t.meno,
+                            m.co,
+                            m.x,
+                            m.y,
+                            m.w,
+                            m.h
+                        );
+                    }
+                }
             }
         }
     }

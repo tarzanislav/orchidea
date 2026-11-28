@@ -162,6 +162,29 @@ impl Kreslic {
         }
     }
 
+    /// Tenký svetlý lem na vnútornom okraji zaobleného obdĺžnika, ktorý zhora slabne do stratena – svetlo dopadá
+    /// zhora (hĺbka len tieňovaním, bez 3D modelu). `a_hore` = krytie pri hornom okraji.
+    #[allow(clippy::too_many_arguments)]
+    pub fn lem_svetla(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, hrubka: f32, f: Farba, a_hore: u8) {
+        let m = self.mierka;
+        let (x, y, w, h, r, t) = (x * m, y * m, w * m, h * m, r * m, hrubka * m);
+        let (cx, cy, hx, hy) = (x + w / 2.0, y + h / 2.0, w / 2.0, h / 2.0);
+        let r = r.min(hx).min(hy);
+        let (sw, sh) = (self.p.sirka as i32, self.p.vyska as i32);
+        for py in (y.floor() as i32).max(0)..((y + h * 0.6).ceil() as i32).min(sh) {
+            let v = ((py as f32 + 0.5 - y) / (h * 0.6)).clamp(0.0, 1.0);
+            let a = a_hore as f32 * (1.0 - v) * (1.0 - v);
+            for px in (x.floor() as i32).max(0)..((x + w).ceil() as i32).min(sw) {
+                let d = zaobleny(px as f32 + 0.5 - cx, py as f32 + 0.5 - cy, hx, hy, r);
+                let k = (0.5 - ((d + t / 2.0).abs() - t / 2.0)).clamp(0.0, 1.0);
+                if k > 0.0 && a > 0.0 {
+                    let i = py as usize * self.p.sirka + px as usize;
+                    self.p.body[i] = zmiesaj(self.p.body[i], f, (k * a).round() as u8);
+                }
+            }
+        }
+    }
+
     /// Obrys zaobleného obdĺžnika hrúbky `hrubka` (stred čiary na hrane).
     #[allow(clippy::too_many_arguments)]
     pub fn ram(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, hrubka: f32, f: Farba) {

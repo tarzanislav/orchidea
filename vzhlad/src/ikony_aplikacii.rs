@@ -29,10 +29,12 @@ pub enum Aplikacia {
     DomacaSiet,
     Stiahnute,
     Vypnut,
+    /// všetky aplikácie – posledná dlaždica, keď sa aplikácie nezmestia
+    VsetkyAplikacie,
 }
 
 /// Všetky položky (list ikon a skúšky).
-pub const VSETKY: [Aplikacia; 15] = [
+pub const VSETKY: [Aplikacia; 16] = [
     Aplikacia::Lyra,
     Aplikacia::ZivaTv,
     Aplikacia::Fotografie,
@@ -48,6 +50,7 @@ pub const VSETKY: [Aplikacia; 15] = [
     Aplikacia::DomacaSiet,
     Aplikacia::Stiahnute,
     Aplikacia::Vypnut,
+    Aplikacia::VsetkyAplikacie,
 ];
 
 impl Aplikacia {
@@ -59,7 +62,7 @@ impl Aplikacia {
             Aplikacia::Fotografie => "Fotografie",
             Aplikacia::Subory => "Súbory",
             Aplikacia::WebovyPrehliadac => "Web",
-            Aplikacia::MedialnyServer => "Mediálny server",
+            Aplikacia::MedialnyServer => "Server médií",
             Aplikacia::Doplnok => "Doplnok",
             Aplikacia::Nastavenia => "Nastavenia",
             Aplikacia::StavKrabicky => "Stav krabičky",
@@ -69,6 +72,7 @@ impl Aplikacia {
             Aplikacia::DomacaSiet => "Domáca sieť",
             Aplikacia::Stiahnute => "Stiahnuté",
             Aplikacia::Vypnut => "Vypnúť",
+            Aplikacia::VsetkyAplikacie => "Všetky",
         }
     }
 
@@ -90,6 +94,7 @@ impl Aplikacia {
             Aplikacia::DomacaSiet => (0x13566B, 0x0F6E87),
             Aplikacia::Stiahnute => (0x1E3A86, 0x2759D6),
             Aplikacia::Vypnut => (0x7A1D1D, 0xA61B1B),
+            Aplikacia::VsetkyAplikacie => (0x3A3550, 0x575078),
         }
     }
 }
@@ -155,16 +160,35 @@ impl Symbol<'_> {
     }
 }
 
-/// Nakreslí ikonu `a` – dlaždicu veľkosti `s` bodov s ľavým horným rohom v (x, y). `tien` = sila tieňa témy.
-pub fn kresli(k: &mut Kreslic, a: Aplikacia, x: f32, y: f32, s: f32, tien: u8) {
-    let (f1, f2) = a.farby();
+/// Nakreslí ikonu `a` – dlaždicu veľkosti `s` bodov s ľavým horným rohom v (x, y). Hĺbka **len tieňovaním**
+/// (vlastník 28. 11. 2026: „3D vzhľad … tieňovaním, jemným, ktoré ikony položí do priestoru“): jedno svetlo zhora
+/// zľava – svetlejší horný ľavý roh, tenký svetlý lem hore, mäkký vrhnutý tieň pod dlaždicou a jemný tieň symbolu.
+/// `zdvihnuta` (zameraná) má väčší a nižší tieň – „leží vyššie“. V programe sa ikona vykreslí raz a uloží
+/// (chladný systém – tiene a prechody sa nepočítajú pri každom snímku).
+pub fn kresli(k: &mut Kreslic, a: Aplikacia, x: f32, y: f32, s: f32, zdvihnuta: bool) {
+    let (tmava, svetla) = a.farby();
     let r = s * 0.24;
-    k.tien(x, y, s, s, r, (s * 0.08).max(4.0), tien);
-    k.obdlznik_s_prechodom(x, y, s, s, r, f1, f2);
-    // jemné svetlo zhora (sklon materiálu) – nevýrazné, aby nerušilo symbol
-    k.obdlznik_a(x, y, s, s * 0.5, r, 0xFFFFFF, 10.0);
-    let stred = zmiesaj(f1, f2, 128);
-    let mut sy = Symbol { k, x, y, q: s / 100.0, biela: 0xFFFFFF, tlmena: zmiesaj(stred, 0xFFFFFF, 150) };
+    // mäkký vrhnutý tieň: vrstvy čiernej s malým krytím, posunuté nadol
+    let (posun, rozsah, sila) =
+        if zdvihnuta { (s * 0.09, s * 0.16, 6.0) } else { (s * 0.045, s * 0.09, 6.0) };
+    let n = (rozsah.round() as usize).clamp(3, 24);
+    for i in 0..n {
+        let e = rozsah * (1.0 - i as f32 / n as f32);
+        k.obdlznik_a(x - e / 2.0, y + posun - e / 2.0, s + e, s + e, r + e / 2.0, 0x000000, sila);
+    }
+    k.obdlznik_s_prechodom(x, y, s, s, r, svetla, tmava);
+    k.lem_svetla(x, y, s, s, r, (s * 0.014).max(1.0), 0xFFFFFF, 110);
+    let stred = zmiesaj(tmava, svetla, 128);
+    // symbol: najprv jemný tieň (tmavší odtieň dlaždice, o kúsok nižšie), potom biely
+    for (farba, dy) in [(zmiesaj(tmava, 0x000000, 110), s * 0.016), (0xFFFFFF, 0.0)] {
+        let mut sy =
+            Symbol { k, x, y: y + dy, q: s / 100.0, biela: farba, tlmena: zmiesaj(stred, farba, 150) };
+        symbol(&mut sy, a, stred);
+    }
+}
+
+/// Symbol ikony `a` (bez dlaždice).
+fn symbol(sy: &mut Symbol, a: Aplikacia, stred: Farba) {
     match a {
         Aplikacia::Lyra => {
             // lýra: dve prehnuté ramená, priečka, štyri struny a podstavec
@@ -186,7 +210,8 @@ pub fn kresli(k: &mut Kreslic, a: Aplikacia, x: f32, y: f32, s: f32, tien: u8) {
             for sx in [44.0, 50.0, 56.0] {
                 sy.tah(&[(sx, 36.0), (sx, 72.0)], 2.6);
             }
-            sy.obdlznik(38.0, 72.0, 24.0, 8.0, 4.0, 0xFFFFFF);
+            let b = sy.biela;
+            sy.obdlznik(38.0, 72.0, 24.0, 8.0, 4.0, b);
         }
         Aplikacia::ZivaTv => {
             sy.ram(20.0, 30.0, 60.0, 40.0, 7.0, 6.0);
@@ -226,7 +251,8 @@ pub fn kresli(k: &mut Kreslic, a: Aplikacia, x: f32, y: f32, s: f32, tien: u8) {
             sy.plocha(&[(44.0, 47.0), (61.0, 58.0), (44.0, 69.0)], false);
         }
         Aplikacia::Doplnok => {
-            sy.obdlznik(28.0, 38.0, 36.0, 36.0, 5.0, 0xFFFFFF);
+            let b = sy.biela;
+            sy.obdlznik(28.0, 38.0, 36.0, 36.0, 5.0, b);
             sy.kruh(46.0, 31.0, 8.5);
             sy.kruh(71.0, 56.0, 8.5);
         }
@@ -248,7 +274,8 @@ pub fn kresli(k: &mut Kreslic, a: Aplikacia, x: f32, y: f32, s: f32, tien: u8) {
             sy.k.kruh(c.0, c.1, 9.0 * q, stred);
         }
         Aplikacia::StavKrabicky => {
-            sy.obdlznik(22.0, 58.0, 56.0, 16.0, 6.0, 0xFFFFFF);
+            let b = sy.biela;
+            sy.obdlznik(22.0, 58.0, 56.0, 16.0, 6.0, b);
             sy.obdlznik(28.0, 64.0, 6.0, 4.0, 2.0, stred);
             sy.tah(
                 &[
@@ -270,10 +297,11 @@ pub fn kresli(k: &mut Kreslic, a: Aplikacia, x: f32, y: f32, s: f32, tien: u8) {
             sy.tah(&[(41.0, 52.0), (50.0, 61.0), (59.0, 52.0)], 6.0);
         }
         Aplikacia::UsbKluc => {
-            sy.obdlznik(37.0, 42.0, 26.0, 38.0, 7.0, 0xFFFFFF);
+            let b = sy.biela;
+            sy.obdlznik(37.0, 42.0, 26.0, 38.0, 7.0, b);
             sy.ram(41.0, 20.0, 18.0, 24.0, 3.0, 4.5);
-            sy.obdlznik(45.0, 27.0, 4.0, 5.0, 1.0, 0xFFFFFF);
-            sy.obdlznik(51.0, 27.0, 4.0, 5.0, 1.0, 0xFFFFFF);
+            sy.obdlznik(45.0, 27.0, 4.0, 5.0, 1.0, b);
+            sy.obdlznik(51.0, 27.0, 4.0, 5.0, 1.0, b);
         }
         Aplikacia::Karta => {
             sy.plocha(&[(33.0, 20.0), (61.0, 20.0), (69.0, 28.0), (69.0, 80.0), (33.0, 80.0)], false);
@@ -295,6 +323,14 @@ pub fn kresli(k: &mut Kreslic, a: Aplikacia, x: f32, y: f32, s: f32, tien: u8) {
         Aplikacia::Vypnut => {
             sy.tah(&obluk(50.0, 53.0, 24.0, -50.0, 230.0), 6.5);
             sy.tah(&[(50.0, 22.0), (50.0, 50.0)], 6.5);
+        }
+        Aplikacia::VsetkyAplikacie => {
+            let b = sy.biela;
+            for r in 0..3 {
+                for c in 0..3 {
+                    sy.obdlznik(24.0 + c as f32 * 19.0, 24.0 + r as f32 * 19.0, 14.0, 14.0, 4.0, b);
+                }
+            }
         }
     }
 }
@@ -323,7 +359,7 @@ mod skusky {
         for (i, a) in VSETKY.iter().enumerate() {
             assert!(VSETKY[i + 1..].iter().all(|b| b.meno() != a.meno()), "{a:?}");
             let mut k = Kreslic::novy(120.0, 120.0, 1.0, 0x000000);
-            kresli(&mut k, *a, 10.0, 10.0, 100.0, 0);
+            kresli(&mut k, *a, 10.0, 10.0, 100.0, false);
             let biele = k.p.body.iter().filter(|&&b| b == 0xFFFFFF).count();
             assert!(biele > 300, "{a:?}: symbol má len {biele} bielych bodov");
         }

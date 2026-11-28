@@ -114,7 +114,7 @@ fn text_a_ikony_na_obrazovkach_splnaju_kontrast() {
         }
         // domovská obrazovka TV krabičky – koncepty, prvé spustenie Počasia, šetrič
         for t in TEMY {
-            for c in ['1', '2', '3', 'p', 's'] {
+            for c in ['1', '2', '3', '4', 'p', 's'] {
                 let f = &foto;
                 pripady.push((
                     format!("domov_{c} ({})", t.meno),

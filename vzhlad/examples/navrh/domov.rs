@@ -3,7 +3,8 @@
 //! ďalšie moduly; žiadne reklamy ani „odporúčané“. Plus obrazovka prvého spustenia Počasia a šetrič obrazovky.
 //!
 //! 1 **Panoráma** – informačný pás hore (veľké hodiny, dátum, meniny, počasie), pod ním rady.
-//! 2 **Mozaika** – asymetrická mriežka dlaždíc (aplikácie, dnes, počasie, pokračovať, zdroje, systém).
+//! 2 **Mozaika** – asymetrická mriežka panelov (aplikácie, dnes, počasie, pokračovať, zdroje, systém) – **vybraná
+//!   vlastníkom** (28. 11. 2026, 11:47): bez sivej, farebné pozadie (2 varianty), ikony s hĺbkou tieňovaním.
 //! 3 **Scéna** – celá plocha patrí zameranému filmu, informácie vľavo, aplikácie a pokračovanie dole.
 //!
 //! Rozmery sa počítajú zo stupnice TV (`StupnicaTv`) – pri väčšom písme sa rozloženie prispôsobí (menej dlaždíc
@@ -107,7 +108,7 @@ fn aplikacia(
 ) {
     let q = if zamerana { TV_ZAMERANE_ZVACSENIE } else { 1.0 };
     let (zs, zx, zy) = (s * q, x - s * (q - 1.0) / 2.0, y - s * (q - 1.0) / 2.0);
-    ikony_aplikacii::kresli(k, a, zx, zy, zs, t.tien.max(3));
+    ikony_aplikacii::kresli(k, a, zx, zy, zs, zamerana);
     if zamerana {
         zameranie(k, t, zx, zy, zs, zs, zs * 0.24);
     }
@@ -289,7 +290,7 @@ fn koncept_panorama(k: &mut Kreslic, t: &Tema, st: &StupnicaTv) {
         let naznacena = i == v_rade;
         if naznacena {
             // ďalšie aplikácie – len naznačené (popis by bol mimo bezpečnej plochy)
-            ikony_aplikacii::kresli(k, *a, x, y, ikona, t.tien);
+            ikony_aplikacii::kresli(k, *a, x, y, ikona, false);
             k.obdlznik_a(x - 8.0, y - 8.0, W - x + 8.0, ikona + 16.0, 0.0, t.okolie, 150.0);
         } else {
             aplikacia(k, t, *a, x, y, ikona, ikona + medzera, st.popis, i == 0, None);
@@ -331,7 +332,7 @@ fn koncept_panorama(k: &mut Kreslic, t: &Tema, st: &StupnicaTv) {
             if x + mala > XP {
                 return;
             }
-            ikony_aplikacii::kresli(k, a, x, y, mala, 0);
+            ikony_aplikacii::kresli(k, a, x, y, mala, false);
             x += mala + r(20.0);
         }
         x += r(56.0);
@@ -341,121 +342,210 @@ fn koncept_panorama(k: &mut Kreslic, t: &Tema, st: &StupnicaTv) {
 // ---------------------------------------------------------------------------------------------------------------
 // 2 Mozaika
 
-fn dlazdica(
-    k: &mut Kreslic,
-    t: &Tema,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    nadpis: Option<&str>,
-    st: &StupnicaTv,
-) {
-    k.obdlznik(x, y, w, h, 24.0, t.plocha_vyssia);
+/// Pozadie domova bez sivej (vlastník 28. 11. 2026: „nepáči sa mi to sivé pozadie“) – statické, vykreslí sa raz.
+/// `'f'` farebné: uhlopriečny prechod z okolia témy s nádychom akcentu a mäkká žiara zľava hore;
+/// `'a'` atmosféra: zameraný film s nízkou sýtosťou pod clonou dopočítanou z obrázka.
+fn pozadie_domova(k: &mut Kreslic, t: &Tema, variant: char, foto: &Obr) {
+    let polnoc = t.okolie == 0x000000 && !t.vysoky_kontrast;
+    let zaklad = if t.tmava {
+        zmiesaj(t.okolie, t.akcent, if polnoc { 10 } else { 34 })
+    } else {
+        zmiesaj(t.okolie, t.akcent, 26)
+    };
+    let tmavsi = if t.tmava { zmiesaj(t.okolie, 0x000000, 90) } else { zmiesaj(t.okolie, t.akcent, 8) };
+    if variant == 'a' {
+        k.obraz(&foto.body, foto.w, foto.h, 0.0, 0.0, W, H, 0.0);
+        // nízka sýtosť: polovica k sivej rovnakej svietivosti
+        for b in k.p.body.iter_mut() {
+            let (r, g, bb) = ((*b >> 16) & 0xFF, (*b >> 8) & 0xFF, *b & 0xFF);
+            let y = (r * 54 + g * 183 + bb * 19) >> 8;
+            *b = zmiesaj(*b, (y << 16) | (y << 8) | y, 128);
+        }
+        // rezerva 20 % na sklo panelov, ktoré pozadie trochu zosvetlí (skúška meria výsledok)
+        let min = if t.vysoky_kontrast { 7.0 } else { 4.5 } * 1.2;
+        let a = k.potrebna_clona(0.0, 0.0, W, H, t.text_druhy, zaklad, min);
+        k.clona(0.0, 0.0, W, H, zaklad, a.max(150));
+        return;
+    }
+    k.obdlznik_s_prechodom(0.0, 0.0, W, H, 0.0, zaklad, tmavsi);
+    // mäkká žiara akcentu zľava hore (kruhový prechod, slabne do stratena)
+    let (m, pw) = (k.mierka, k.p.sirka);
+    let (cx, cy, rr) = (W * 0.18, H * 0.05, W * 0.55);
+    let ziara = if t.tmava { t.akcent } else { 0xFFFFFF };
+    let sila = if polnoc {
+        26.0
+    } else if t.tmava {
+        46.0
+    } else {
+        120.0
+    };
+    for py in 0..k.p.vyska {
+        for px in 0..pw {
+            let d = ((px as f32 / m - cx).hypot(py as f32 / m - cy) / rr).min(1.0);
+            let a = (sila * (1.0 - d) * (1.0 - d)).round() as u8;
+            if a > 0 {
+                let i = py * pw + px;
+                k.p.body[i] = zmiesaj(k.p.body[i], ziara, a);
+            }
+        }
+    }
+}
+
+/// Panel ako jemné sklo (nie sivá plocha): mierne svetlejšia výplň s nádychom pozadia a svetlý lem hore.
+fn panel(k: &mut Kreslic, t: &Tema, x: f32, y: f32, w: f32, h: f32, nadpis: Option<&str>, st: &StupnicaTv) {
+    let r = 24.0;
+    if t.tmava {
+        k.obdlznik_a(x, y, w, h, r, 0xFFFFFF, if t.vysoky_kontrast { 14.0 } else { 12.0 });
+    } else {
+        k.obdlznik_a(x, y, w, h, r, 0xFFFFFF, 70.0);
+    }
+    k.lem_svetla(x, y, w, h, r, 1.5, 0xFFFFFF, if t.tmava { 60 } else { 150 });
     if t.vysoky_kontrast {
-        k.ram_dnu(x, y, w, h, 24.0, 2.0, t.okraj_silny);
+        k.ram_dnu(x, y, w, h, r, 2.0, t.okraj_silny);
     }
     if let Some(n) = nadpis {
         k.text(n, x + 32.0, y + 32.0 + st.text.velkost, st.text, t.text);
     }
 }
 
-/// Ikona so zvislým usporiadaním v bunke 2 × 2 (malá ikona vľavo, popis vpravo).
+/// Ikona s popisom vpravo (Zdroje, Systém).
 fn polozka_vedla(k: &mut Kreslic, t: &Tema, a: Aplikacia, x: f32, y: f32, s: f32, rez: Rez) {
-    ikony_aplikacii::kresli(k, a, x, y, s, 0);
+    ikony_aplikacii::kresli(k, a, x, y, s, false);
     k.text(a.meno(), x + s + 14.0, zakladna_v_strede(y, s, rez), rez, t.text);
 }
 
-fn koncept_mozaika(k: &mut Kreslic, t: &Tema, st: &StupnicaTv) {
+/// Rozloženie Mozaiky (body): panely Aplikácie, Dnes, Počasie, Pokračovať, Zdroje, Systém – jeden zdroj pre
+/// kreslenie aj skúšku „text vnútri panelov“.
+pub fn panely_mozaiky() -> [(f32, f32, f32, f32); 6] {
     let g = 24.0;
     let pravy_w = 640.0;
     let lavy_w = XP - XL - g - pravy_w;
     let px = XL + lavy_w + g;
-    // Aplikácie (vľavo hore): 2 rady po 4, posledná bunka = miesto na ďalší modul
-    let ah = 520.0;
-    dlazdica(k, t, XL, YH, lavy_w, ah, Some("Aplikácie"), st);
-    let ikona = 136.0;
-    let medzera = (lavy_w - 64.0 - 4.0 * ikona) / 3.0;
+    let (ah, dh) = (528.0, 248.0);
+    let ky = YH + ah + g;
+    let kh = YD - ky;
+    let zh = (kh - g) / 2.0;
+    [
+        (XL, YH, lavy_w, ah),
+        (px, YH, pravy_w, dh),
+        (px, YH + dh + g, pravy_w, ah - dh - g),
+        (XL, ky, lavy_w, kh),
+        (px, ky, pravy_w, zh),
+        (px, ky + zh + g, pravy_w, zh),
+    ]
+}
+
+const APLIKACIE_MOZAIKY: [Aplikacia; 7] = [
+    Aplikacia::Lyra,
+    Aplikacia::ZivaTv,
+    Aplikacia::Fotografie,
+    Aplikacia::MedialnyServer,
+    Aplikacia::WebovyPrehliadac,
+    Aplikacia::Subory,
+    Aplikacia::VsetkyAplikacie,
+];
+
+fn koncept_mozaika(k: &mut Kreslic, t: &Tema, st: &StupnicaTv, s_pocasim: bool) {
+    let [ap, dn, po, pk, zd, sy] = panely_mozaiky();
+    // Aplikácie: 2 rady po 4 – posledná aplikácia „Všetky“, potom miesto na ďalší modul
+    panel(k, t, ap.0, ap.1, ap.2, ap.3, Some("Aplikácie"), st);
+    // štyri rovnaké bunky v rade – ikona aj popis v strede bunky, popis nikdy nepresiahne panel
+    let ikona = 128.0;
+    let bunka = (ap.2 - 64.0) / 4.0;
     for i in 0..8 {
         let (rr, c) = (i / 4, i % 4);
-        let x = XL + 32.0 + c as f32 * (ikona + medzera);
-        let y = YH + 96.0 + rr as f32 * (ikona + 100.0);
-        if let Some(a) = APLIKACIE.get(i) {
-            // bunka popisu len trochu širšia ako ikona – dlhý popis sa zalomí a neprečnieva z dlaždice
-            aplikacia(k, t, *a, x, y, ikona, ikona + 72.0, st.popis, false, None);
+        let x = ap.0 + 32.0 + c as f32 * bunka + (bunka - ikona) / 2.0;
+        let y = ap.1 + 92.0 + rr as f32 * (ikona + 88.0);
+        if let Some(a) = APLIKACIE_MOZAIKY.get(i) {
+            aplikacia(k, t, *a, x, y, ikona, bunka, st.popis, false, None);
         } else {
-            // miesto na ďalší modul (dlaždica sa pridá v Nastaveniach)
             let o = 8.0;
             k.ram_dnu(x + o, y + o, ikona - 2.0 * o, ikona - 2.0 * o, ikona * 0.22, 3.0, t.okraj_silny);
             k.ikona(Ikona::Plus, x + ikona / 2.0 - 24.0, y + ikona / 2.0 - 24.0, 48.0, t.text_druhy);
-            let mut z = y + ikona + st.popis.velkost + 20.0;
-            for r in riadky(k, "Pridať modul", ikona + 64.0, st.popis) {
-                let sw = k.sirka(&r, st.popis);
-                k.text(&r, x + (ikona - sw) / 2.0, z, st.popis, t.text_druhy);
-                z += st.popis.velkost + 12.0;
-            }
+            let s = "Pridať modul";
+            let sw = k.sirka(s, st.popis);
+            k.text(s, x + (ikona - sw) / 2.0, y + ikona + st.popis.velkost + 20.0, st.popis, t.text_druhy);
         }
     }
-    // Dnes (vpravo hore)
-    let dh = 248.0;
-    dlazdica(k, t, px, YH, pravy_w, dh, None, st);
-    znak::kresli(k, Znak::Orchidea, t, px + pravy_w - 32.0 - 48.0, YH + 32.0, 48.0);
+    // Dnes
+    panel(k, t, dn.0, dn.1, dn.2, dn.3, None, st);
+    znak::kresli(k, Znak::Orchidea, t, dn.0 + dn.2 - 32.0 - 48.0, dn.1 + 32.0, 48.0);
     let hodiny = rez_hodin(st, 1.4);
-    k.cisla(CAS, px + 32.0, YH + 32.0 + hodiny.velkost, hodiny, t.text);
-    k.text(DATUM, px + 32.0, YH + 32.0 + hodiny.velkost + 24.0 + st.text.velkost, st.text, t.text);
-    k.text(MENINY, px + 32.0, YH + dh - 28.0, st.popis, t.text_druhy);
-    // Počasie (vpravo, pod Dnes)
-    let py = YH + dh + g;
-    let ph = ah - dh - g;
-    dlazdica(k, t, px, py, pravy_w, ph, None, st);
-    pocasie(k, Pocasie::Oblak, px + 24.0, py + 12.0, 88.0, t.text, t.hviezda);
-    k.cisla("2 °C", px + 128.0, py + 24.0 + st.nadpis.velkost, st.nadpis, t.text);
-    k.text(
-        &format!("zamračené · {MIESTO}"),
-        px + 128.0,
-        py + 24.0 + st.nadpis.velkost + 40.0,
-        st.popis,
-        t.text_druhy,
-    );
-    // predpoveď na 3 dni v jednom riadku: symbol, deň a teploty
-    for (i, (den, p, teploty)) in PREDPOVED.iter().take(3).enumerate() {
-        let x = px + 32.0 + i as f32 * 196.0;
-        let y = py + 128.0;
-        pocasie(k, *p, x - 4.0, y, 48.0, t.text_druhy, t.hviezda);
-        let z = zakladna_v_strede(y, 48.0, st.popis);
-        let x2 = k.text(den, x + 52.0, z, st.popis, t.text_druhy) + 10.0;
-        k.cisla(&teploty.replace(" / ", "/"), x2, z, st.popis, t.text);
-    }
-    k.text(ZDROJ_POCASIA, px + 32.0, py + ph - 24.0, st.popis, t.text_druhy);
-    // Pokračovať (vľavo dole): veľká karta zameraná + dve menšie
-    let ky = YH + ah + g;
-    let kh = YD - ky;
-    dlazdica(k, t, XL, ky, lavy_w, kh, Some("Pokračovať v pozeraní"), st);
-    let (vw, vh) = (560.0, 315.0);
-    let vy = ky + 96.0;
-    let mw = lavy_w - 64.0 - vw - 32.0;
-    let mh = (vh - 24.0) / 2.0;
-    karta(k, t, 0, XL + 32.0, vy, vw, vh, st.text, true);
-    karta(k, t, 1, XL + 32.0 + vw + 32.0, vy, mw, mh, st.popis, false);
-    karta(k, t, 2, XL + 32.0 + vw + 32.0, vy + mh + 24.0, mw, mh, st.popis, false);
-    // Zdroje a Systém (vpravo dole) – 2 × 2
-    let zh = (kh - g) / 2.0;
-    for (j, (nadpis, polozky)) in [("Zdroje", ZDROJE), ("Systém", SYSTEM)].iter().enumerate() {
-        let y = ky + j as f32 * (zh + g);
-        dlazdica(k, t, px, y, pravy_w, zh, Some(nadpis), st);
-        for (i, a) in polozky.iter().enumerate() {
-            let (rr, c) = (i / 2, i % 2);
-            polozka_vedla(
-                k,
-                t,
-                *a,
-                px + 32.0 + c as f32 * 292.0,
-                y + 80.0 + rr as f32 * 60.0,
-                48.0,
-                st.popis,
-            );
+    k.cisla(CAS, dn.0 + 32.0, dn.1 + 32.0 + hodiny.velkost, hodiny, t.text);
+    k.text(DATUM, dn.0 + 32.0, dn.1 + 32.0 + hodiny.velkost + 24.0 + st.text.velkost, st.text, t.text);
+    k.text(MENINY, dn.0 + 32.0, dn.1 + dn.3 - 28.0, st.popis, t.text_druhy);
+    // Počasie (len ak je zadané miesto – inak nenápadná výzva; nič sa neposiela)
+    panel(k, t, po.0, po.1, po.2, po.3, None, st);
+    if s_pocasim {
+        pocasie(k, Pocasie::Oblak, po.0 + 24.0, po.1 + 12.0, 88.0, t.text, t.hviezda);
+        k.cisla("2 °C", po.0 + 128.0, po.1 + 24.0 + st.nadpis.velkost, st.nadpis, t.text);
+        k.text(
+            &format!("zamračené · {MIESTO}"),
+            po.0 + 128.0,
+            po.1 + 24.0 + st.nadpis.velkost + 40.0,
+            st.popis,
+            t.text_druhy,
+        );
+        for (i, (den, p, teploty)) in PREDPOVED.iter().take(3).enumerate() {
+            let x = po.0 + 32.0 + i as f32 * 196.0;
+            let y = po.1 + 128.0;
+            pocasie(k, *p, x - 4.0, y, 48.0, t.text_druhy, t.hviezda);
+            let z = zakladna_v_strede(y, 48.0, st.popis);
+            let x2 = k.text(den, x + 52.0, z, st.popis, t.text_druhy) + 10.0;
+            k.cisla(&teploty.replace(" / ", "/"), x2, z, st.popis, t.text);
         }
+        k.text("Open-Meteo.com · CC BY 4.0", po.0 + 32.0, po.1 + po.3 - 28.0, st.popis, t.text_druhy);
+    } else {
+        pocasie(k, Pocasie::Oblak, po.0 + 24.0, po.1 + 12.0, 88.0, t.text_druhy, t.text_druhy);
+        k.text("Počasie", po.0 + 128.0, po.1 + 24.0 + st.nadpis.velkost, st.nadpis, t.text);
+        k.text(
+            "nastaví sa výberom miesta",
+            po.0 + 128.0,
+            po.1 + 24.0 + st.nadpis.velkost + 40.0,
+            st.popis,
+            t.text_druhy,
+        );
     }
+    // Pokračovať: veľká karta zameraná + dve menšie
+    panel(k, t, pk.0, pk.1, pk.2, pk.3, Some("Pokračovať v pozeraní"), st);
+    let (vw, vh) = (532.0, 300.0);
+    let vy = pk.1 + 92.0;
+    let mw = pk.2 - 64.0 - vw - 32.0;
+    let mh = (vh - 24.0) / 2.0;
+    karta(k, t, 0, pk.0 + 32.0, vy, vw, vh, st.text, true);
+    karta(k, t, 1, pk.0 + 32.0 + vw + 32.0, vy, mw, mh, st.popis, false);
+    karta(k, t, 2, pk.0 + 32.0 + vw + 32.0, vy + mh + 24.0, mw, mh, st.popis, false);
+    // Zdroje 2 × 2
+    panel(k, t, zd.0, zd.1, zd.2, zd.3, Some("Zdroje"), st);
+    for (i, a) in ZDROJE.iter().enumerate() {
+        let (rr, c) = (i / 2, i % 2);
+        polozka_vedla(
+            k,
+            t,
+            *a,
+            zd.0 + 32.0 + c as f32 * 292.0,
+            zd.1 + 84.0 + rr as f32 * 56.0,
+            44.0,
+            st.popis,
+        );
+    }
+    // Systém: Nastavenia, Stav krabičky, Aktualizácie; Vypnúť samostatne vpravo hore – ďaleko od Aktualizácií
+    panel(k, t, sy.0, sy.1, sy.2, sy.3, Some("Systém"), st);
+    for (i, a) in [Aplikacia::Nastavenia, Aplikacia::StavKrabicky, Aplikacia::Aktualizacie].iter().enumerate()
+    {
+        let (rr, c) = (i / 2, i % 2);
+        polozka_vedla(
+            k,
+            t,
+            *a,
+            sy.0 + 32.0 + c as f32 * 292.0,
+            sy.1 + 84.0 + rr as f32 * 56.0,
+            44.0,
+            st.popis,
+        );
+    }
+    let vw2 = k.sirka("Vypnúť", st.popis) + 40.0 + 14.0;
+    polozka_vedla(k, t, Aplikacia::Vypnut, sy.0 + sy.2 - 32.0 - vw2, sy.1 + 26.0, 40.0, st.popis);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -475,7 +565,7 @@ fn koncept_scena(k: &mut Kreslic, t: &Tema, st: &StupnicaTv, foto: &Obr) {
     let mala = 56.0;
     for (i, a) in ZDROJE.iter().chain(SYSTEM.iter()).enumerate() {
         let x = XP - (8 - i) as f32 * (mala + 20.0) + 20.0 - if i < 4 { 32.0 } else { 0.0 };
-        ikony_aplikacii::kresli(k, *a, x, YH - 8.0, mala, 0);
+        ikony_aplikacii::kresli(k, *a, x, YH - 8.0, mala, false);
     }
     // vľavo: čas, dátum, meniny, počasie
     let hodiny = rez_hodin(st, 1.7);
@@ -523,55 +613,59 @@ fn koncept_scena(k: &mut Kreslic, t: &Tema, st: &StupnicaTv, foto: &Obr) {
 // ---------------------------------------------------------------------------------------------------------------
 // Prvé spustenie Počasia a šetrič obrazovky
 
-fn prve_spustenie_pocasia(k: &mut Kreslic, t: &Tema, st: &StupnicaTv) {
-    koncept_panorama(k, t, st);
+fn prve_spustenie_pocasia(k: &mut Kreslic, t: &Tema, st: &StupnicaTv, foto: &Obr) {
+    // pozadie: Domov ešte bez počasia (údaje ešte neboli stiahnuté)
+    pozadie_domova(k, t, 'f', foto);
+    koncept_mozaika(k, t, st, false);
     k.clona(0.0, 0.0, W, H, CLONA_OBRAZU, 200);
-    let (w, h) = (1120.0, 760.0);
-    let (x, y) = ((W - w) / 2.0, (H - h) / 2.0);
+    let (w, h) = (1120.0, 900.0);
+    let (x, y) = ((W - w) / 2.0, 90.0);
     k.tien(x, y, w, h, R_VELKE, 32.0, t.tien.max(6));
     k.obdlznik(x, y, w, h, R_VELKE, t.plocha_vyssia);
-    pocasie(k, Pocasie::Oblak, x + 56.0, y + 40.0, 96.0, t.text, t.hviezda);
-    k.text("Počasie", x + 176.0, y + 72.0 + st.nadpis.velkost / 2.0, st.nadpis, t.text);
+    pocasie(k, Pocasie::Oblak, x + 48.0, y + 28.0, 88.0, t.text, t.hviezda);
+    k.text("Počasie", x + 160.0, y + 72.0 + st.nadpis.velkost / 2.0, st.nadpis, t.text);
     let riadky = [
-        "Na zobrazenie počasia krabička pošle službe Open-Meteo",
-        "len približnú polohu mesta (asi 10 km), raz za hodinu,",
-        "bez označenia krabičky. Ak miesto nezadáš, počasie",
-        "sa nezobrazí – zapnúť ho môžeš neskôr v Nastaveniach.",
+        "Pre počasie krabička pošle službe Open-Meteo len",
+        "približnú polohu obce (asi 10 km), raz za hodinu,",
+        "bez označenia krabičky. Zoznam obcí je v krabičke –",
+        "pri výbere sa nič neposiela. Bez miesta sa počasie",
+        "nezobrazí; zapnúť ho môžeš neskôr v Nastaveniach.",
     ];
-    let mut ty = y + 196.0;
+    let mut ty = y + 176.0;
     for r in riadky {
         k.text(r, x + 56.0, ty, st.popis, t.text);
         ty += st.popis.velkost + 18.0;
     }
-    // výber mesta
-    let fy = ty + 16.0;
-    k.obdlznik(x + 56.0, fy, w - 112.0, 72.0, R, t.prvok);
-    k.ram_dnu(x + 56.0, fy, w - 112.0, 72.0, R, 2.0, t.okraj_silny);
-    k.ikona(Ikona::Hladat, x + 80.0, fy + 18.0, 36.0, t.text_druhy);
-    k.text("Mesto: Brati", x + 136.0, zakladna_v_strede(fy, 72.0, st.text), st.text, t.text);
-    let mut sx = x + 56.0;
-    for m in ["Bratislava", "Bratislava-Petržalka"] {
-        let sw = k.sirka(m, st.popis) + 40.0;
-        k.obdlznik(sx, fy + 88.0, sw, 56.0, 28.0, t.prvok_pod_mysou);
-        k.text(m, sx + 20.0, zakladna_v_strede(fy + 88.0, 56.0, st.popis), st.popis, t.text);
-        sx += sw + 16.0;
+    // výber kraj → obec z miestneho zoznamu (ovládačom pohodlnejší ako písanie)
+    let (lx, lw, ox, ow) = (x + 56.0, 440.0, x + 56.0 + 440.0 + 32.0, w - 112.0 - 440.0 - 32.0);
+    let hy = y + 412.0;
+    k.text("Kraj", lx, hy, st.popis, t.text_druhy);
+    k.text("Obec", ox, hy, st.popis, t.text_druhy);
+    let kraje = ["Bratislavský", "Trnavský", "Trenčiansky", "Nitriansky", "Žilinský"];
+    let obce = ["Bratislava", "Bernolákovo", "Malacky", "Pezinok", "Senec"];
+    let rh = 52.0;
+    for (i, (kr, ob)) in kraje.iter().zip(obce.iter()).enumerate() {
+        let ry = hy + 20.0 + i as f32 * rh;
+        if i == 0 {
+            // vybraný kraj – neutrálne; zameraná obec – akcent a rámik (akcent = zameranie)
+            k.obdlznik(lx, ry, lw, rh - 8.0, R, t.prvok_pod_mysou);
+            k.obdlznik(ox, ry, ow, rh - 8.0, R, t.akcent);
+            zameranie(k, t, ox, ry, ow, rh - 8.0, R);
+        }
+        k.text(kr, lx + 20.0, zakladna_v_strede(ry, rh - 8.0, st.popis), st.popis, t.text);
+        let f = if i == 0 { t.akcent_text } else { t.text };
+        k.text(ob, ox + 20.0, zakladna_v_strede(ry, rh - 8.0, st.popis), st.popis, f);
     }
-    // tlačidlá: Zadať miesto (zamerané) · Bez počasia
+    k.text("Údaje: Open-Meteo.com (CC BY 4.0)", x + 56.0, y + h - 56.0 - 72.0 - 24.0, st.popis, t.text_druhy);
+    // tlačidlá – neutrálne (zameranie je v zozname obcí)
     let by = y + h - 56.0 - 72.0;
-    let s1 = "Zadať miesto";
-    let w1 = k.sirka(s1, st.text) + 80.0;
-    let q = TV_ZAMERANE_ZVACSENIE;
-    let (zw, zh) = (w1 * q, 72.0 * q);
-    let (zx, zy) = (x + 56.0 - (zw - w1) / 2.0, by - (zh - 72.0) / 2.0);
-    k.obdlznik(zx, zy, zw, zh, R_VELKE, t.akcent);
-    k.text(s1, zx + 40.0 * q, zakladna_v_strede(zy, zh, st.text), st.text, t.akcent_text);
-    zameranie(k, t, zx, zy, zw, zh, R_VELKE);
-    let s2 = "Bez počasia";
-    let w2 = k.sirka(s2, st.text) + 80.0;
-    let x2 = x + 56.0 + w1 + 32.0;
-    k.obdlznik(x2, by, w2, 72.0, R_VELKE, t.prvok_pod_mysou);
-    k.text(s2, x2 + 40.0, zakladna_v_strede(by, 72.0, st.text), st.text, t.text);
-    k.text(ZDROJ_POCASIA, x + 56.0, fy + 88.0 + 56.0 + 24.0 + st.popis.velkost, st.popis, t.text_druhy);
+    let mut bx = x + 56.0;
+    for s in ["Zadať miesto", "Bez počasia"] {
+        let bw = k.sirka(s, st.text) + 80.0;
+        k.obdlznik(bx, by, bw, 72.0, R_VELKE, t.prvok_pod_mysou);
+        k.text(s, bx + 40.0, zakladna_v_strede(by, 72.0, st.text), st.text, t.text);
+        bx += bw + 32.0;
+    }
 }
 
 /// Šetrič obrazovky „Nočná orchidea“ – čierna plocha (OLED nesvieti), veľký tlmený kvet, hodiny a dátum. Prekreslí sa
@@ -605,9 +699,18 @@ fn setric(k: &mut Kreslic, t: &Tema, st: &StupnicaTv) {
 pub fn obrazovka(t: &Tema, c: char, m: f32, st: &StupnicaTv, foto: &Obr) -> Kreslic {
     let mut k = Kreslic::novy(W, H, m, t.okolie);
     match c {
-        '2' => koncept_mozaika(&mut k, t, st),
+        // Mozaika (vybraná vlastníkom 28. 11. 11:47): '2' farebné pozadie, '4' atmosféra zameraného filmu;
+        // pri väčšom písme (mierka nad 1,2) usporiadanie po radoch ako Panoráma
+        '2' | '4' => {
+            pozadie_domova(&mut k, t, if c == '4' { 'a' } else { 'f' }, foto);
+            if st.mierka > 1.2 {
+                koncept_panorama(&mut k, t, st);
+            } else {
+                koncept_mozaika(&mut k, t, st, true);
+            }
+        }
         '3' => koncept_scena(&mut k, t, st, foto),
-        'p' => prve_spustenie_pocasia(&mut k, t, st),
+        'p' => prve_spustenie_pocasia(&mut k, t, st, foto),
         's' => setric(&mut k, t, st),
         _ => koncept_panorama(&mut k, t, st),
     }

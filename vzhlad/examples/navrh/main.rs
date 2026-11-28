@@ -19,7 +19,7 @@ mod tv;
 use orchidea_pismo::Platno;
 use orchidea_vzhlad::kreslic::Kreslic;
 use orchidea_vzhlad::miery::{MeraniaObrazovky, StupnicaTv, VelkostPisma};
-use orchidea_vzhlad::tema::{LAN, NOC, TEMY};
+use orchidea_vzhlad::tema::{HMLA, LAN, NOC, TEMY};
 use std::path::Path;
 
 /// Meno súboru témy bez diakritiky.
@@ -78,15 +78,18 @@ fn main() {
         uloz(&lyra::obrazovka(&NOC, v, 1.0, &foto).p, &var, &format!("lyra_{v}.png"));
         uloz(&tv::obrazovka(&NOC, v, 1.0, &foto).p, &var, &format!("tv_{v}.png"));
     }
-    // domovská obrazovka TV krabičky – 3 koncepty, prvé spustenie Počasia, šetrič, Panoráma pri najväčšom písme
+    // domovská obrazovka TV krabičky – Mozaika (vybraná): farebné pozadie, atmosféra filmu, svetlá téma, najväčšie
+    // písmo; prvé spustenie Počasia, šetrič; koncepty 1 a 3 ostávajú na porovnanie
     let st = StupnicaTv::REFERENCNA;
     for c in ['1', '2', '3'] {
         uloz(&domov::obrazovka(&NOC, c, 1.0, &st, &foto).p, &var, &format!("domov_{c}.png"));
     }
+    uloz(&domov::obrazovka(&NOC, '4', 1.0, &st, &foto).p, &var, "domov_2_atmosfera.png");
+    uloz(&domov::obrazovka(&HMLA, '2', 1.0, &st, &foto).p, &var, "domov_2_hmla.png");
     uloz(&domov::obrazovka(&NOC, 'p', 1.0, &st, &foto).p, &var, "domov_pocasie_prve_spustenie.png");
     uloz(&domov::obrazovka(&NOC, 's', 1.0, &st, &foto).p, &var, "domov_setric.png");
     let najvacsie = StupnicaTv::pre(&MeraniaObrazovky::z_edid(111, 62, VelkostPisma::Najvacsie));
-    uloz(&domov::obrazovka(&NOC, '1', 1.0, &najvacsie, &foto).p, &var, "domov_1_najvacsie_pismo.png");
+    uloz(&domov::obrazovka(&NOC, '2', 1.0, &najvacsie, &foto).p, &var, "domov_2_najvacsie_pismo.png");
     // to isté TV A so zameraním na Informácie – akcent ide so zameraním, Prehrať ostane neutrálne
     uloz(&tv::obrazovka_so_zameranim(&NOC, 'a', 1.0, &foto, 1).p, &var, "tv_a_zameranie.png");
     let k = tv::obrazovka(&NOC, 'a', 2.0, &foto);
