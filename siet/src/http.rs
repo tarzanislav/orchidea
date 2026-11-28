@@ -1,4 +1,4 @@
-//! Klient HTTP/1.1 – sťahovanie zoznamov staníc IPTV, súborov a živých prúdov (rozhranie R6).
+//! Klient HTTP/1.1 – sťahovanie zoznamov staníc IPTV, súborov a živých prúdov (rozhranie R7).
 //!
 //! Podľa **RFC 9112** (správa HTTP/1.1 – stavový riadok 4, polia 5, dĺžka tela 6.3, kúsky „chunked“ 7.1),
 //! **RFC 9110** (sémantika – kódy 1xx 15.2, presmerovania 15.4) a **RFC 3986** (adresa URL – 3, spájanie
