@@ -5,6 +5,7 @@ name: Médiá – kontajnery, FLAC, rozhodca a dlhý fuzzer (LÝRA)
 #   bit po bite tie isté pakety (čas, kľúčovosť, veľkosť, MD5 obsahu),
 # - FLAC: MD5 dekódovania sa rovná MD5 v STREAMINFO (sada IETF CELLAR, kodéry flac a FFmpeg),
 # - značky a ReplayGain (ID3v1, ID3v2.2–2.4, APEv2, Vorbis comment, Matroska, MP4) proti ffprobe,
+# - jadro prehrávania LÝRY (R5d): skutočné súbory so simulovaným systémom – snímky, zvuk, priechod, posun,
 # - samomeranie `media_meranie` (R6): cena dekódovania a rovnaký odtlačok výstupu na x86-64, AArch64, ARMv7, ARMv6,
 # - dlhý fuzzer čítačiek a dekodérov (R211) s viacerými semienkami.
 on:
@@ -43,7 +44,7 @@ jobs:
       - name: Rozhodcovia (FFmpeg, MKVToolNix, metaflac)
         run: sh nastroje/balicky.sh ffmpeg mkvtoolnix flac python3-numpy
       - name: Zostavenie
-        run: cargo build --locked --release -p orchidea-media --example media_pakety --example media_hdmi --example media_opus --example media_mpa --example media_ac3
+        run: cargo build --locked --release -p orchidea-media --example media_pakety --example media_hdmi --example media_opus --example media_mpa --example media_ac3 --example media_prehravanie
       - name: Porovnanie paketov s rozhodcom (a dekódovanie Ogg Opus/FLAC proti FFmpeg)
         shell: bash
         run: |
@@ -112,6 +113,11 @@ jobs:
         run: |
           echo "### Médiá – zvuk pre HDMI proti rozhodcovi" >> "$GITHUB_STEP_SUMMARY"
           python3 media/nastroje/over_hdmi.py target/release/examples/media_hdmi "$RUNNER_TEMP/hdmi" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Jadro prehrávania LÝRY (R5d) – MKV, MP4, WebM, TS so simulovaným systémom proti ffprobe a FFmpeg
+        shell: bash
+        run: |
+          echo "### Médiá – jadro prehrávania LÝRY (R5d)" >> "$GITHUB_STEP_SUMMARY"
+          python3 media/nastroje/over_prehravanie.py target/release/examples/media_prehravanie "$RUNNER_TEMP/prehravanie" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Značky a ReplayGain (LÝRA) – ID3v1, ID3v2.2–2.4, APEv2, Vorbis comment, Matroska, MP4 proti ffprobe
         shell: bash
         run: |

@@ -1022,3 +1022,60 @@ fn surovy_ac3_subor() {
         }
     }
 }
+
+#[test]
+fn prehravanie_stroj() {
+    use orchidea_media::prehravanie::{Prehravanie, VolbyPrehravania};
+    use orchidea_media::r5::{FormatVzoriekHdmi, MeranieZvuku, Obnova, SchopnostiHdmi};
+    let mut n = nahoda(25);
+    let mut zaklady = zaklady_matrosky();
+    zaklady.extend(subory_flac());
+    zaklady.push(subor_mpa(&mut n, 40));
+    zaklady.push(subor_ogg(&mut n, 6));
+    let schopnosti = SchopnostiHdmi {
+        formaty: vec![FormatVzoriekHdmi::S16Le],
+        max_kanalov: 2,
+        frekvencie: vec![32_000, 44_100, 48_000, 96_000],
+        max_bitov: 16,
+        priechod_ac3: true,
+        priechod_eac3: true,
+        oneskorenie_tv_ns: None,
+    };
+    let mut otvorenych = 0;
+    for i in 0..pocet_pokusov() / 20 {
+        let z = &zaklady[i % zaklady.len()];
+        let d = if i % 8 == 0 { z.clone() } else { zmutuj(z, &mut n) };
+        let Ok(k) = orchidea_media::kontajner::otvor(PametovyZdroj::novy(d), prisne()) else { continue };
+        let Ok(mut p) = Prehravanie::otvor(k, &schopnosti, &VolbyPrehravania::default()) else { continue };
+        otvorenych += 1;
+        let (mut t, mut odovzdanych) = (0i64, 0u64);
+        for krok in 0..300 {
+            t += 16_666_667;
+            if let Ok(Some(v)) = p.dalsi_paket_videa() {
+                let _ = p.snimka(v.id);
+                let _ = p.snimka(v.id.wrapping_add(n.mensie_ako(3)));
+            }
+            let _ = p.obnova(Obnova { monotonny_ns: t, perioda_ns: 16_666_667 });
+            if let Ok(Some(z)) = p.dalsi_zvuk() {
+                odovzdanych += z.ramcov as u64;
+                p.meranie_zvuku(MeranieZvuku {
+                    odovzdanych_ramcov: odovzdanych,
+                    oneskorenie_ramcov: n.mensie_ako(odovzdanych + 1),
+                    monotonny_ns: t + n.mensie_ako(4_000_000) as i64 - 2_000_000,
+                });
+            }
+            if krok % 97 == 50 {
+                let sposob = if n.mensie_ako(2) == 0 { Posun::KlucovyPred } else { Posun::Presny };
+                let _ = p.posun(n.mensie_ako(4_000_000_000) as i64 - 500_000_000, sposob);
+                odovzdanych = 0;
+            }
+            match krok % 131 {
+                70 => p.pauza(t),
+                90 => p.pokracuj(t),
+                _ => {}
+            }
+            let _ = p.stav(t);
+        }
+    }
+    assert!(otvorenych > 0, "stroj sa musí otvoriť aspoň pre časť súborov");
+}

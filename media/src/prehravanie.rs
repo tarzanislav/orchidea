@@ -323,6 +323,7 @@ impl Prehravanie {
             }
         }
         let caka_na_obraz = video.is_some();
+        let (ma_video, ma_zvuk) = (video.is_some(), zvuk.is_some());
         if video.is_none() && zvuk.is_none() {
             let dovod =
                 info.chyba_zvuku.clone().or(info.chyba_videa.clone()).unwrap_or_else(|| "bez stôp".into());
@@ -342,7 +343,12 @@ impl Prehravanie {
             caka_na_obraz,
             caka_od: None,
             prva_snimka: true,
-            stav: StavPrehravania::default(),
+            // stopa, ktorá v súbore nie je (alebo nejde), je hneď na konci
+            stav: StavPrehravania {
+                koniec_videa: !ma_video,
+                koniec_zvuku: !ma_zvuk,
+                ..StavPrehravania::default()
+            },
         })
     }
 
@@ -411,7 +417,12 @@ impl Prehravanie {
             self.stav.neznamych_snimok += 1;
             return PrijatieSnimky::Zahod;
         };
-        if self.ciel_ns.is_some_and(|c| pts < c) || v.cakajuce.len() >= MAX_CAKAJUCICH {
+        // pred cieľom presného posunu, plná fronta, alebo druhá snímka s tým istým `id` (dve polia v jednom pakete)
+        if self.ciel_ns.is_some_and(|c| pts < c)
+            || v.cakajuce.len() >= MAX_CAKAJUCICH
+            || v.zobrazena == Some(id)
+            || v.cakajuce.iter().any(|&(_, i)| i == id)
+        {
             return PrijatieSnimky::Zahod;
         }
         let i = v.cakajuce.partition_point(|&(t, _)| t <= pts);
@@ -551,8 +562,8 @@ impl Prehravanie {
     pub fn posun(&mut self, ciel_ns: i64, sposob: Posun) -> Vysledok<Posunute> {
         let cas = self.k.posun(ciel_ns, sposob)?;
         self.koniec_suboru = false;
-        self.stav.koniec_videa = false;
-        self.stav.koniec_zvuku = false;
+        self.stav.koniec_videa = self.video.is_none();
+        self.stav.koniec_zvuku = self.zvuk.is_none();
         self.ciel_ns = (sposob == Posun::Presny).then_some(ciel_ns);
         self.sync.prerusenie();
         self.caka_na_obraz = self.video.is_some();
@@ -929,11 +940,24 @@ mod skusky {
     }
 
     #[test]
+    fn rovnake_id_dvakrat() {
+        let mut p =
+            Prehravanie::otvor(Box::new(Umely::novy(false, true)), &hdmi(), &VolbyPrehravania::default())
+                .unwrap();
+        let id = p.dalsi_paket_videa().unwrap().unwrap().id;
+        assert_eq!(p.snimka(id), PrijatieSnimky::Caka);
+        assert_eq!(p.snimka(id), PrijatieSnimky::Zahod);
+        assert_eq!(p.snimka(999), PrijatieSnimky::Zahod);
+        assert_eq!(p.stav(0).neznamych_snimok, 1);
+    }
+
+    #[test]
     fn len_video_a_len_zvuk() {
         // bez zvuku: monotónne hodiny od prvej snímky
         let p = Prehravanie::otvor(Box::new(Umely::novy(false, true)), &hdmi(), &VolbyPrehravania::default())
             .unwrap();
         assert!(p.info().zvuk.is_none());
+        assert!(p.stav(0).koniec_zvuku);
         let mut s = Simulacia::nova(p);
         s.bez(11.0, None);
         assert_eq!(s.poradove(), (0..SNIMOK as u32).collect::<Vec<_>>());
@@ -941,6 +965,7 @@ mod skusky {
         let p = Prehravanie::otvor(Box::new(Umely::novy(true, false)), &hdmi(), &VolbyPrehravania::default())
             .unwrap();
         assert!(p.info().video.is_none());
+        assert!(p.stav(0).koniec_videa && !p.stav(0).koniec_zvuku);
         let mut s = Simulacia::nova(p);
         s.bez(3.0, None);
         assert!(s.p.stav(s.t).cas_ns.unwrap() > 2_400_000_000);
