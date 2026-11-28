@@ -5,12 +5,14 @@
 //! | [`sha2`] | odtlačky SHA-256, SHA-384, SHA-512 | FIPS 180-4 |
 //! | [`hmac`] | overovací kód správy | RFC 2104, FIPS 198-1 |
 //! | [`hkdf`] | odvodenie kľúčov (TLS 1.3) | RFC 5869 |
+//! | [`aes`] | bloková šifra AES-128/256 a autentizované šifrovanie GCM, v konštantnom čase | FIPS 197, NIST SP 800-38D |
 //!
 //! Každý modul má skúšky s vektormi z noriem (nezávislý rozhodca). X25519 a ChaCha20-Poly1305 sú zatiaľ v balíku
 //! zabezpečeného spojenia zariadení (KORENE) a presunú sa sem.
 
 #![forbid(unsafe_code)]
 
+pub mod aes;
 pub mod hkdf;
 pub mod hmac;
 pub mod sha2;
