@@ -12,7 +12,7 @@
 //! Meria sa **najhorší bod** pod textom (pás od základnej čiary po výšku veľkých písmen) – nad fotkou rozhoduje
 //! najsvetlejšie (najtmavšie) miesto, nie priemer.
 //!
-//! Na x86-64: 6 tém × 3 varianty × 3 obrazovky (prehliadač a editor fotografií (Pohľad), prehrávač médií LÝRA,
+//! Na x86-64 (CI): 6 tém × 3 varianty × 3 obrazovky (prehliadač a editor fotografií (Pohľad), prehrávač médií LÝRA,
 //! obrazovka TV krabičky) = 54 obrazoviek.
 
 #![allow(clippy::too_many_arguments, dead_code)]
@@ -82,32 +82,47 @@ fn zmeraj(meno: &str, t: &Tema, tv: bool, kresli: impl Fn() -> Kreslic) -> (usiz
 fn text_a_ikony_na_obrazovkach_splnaju_kontrast() {
     let foto = obrazky::fotka(1200, 800);
     let mut pripady: Vec<Pripad> = Vec::new();
-    // každá téma s každým variantom – v programe sa dajú zvoliť nezávisle; na ARM (QEMU v CI aj balík skúšok pre
-    // skutočné Raspberry Pi) a vo WebAssembly len predvolená a jedna svetlá téma – chladný systém aj pri skúškach,
-    // plné pokrytie beží na x86-64
-    let temy: Vec<&Tema> = if cfg!(target_arch = "x86_64") { TEMY.to_vec() } else { vec![&NOC, &LAN] };
-    for t in temy {
-        for v in ['a', 'b', 'c'] {
-            let f = &foto;
-            pripady.push((
-                format!("pohlad_{v} ({})", t.meno),
-                t,
-                false,
-                Box::new(move || pohlad::obrazovka(t, v, 1.0, f)),
-            ));
-            pripady.push((
-                format!("lyra_{v} ({})", t.meno),
-                t,
-                false,
-                Box::new(move || lyra::obrazovka(t, v, 1.0, f)),
-            ));
-            pripady.push((
-                format!("tv_{v} ({})", t.meno),
-                t,
-                true,
-                Box::new(move || tv::obrazovka(t, v, 1.0, f)),
-            ));
+    // každá téma s každým variantom – v programe sa dajú zvoliť nezávisle. Mimo x86-64 (ARM v QEMU, balík skúšok
+    // pre skutočné Raspberry Pi vrátane RPi Zero, WebAssembly) len dve menšie obrazovky – overí sa kód merania,
+    // plné pokrytie beží v CI na x86-64 (chladný systém aj pri skúškach)
+    if cfg!(target_arch = "x86_64") {
+        for t in TEMY {
+            for v in ['a', 'b', 'c'] {
+                let f = &foto;
+                pripady.push((
+                    format!("pohlad_{v} ({})", t.meno),
+                    t,
+                    false,
+                    Box::new(move || pohlad::obrazovka(t, v, 1.0, f)),
+                ));
+                pripady.push((
+                    format!("lyra_{v} ({})", t.meno),
+                    t,
+                    false,
+                    Box::new(move || lyra::obrazovka(t, v, 1.0, f)),
+                ));
+                pripady.push((
+                    format!("tv_{v} ({})", t.meno),
+                    t,
+                    true,
+                    Box::new(move || tv::obrazovka(t, v, 1.0, f)),
+                ));
+            }
         }
+    } else {
+        let f = &foto;
+        pripady.push((
+            "pohlad_a (Noc)".into(),
+            &NOC,
+            false,
+            Box::new(move || pohlad::obrazovka(&NOC, 'a', 1.0, f)),
+        ));
+        pripady.push((
+            "lyra_c (Ľan)".into(),
+            &LAN,
+            false,
+            Box::new(move || lyra::obrazovka(&LAN, 'c', 1.0, f)),
+        ));
     }
     let mut vsetky_zle = Vec::new();
     let mut spolu = 0;
