@@ -15,8 +15,9 @@
 #![allow(unsafe_code, unused_unsafe, clippy::needless_range_loop)]
 
 use super::interpolacia::{
-    predvolene_dve_skalarne, predvolene_jedna_skalarne, vodorovne8_skalarne, zvislo_medzi_skalarne,
-    zvislo8_skalarne,
+    cely_dve_skalarne, predvolene_dve_skalarne, predvolene_jedna_skalarne, vodorovne8_dve_skalarne,
+    vodorovne8_jedna_skalarne, vodorovne8_skalarne, zvislo_medzi_dve_skalarne, zvislo_medzi_jedna_skalarne,
+    zvislo_medzi_skalarne, zvislo8_dve_skalarne, zvislo8_jedna_skalarne, zvislo8_skalarne,
 };
 use super::obraz::Vzorka;
 use core::arch::aarch64::*;
@@ -265,6 +266,298 @@ pub fn predvolene_jedna(pred: &[i16], ciel: &mut [Vzorka], pridaj: i32, shift: u
         }
         if i < w {
             predvolene_jedna_skalarne(&pred[i..w], &mut ciel[i..], pridaj, shift, 255);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Posledný stupeň interpolácie spojený s predvoleným vážením (8.5.3.3.4.2), 8 bitov – bitovo ako skalárne vzory
+// `*_jedna_skalarne`, `*_dve_skalarne` v `interpolacia` (zloženie filtra a váženia):
+// - jedna referencia: z i16 súčtu filtra s vzorka (Clip3(0, 255, (s + 32) >> 6)) jednou inštrukciou SQRSHRUN,
+// - dve referencie: (pred0 + s + 8192 + 64) >> 7 v i32 – s + 8192 sa pri 1D filtroch zmestí do i16
+//   (−6 120 + 8 192 … 22 440 + 8 192), pri 2D sa 8192 · 64 pripočíta už k súčtu druhého stupňa,
+//   SQRSHRUN #7 (zaokrúhlenie a orezanie zdola) a UQXTN (orezanie na 255).
+// ---------------------------------------------------------------------------------------------------------------
+
+/// i32 × 4 + i32 × 4 → 8 vzoriek: (x + 64) >> 7 s orezaním na 0 … 255.
+#[inline(always)]
+fn dve_na_vzorky(lo: int32x4_t, hi: int32x4_t) -> uint8x8_t {
+    // SAFETY: len aritmetika v registroch.
+    unsafe { vqmovn_u16(vcombine_u16(vqrshrun_n_s32::<7>(lo), vqrshrun_n_s32::<7>(hi))) }
+}
+
+/// (pred0 + q + 64) >> 7 pre 8 dráh i16 (q = súčet filtra + 8192) → 8 vzoriek.
+#[inline(always)]
+fn dve_i16(p0: int16x8_t, q: int16x8_t) -> uint8x8_t {
+    // SAFETY: len aritmetika v registroch.
+    unsafe { dve_na_vzorky(vaddl_s16(vget_low_s16(p0), vget_low_s16(q)), vaddl_high_s16(p0, q)) }
+}
+
+/// Načíta 8 (alebo len 4 – dolná polovica) medzivýsledkov `pred0[i …]`.
+#[inline(always)]
+fn nacitaj_pred(pred0: &[i16], i: usize, styri: bool) -> int16x8_t {
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        if styri {
+            assert!(i + 4 <= pred0.len());
+            // SAFETY: i + 4 ≤ pred0.len().
+            let v = unsafe { vld1_s16(pred0.as_ptr().add(i)) };
+            vcombine_s16(v, v)
+        } else {
+            assert!(i + 8 <= pred0.len());
+            // SAFETY: i + 8 ≤ pred0.len().
+            unsafe { vld1q_s16(pred0.as_ptr().add(i)) }
+        }
+    }
+}
+
+/// Jedna referencia, vodorovný filter (ako [`vodorovne8_jedna_skalarne`]).
+pub fn vodorovne8_jedna<const N: usize>(zdroj: &[Vzorka], koef: &[i16; N], ciel: &mut [Vzorka]) {
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        let w = ciel.len();
+        assert!(N <= 8 && zdroj.len() >= w + N - 1, "HEVC: krátky riadok zdroja");
+        let mut i = 0;
+        while i + 8 <= w {
+            let s = vodorovne_drahy(nacitaj_u8x16(zdroj, i), koef);
+            // SAFETY: i + 8 ≤ w = ciel.len().
+            unsafe { vst1_u8(ciel.as_mut_ptr().add(i), vqrshrun_n_s16::<6>(s)) };
+            i += 8;
+        }
+        if i + 4 <= w {
+            uloz4_u8(ciel, i, vqrshrun_n_s16::<6>(vodorovne_drahy(nacitaj_u8x16(zdroj, i), koef)));
+            i += 4;
+        }
+        if i < w {
+            vodorovne8_jedna_skalarne(&zdroj[i..], koef, &mut ciel[i..]);
+        }
+    }
+}
+
+/// Dve referencie, vodorovný filter druhej (ako [`vodorovne8_dve_skalarne`]).
+pub fn vodorovne8_dve<const N: usize>(zdroj: &[Vzorka], koef: &[i16; N], pred0: &[i16], ciel: &mut [Vzorka]) {
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        let w = ciel.len();
+        assert!(N <= 8 && zdroj.len() >= w + N - 1 && pred0.len() >= w, "HEVC: krátky riadok zdroja");
+        let posun = vdupq_n_s16(8192);
+        let mut i = 0;
+        while i + 8 <= w {
+            let q = vaddq_s16(vodorovne_drahy(nacitaj_u8x16(zdroj, i), koef), posun);
+            let v = dve_i16(nacitaj_pred(pred0, i, false), q);
+            // SAFETY: i + 8 ≤ w = ciel.len().
+            unsafe { vst1_u8(ciel.as_mut_ptr().add(i), v) };
+            i += 8;
+        }
+        if i + 4 <= w {
+            let q = vaddq_s16(vodorovne_drahy(nacitaj_u8x16(zdroj, i), koef), posun);
+            uloz4_u8(ciel, i, dve_i16(nacitaj_pred(pred0, i, true), q));
+            i += 4;
+        }
+        if i < w {
+            vodorovne8_dve_skalarne(&zdroj[i..], koef, &pred0[i..w], &mut ciel[i..]);
+        }
+    }
+}
+
+/// Súčet zvislého filtra N bodov zo vzoriek pre 8 dráh od `i` (riadky majú ≥ i + 8 vzoriek, alebo `styri`:
+/// číta sa cez [`nacitaj_u8x8`], platné sú dolné 4 dráhy).
+#[inline(always)]
+fn zvislo_drahy<const N: usize>(
+    riadky: &[&[Vzorka]; N],
+    koef: &[i16; N],
+    i: usize,
+    styri: bool,
+) -> int16x8_t {
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        let mut s = vdupq_n_s16(0);
+        for k in 0..N {
+            let v = if styri {
+                nacitaj_u8x8(riadky[k], i)
+            } else {
+                assert!(i + 8 <= riadky[k].len());
+                // SAFETY: i + 8 ≤ riadky[k].len().
+                unsafe { vld1_u8(riadky[k].as_ptr().add(i)) }
+            };
+            s = vmlaq_n_s16(s, vreinterpretq_s16_u16(vmovl_u8(v)), koef[k]);
+        }
+        s
+    }
+}
+
+/// Jedna referencia, zvislý filter zo vzoriek (ako [`zvislo8_jedna_skalarne`]).
+pub fn zvislo8_jedna<const N: usize>(riadky: &[&[Vzorka]; N], koef: &[i16; N], ciel: &mut [Vzorka]) {
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        let w = ciel.len();
+        assert!(riadky.iter().all(|r| r.len() >= w), "HEVC: krátky riadok zdroja");
+        let mut i = 0;
+        while i + 8 <= w {
+            let s = zvislo_drahy(riadky, koef, i, false);
+            // SAFETY: i + 8 ≤ w = ciel.len().
+            unsafe { vst1_u8(ciel.as_mut_ptr().add(i), vqrshrun_n_s16::<6>(s)) };
+            i += 8;
+        }
+        if i + 4 <= w {
+            uloz4_u8(ciel, i, vqrshrun_n_s16::<6>(zvislo_drahy(riadky, koef, i, true)));
+            i += 4;
+        }
+        if i < w {
+            let zvysok: [&[Vzorka]; N] = std::array::from_fn(|k| &riadky[k][i..]);
+            zvislo8_jedna_skalarne(&zvysok, koef, &mut ciel[i..]);
+        }
+    }
+}
+
+/// Dve referencie, zvislý filter zo vzoriek pre druhú (ako [`zvislo8_dve_skalarne`]).
+pub fn zvislo8_dve<const N: usize>(
+    riadky: &[&[Vzorka]; N],
+    koef: &[i16; N],
+    pred0: &[i16],
+    ciel: &mut [Vzorka],
+) {
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        let w = ciel.len();
+        assert!(riadky.iter().all(|r| r.len() >= w) && pred0.len() >= w, "HEVC: krátky riadok zdroja");
+        let posun = vdupq_n_s16(8192);
+        let mut i = 0;
+        while i + 8 <= w {
+            let q = vaddq_s16(zvislo_drahy(riadky, koef, i, false), posun);
+            let v = dve_i16(nacitaj_pred(pred0, i, false), q);
+            // SAFETY: i + 8 ≤ w = ciel.len().
+            unsafe { vst1_u8(ciel.as_mut_ptr().add(i), v) };
+            i += 8;
+        }
+        if i + 4 <= w {
+            let q = vaddq_s16(zvislo_drahy(riadky, koef, i, true), posun);
+            uloz4_u8(ciel, i, dve_i16(nacitaj_pred(pred0, i, true), q));
+            i += 4;
+        }
+        if i < w {
+            let zvysok: [&[Vzorka]; N] = std::array::from_fn(|k| &riadky[k][i..]);
+            zvislo8_dve_skalarne(&zvysok, koef, &pred0[i..w], &mut ciel[i..]);
+        }
+    }
+}
+
+/// Súčet druhého stupňa 2D interpolácie (i32) pre 8 dráh od `i`, začína hodnotou `zaciatok` (alebo 4 dráhy,
+/// horná polovica nulová).
+#[inline(always)]
+fn medzi_drahy<const N: usize>(
+    riadky: &[&[i16]; N],
+    koef: &[i16; N],
+    i: usize,
+    styri: bool,
+    zaciatok: i32,
+) -> (int32x4_t, int32x4_t) {
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        let (mut lo, mut hi) = (vdupq_n_s32(zaciatok), vdupq_n_s32(zaciatok));
+        for k in 0..N {
+            if styri {
+                assert!(i + 4 <= riadky[k].len());
+                // SAFETY: i + 4 ≤ riadky[k].len().
+                let v = unsafe { vld1_s16(riadky[k].as_ptr().add(i)) };
+                lo = vmlal_n_s16(lo, v, koef[k]);
+            } else {
+                assert!(i + 8 <= riadky[k].len());
+                // SAFETY: i + 8 ≤ riadky[k].len().
+                let v = unsafe { vld1q_s16(riadky[k].as_ptr().add(i)) };
+                lo = vmlal_n_s16(lo, vget_low_s16(v), koef[k]);
+                hi = vmlal_high_n_s16(hi, v, koef[k]);
+            }
+        }
+        (lo, hi)
+    }
+}
+
+/// Jedna referencia, druhý stupeň 2D (ako [`zvislo_medzi_jedna_skalarne`]): ((Σ >> 6) + 32) >> 6 s orezaním.
+pub fn zvislo_medzi_jedna<const N: usize>(riadky: &[&[i16]; N], koef: &[i16; N], ciel: &mut [Vzorka]) {
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        let w = ciel.len();
+        let na_vzorky = |lo: int32x4_t, hi: int32x4_t| {
+            let lo = vqrshrun_n_s32::<6>(vshrq_n_s32::<6>(lo));
+            let hi = vqrshrun_n_s32::<6>(vshrq_n_s32::<6>(hi));
+            vqmovn_u16(vcombine_u16(lo, hi))
+        };
+        let mut i = 0;
+        while i + 8 <= w {
+            let (lo, hi) = medzi_drahy(riadky, koef, i, false, 0);
+            // SAFETY: i + 8 ≤ w = ciel.len().
+            unsafe { vst1_u8(ciel.as_mut_ptr().add(i), na_vzorky(lo, hi)) };
+            i += 8;
+        }
+        if i + 4 <= w {
+            let (lo, _) = medzi_drahy(riadky, koef, i, true, 0);
+            uloz4_u8(ciel, i, na_vzorky(lo, lo));
+            i += 4;
+        }
+        if i < w {
+            let zvysok: [&[i16]; N] = std::array::from_fn(|k| &riadky[k][i..]);
+            zvislo_medzi_jedna_skalarne(&zvysok, koef, &mut ciel[i..]);
+        }
+    }
+}
+
+/// Dve referencie, druhý stupeň 2D druhej (ako [`zvislo_medzi_dve_skalarne`]): súčet začína 8192 · 64, teda
+/// (súčet >> 6) = predSamplesL1 + 8192 − 8192 + 8192 a stačí (pred0 + (súčet >> 6) + 64) >> 7.
+pub fn zvislo_medzi_dve<const N: usize>(
+    riadky: &[&[i16]; N],
+    koef: &[i16; N],
+    pred0: &[i16],
+    ciel: &mut [Vzorka],
+) {
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        let w = ciel.len();
+        assert!(pred0.len() >= w, "HEVC: krátky riadok predikcie");
+        let mut i = 0;
+        while i + 8 <= w {
+            let (lo, hi) = medzi_drahy(riadky, koef, i, false, 8192 << 6);
+            let p0 = nacitaj_pred(pred0, i, false);
+            let lo = vaddw_s16(vshrq_n_s32::<6>(lo), vget_low_s16(p0));
+            let hi = vaddw_high_s16(vshrq_n_s32::<6>(hi), p0);
+            // SAFETY: i + 8 ≤ w = ciel.len().
+            unsafe { vst1_u8(ciel.as_mut_ptr().add(i), dve_na_vzorky(lo, hi)) };
+            i += 8;
+        }
+        if i + 4 <= w {
+            let (lo, _) = medzi_drahy(riadky, koef, i, true, 8192 << 6);
+            let lo = vaddw_s16(vshrq_n_s32::<6>(lo), vget_low_s16(nacitaj_pred(pred0, i, true)));
+            uloz4_u8(ciel, i, dve_na_vzorky(lo, lo));
+            i += 4;
+        }
+        if i < w {
+            let zvysok: [&[i16]; N] = std::array::from_fn(|k| &riadky[k][i..]);
+            zvislo_medzi_dve_skalarne(&zvysok, koef, &pred0[i..w], &mut ciel[i..]);
+        }
+    }
+}
+
+/// Dve referencie, celočíselný vektor druhej (ako [`cely_dve_skalarne`]): (pred0 + (v << 6) + 8192 + 64) >> 7.
+pub fn cely_dve(zdroj: &[Vzorka], pred0: &[i16], ciel: &mut [Vzorka]) {
+    // SAFETY: pozri komentáre pri jednotlivých prístupoch do pamäte nižšie.
+    unsafe {
+        let w = ciel.len();
+        assert!(zdroj.len() >= w && pred0.len() >= w, "HEVC: krátky riadok zdroja");
+        let posun = vdupq_n_s16(8192);
+        let q = |v: uint8x8_t| vaddq_s16(vreinterpretq_s16_u16(vshll_n_u8::<6>(v)), posun);
+        let mut i = 0;
+        while i + 8 <= w {
+            let v = dve_i16(nacitaj_pred(pred0, i, false), q(nacitaj_u8x8(zdroj, i)));
+            // SAFETY: i + 8 ≤ w = ciel.len().
+            unsafe { vst1_u8(ciel.as_mut_ptr().add(i), v) };
+            i += 8;
+        }
+        if i + 4 <= w {
+            uloz4_u8(ciel, i, dve_i16(nacitaj_pred(pred0, i, true), q(nacitaj_u8x8(zdroj, i))));
+            i += 4;
+        }
+        if i < w {
+            cely_dve_skalarne(&zdroj[i..w], &pred0[i..w], &mut ciel[i..]);
         }
     }
 }
@@ -574,6 +867,37 @@ mod testy {
                 zvislo_medzi(&m, koef, &mut a);
                 zvislo_medzi_skalarne(&m, koef, &mut b);
                 assert_eq!(a, b, "medzi N={N} w={w}");
+
+                // spojené s predvoleným vážením (jedna aj dve referencie, aj celočíselný vektor)
+                let p0 = i16ky(n, w);
+                let (mut c, mut d) = (vec![0u8; w], vec![0u8; w]);
+                vodorovne8_jedna(&z, koef, &mut c);
+                vodorovne8_jedna_skalarne(&z, koef, &mut d);
+                assert_eq!(c, d, "vodorovne jedna N={N} w={w}");
+                vodorovne8_dve(&z, koef, &p0, &mut c);
+                vodorovne8_dve_skalarne(&z, koef, &p0, &mut d);
+                assert_eq!(c, d, "vodorovne dve N={N} w={w}");
+                zvislo8_jedna(&r, koef, &mut c);
+                zvislo8_jedna_skalarne(&r, koef, &mut d);
+                assert_eq!(c, d, "zvislo jedna N={N} w={w}");
+                zvislo8_dve(&r, koef, &p0, &mut c);
+                zvislo8_dve_skalarne(&r, koef, &p0, &mut d);
+                assert_eq!(c, d, "zvislo dve N={N} w={w}");
+                // medzivýsledky prvého stupňa pri 8 bitoch ležia v −6 120 … 22 440 – v tomto rozsahu sa predSamples
+                // − 8192 zmestí do i16 a skalárny vzor (skrátenie na i16) je presný
+                let medzi8: Vec<Vec<i16>> = (0..N)
+                    .map(|_| (0..w + 5).map(|_| (n.dalsie() % 28_561) as i16 - 6120).collect())
+                    .collect();
+                let m: [&[i16]; N] = std::array::from_fn(|k| medzi8[k].as_slice());
+                zvislo_medzi_jedna(&m, koef, &mut c);
+                zvislo_medzi_jedna_skalarne(&m, koef, &mut d);
+                assert_eq!(c, d, "medzi jedna N={N} w={w}");
+                zvislo_medzi_dve(&m, koef, &p0, &mut c);
+                zvislo_medzi_dve_skalarne(&m, koef, &p0, &mut d);
+                assert_eq!(c, d, "medzi dve N={N} w={w}");
+                cely_dve(&z, &p0, &mut c);
+                cely_dve_skalarne(&z, &p0, &mut d);
+                assert_eq!(c, d, "celé dve w={w}");
             }
         }
     }

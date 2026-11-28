@@ -141,14 +141,24 @@ pub fn predikuj<Z: Zdroj + ?Sized>(
         let mut stav = bunka.borrow_mut();
         let Pracovne { pred: [pred0, pred1], medzi, okraj } = stav.get_or_insert_with(Pracovne::nove);
         let n = w * h;
+        // 8 bitov, predvolené váženie: posledný stupeň filtra zapíše priamo vzorky (váženie v ňom, bez prechodu
+        // cez medzivýsledky); pri dvoch referenciách prvá ide do medzivýsledkov ako doteraz
+        let spojene = vahy.is_none() && bitova_hlbka == 8;
         match (ref0, ref1) {
+            (Some(r0), Some(r1)) if spojene => {
+                interpoluj_zlozku(jas, r0, blok, 8, Ciel::Medzi(&mut pred0[..n]), medzi, okraj);
+                interpoluj_zlozku(jas, r1, blok, 8, Ciel::Dve(&pred0[..n], ciel, krok), medzi, okraj);
+            }
+            (Some(r), None) | (None, Some(r)) if spojene => {
+                interpoluj_zlozku(jas, r, blok, 8, Ciel::Jedna(ciel, krok), medzi, okraj);
+            }
             (Some(r0), Some(r1)) => {
-                interpoluj_zlozku(jas, r0, blok, bitova_hlbka, &mut pred0[..n], medzi, okraj);
-                interpoluj_zlozku(jas, r1, blok, bitova_hlbka, &mut pred1[..n], medzi, okraj);
+                interpoluj_zlozku(jas, r0, blok, bitova_hlbka, Ciel::Medzi(&mut pred0[..n]), medzi, okraj);
+                interpoluj_zlozku(jas, r1, blok, bitova_hlbka, Ciel::Medzi(&mut pred1[..n]), medzi, okraj);
                 vaz_dve(&pred0[..n], &pred1[..n], vahy, w, bitova_hlbka, ciel, krok);
             }
             (Some(r), None) | (None, Some(r)) => {
-                interpoluj_zlozku(jas, r, blok, bitova_hlbka, &mut pred0[..n], medzi, okraj);
+                interpoluj_zlozku(jas, r, blok, bitova_hlbka, Ciel::Medzi(&mut pred0[..n]), medzi, okraj);
                 let zoznam = usize::from(ref0.is_none());
                 vaz_jednu(&pred0[..n], vahy, zoznam, w, bitova_hlbka, ciel, krok);
             }
@@ -190,6 +200,19 @@ thread_local! {
     static PRACOVNE: RefCell<Option<Pracovne>> = const { RefCell::new(None) };
 }
 
+/// Kam zapíše posledný stupeň interpolácie bloku `w` × `h`: medzivýsledky na váženie, alebo pri 8 bitoch
+/// a predvolenom vážení (8.5.3.3.4.2) priamo vzorky – váženie je spojené s posledným stupňom filtra a blok
+/// neprechádza cez medzivýsledky (na Cortex-A53 samostatný prechod váženia stál ≈ 2,5 taktu na vzorku).
+enum Ciel<'a> {
+    /// predSamplesLX − 8192, riadok j na `[j * w..]`
+    Medzi(&'a mut [i16]),
+    /// jedna referencia, 8 bitov: Clip3(0, 255, (predSamplesLX + 32) >> 6) do vzoriek, riadok j na `[j * krok..]`
+    Jedna(&'a mut [Vzorka], usize),
+    /// dve referencie, 8 bitov: `pred0` = predSamplesL0 − 8192 (riadok po w), do vzoriek
+    /// Clip3(0, 255, (predSamplesL0 + predSamplesL1 + 64) >> 7), riadok j na `[j * krok..]`
+    Dve(&'a [i16], &'a mut [Vzorka], usize),
+}
+
 /// Interpolácia bloku jednej zložky z jednej referencie (8.5.3.3.3.1): jas filtrom 8 bodov so štvrtinovou
 /// presnosťou, farba 4:2:0 filtrom 4 body s osminovou presnosťou (mvC = mv).
 fn interpoluj_zlozku<Z: Zdroj + ?Sized>(
@@ -197,20 +220,20 @@ fn interpoluj_zlozku<Z: Zdroj + ?Sized>(
     (rovina, mv): (&Z, [i32; 2]),
     blok: Blok,
     bitova_hlbka: u32,
-    pred: &mut [i16],
+    ciel: Ciel,
     medzi: &mut [i16],
     okraj: &mut [Vzorka],
 ) {
     if jas {
-        interpoluj(&FILTER_JAS, 2, rovina, mv, blok, bitova_hlbka, pred, medzi, okraj);
+        interpoluj(&FILTER_JAS, 2, rovina, mv, blok, bitova_hlbka, ciel, medzi, okraj);
     } else {
-        interpoluj(&FILTER_FARBA, 3, rovina, mv, blok, bitova_hlbka, pred, medzi, okraj);
+        interpoluj(&FILTER_FARBA, 3, rovina, mv, blok, bitova_hlbka, ciel, medzi, okraj);
     }
 }
 
 /// Interpolácia bloku filtrom `N` bodov (8.5.3.3.3.2 jas, 8.5.3.3.3.3 farba). Vektor má `log2_jemnost` bitov
 /// zlomku: xInt = x + (mv[0] >> log2_jemnost) + i, xFrac = mv[0] & (2^log2_jemnost − 1), rovnako y.
-/// Do `pred` (riadok j na `[j * w..]`) zapíše predSampleLX − 8192.
+/// Výsledok zapíše podľa `ciel` ([`Ciel`]).
 #[allow(clippy::too_many_arguments)]
 fn interpoluj<const N: usize, Z: Zdroj + ?Sized>(
     filtre: &[[i16; N]],
@@ -219,7 +242,7 @@ fn interpoluj<const N: usize, Z: Zdroj + ?Sized>(
     mv: [i32; 2],
     blok: Blok,
     bitova_hlbka: u32,
-    pred: &mut [i16],
+    ciel: Ciel,
     medzi: &mut [i16],
     okraj: &mut [Vzorka],
 ) {
@@ -237,21 +260,70 @@ fn interpoluj<const N: usize, Z: Zdroj + ?Sized>(
 
     let shift1 = (bitova_hlbka - 8).min(4);
     let shift3 = 14u32.saturating_sub(bitova_hlbka).max(2);
-    let pred = &mut pred[..w * h];
+    debug_assert!(
+        matches!(ciel, Ciel::Medzi(_)) || bitova_hlbka == 8,
+        "HEVC: spojené váženie len pre 8 bitov"
+    );
+    // riadky N bodov zvislého filtra pre riadok j bloku
+    let n_riadkov = |j: usize| -> [&[Vzorka]; N] { std::array::from_fn(|k| riadky[j + k]) };
     match (fx, fy) {
-        (0, 0) => {
-            for (p, r) in pred.chunks_exact_mut(w).zip(riadky) {
-                riadok_cely(r, p, shift3);
+        (0, 0) => match ciel {
+            Ciel::Medzi(pred) => {
+                for (p, r) in pred[..w * h].chunks_exact_mut(w).zip(riadky) {
+                    riadok_cely(r, p, shift3);
+                }
             }
-        }
+            // celočíselný vektor jednej referencie (len kópia) rieši už `predikuj`
+            Ciel::Jedna(c, krok) => {
+                for (j, r) in riadky.iter().enumerate() {
+                    c[j * krok..][..w].copy_from_slice(&r[..w]);
+                }
+            }
+            Ciel::Dve(p0, c, krok) => {
+                for (j, r) in riadky.iter().enumerate() {
+                    super::simd::cely_dve(&r[..w], &p0[j * w..][..w], &mut c[j * krok..][..w]);
+                }
+            }
+        },
         (_, 0) => {
-            for (p, r) in pred.chunks_exact_mut(w).zip(riadky) {
-                riadok_vodorovne(r, &filtre[fx], p, shift1, POSUN_MEDZI);
+            let f = &filtre[fx];
+            match ciel {
+                Ciel::Medzi(pred) => {
+                    for (p, r) in pred[..w * h].chunks_exact_mut(w).zip(riadky) {
+                        riadok_vodorovne(r, f, p, shift1, POSUN_MEDZI);
+                    }
+                }
+                Ciel::Jedna(c, krok) => {
+                    for (j, r) in riadky.iter().enumerate() {
+                        super::simd::vodorovne8_jedna(r, f, &mut c[j * krok..][..w]);
+                    }
+                }
+                Ciel::Dve(p0, c, krok) => {
+                    for (j, r) in riadky.iter().enumerate() {
+                        super::simd::vodorovne8_dve(r, f, &p0[j * w..][..w], &mut c[j * krok..][..w]);
+                    }
+                }
             }
         }
         (0, _) => {
-            for (j, p) in pred.chunks_exact_mut(w).enumerate() {
-                riadok_zvislo(&riadky[j..], &filtre[fy], p, shift1, POSUN_MEDZI);
+            let f = &filtre[fy];
+            match ciel {
+                Ciel::Medzi(pred) => {
+                    for (j, p) in pred[..w * h].chunks_exact_mut(w).enumerate() {
+                        riadok_zvislo(&riadky[j..], f, p, shift1, POSUN_MEDZI);
+                    }
+                }
+                Ciel::Jedna(c, krok) => {
+                    for j in 0..h {
+                        super::simd::zvislo8_jedna(&n_riadkov(j), f, &mut c[j * krok..][..w]);
+                    }
+                }
+                Ciel::Dve(p0, c, krok) => {
+                    for j in 0..h {
+                        let p0 = &p0[j * w..][..w];
+                        super::simd::zvislo8_dve(&n_riadkov(j), f, p0, &mut c[j * krok..][..w]);
+                    }
+                }
             }
         }
         _ => {
@@ -260,8 +332,25 @@ fn interpoluj<const N: usize, Z: Zdroj + ?Sized>(
             for (m, r) in medzi.chunks_exact_mut(w).zip(riadky) {
                 riadok_vodorovne(r, &filtre[fx], m, shift1, 0);
             }
-            for (j, p) in pred.chunks_exact_mut(w).enumerate() {
-                riadok_zvislo_medzi(&medzi[j * w..], &filtre[fy], p);
+            let f = &filtre[fy];
+            let m_riadkov = |j: usize| -> [&[i16]; N] { std::array::from_fn(|k| &medzi[(j + k) * w..][..w]) };
+            match ciel {
+                Ciel::Medzi(pred) => {
+                    for (j, p) in pred[..w * h].chunks_exact_mut(w).enumerate() {
+                        riadok_zvislo_medzi(&medzi[j * w..], f, p);
+                    }
+                }
+                Ciel::Jedna(c, krok) => {
+                    for j in 0..h {
+                        super::simd::zvislo_medzi_jedna(&m_riadkov(j), f, &mut c[j * krok..][..w]);
+                    }
+                }
+                Ciel::Dve(p0, c, krok) => {
+                    for j in 0..h {
+                        let p0 = &p0[j * w..][..w];
+                        super::simd::zvislo_medzi_dve(&m_riadkov(j), f, p0, &mut c[j * krok..][..w]);
+                    }
+                }
             }
         }
     }
@@ -572,6 +661,95 @@ pub(crate) fn predvolene_dve_skalarne(
     for ((c, &a), &b) in ciel.iter_mut().zip(pred0).zip(pred1) {
         *c = ((a as i32 + b as i32 + pridaj) >> shift).clamp(0, max) as Vzorka;
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Spojené jadrá pre 8 bitov a predvolené váženie: posledný stupeň filtra a váženie naraz. Skalárne vzory sú priamo
+// zložením oddelených krokov (filter do predSamples − 8192, potom predvolené váženie ako vaz_jednu / vaz_dve) –
+// rozhodca, s ktorým sa porovnáva NEON, a cesta pre iné procesory a zvyšky riadkov.
+// ---------------------------------------------------------------------------------------------------------------
+
+/// Jedna referencia, vodorovný filter: `ciel[i] = Clip3(0, 255, (Σ_k koef[k] · zdroj[i + k] + 32) >> 6)`.
+pub(crate) fn vodorovne8_jedna_skalarne<const N: usize>(
+    zdroj: &[Vzorka],
+    koef: &[i16; N],
+    ciel: &mut [Vzorka],
+) {
+    let mut t = [0i16; MAX_BLOK];
+    let t = &mut t[..ciel.len()];
+    vodorovne8_skalarne(zdroj, koef, t, POSUN_MEDZI as i16);
+    predvolene_jedna_skalarne(t, ciel, POSUN_MEDZI + 32, 6, 255);
+}
+
+/// Dve referencie, vodorovný filter druhej: `pred0` = predSamplesL0 − 8192.
+pub(crate) fn vodorovne8_dve_skalarne<const N: usize>(
+    zdroj: &[Vzorka],
+    koef: &[i16; N],
+    pred0: &[i16],
+    ciel: &mut [Vzorka],
+) {
+    let mut t = [0i16; MAX_BLOK];
+    let t = &mut t[..ciel.len()];
+    vodorovne8_skalarne(zdroj, koef, t, POSUN_MEDZI as i16);
+    predvolene_dve_skalarne(pred0, t, ciel, 2 * POSUN_MEDZI + 64, 7, 255);
+}
+
+/// Jedna referencia, zvislý filter zo vzoriek.
+pub(crate) fn zvislo8_jedna_skalarne<const N: usize>(
+    riadky: &[&[Vzorka]; N],
+    koef: &[i16; N],
+    ciel: &mut [Vzorka],
+) {
+    let mut t = [0i16; MAX_BLOK];
+    let t = &mut t[..ciel.len()];
+    zvislo8_skalarne(riadky, koef, t, POSUN_MEDZI as i16);
+    predvolene_jedna_skalarne(t, ciel, POSUN_MEDZI + 32, 6, 255);
+}
+
+/// Dve referencie, zvislý filter zo vzoriek pre druhú.
+pub(crate) fn zvislo8_dve_skalarne<const N: usize>(
+    riadky: &[&[Vzorka]; N],
+    koef: &[i16; N],
+    pred0: &[i16],
+    ciel: &mut [Vzorka],
+) {
+    let mut t = [0i16; MAX_BLOK];
+    let t = &mut t[..ciel.len()];
+    zvislo8_skalarne(riadky, koef, t, POSUN_MEDZI as i16);
+    predvolene_dve_skalarne(pred0, t, ciel, 2 * POSUN_MEDZI + 64, 7, 255);
+}
+
+/// Jedna referencia, druhý stupeň 2D interpolácie.
+pub(crate) fn zvislo_medzi_jedna_skalarne<const N: usize>(
+    riadky: &[&[i16]; N],
+    koef: &[i16; N],
+    ciel: &mut [Vzorka],
+) {
+    let mut t = [0i16; MAX_BLOK];
+    let t = &mut t[..ciel.len()];
+    zvislo_medzi_skalarne(riadky, koef, t);
+    predvolene_jedna_skalarne(t, ciel, POSUN_MEDZI + 32, 6, 255);
+}
+
+/// Dve referencie, druhý stupeň 2D interpolácie druhej.
+pub(crate) fn zvislo_medzi_dve_skalarne<const N: usize>(
+    riadky: &[&[i16]; N],
+    koef: &[i16; N],
+    pred0: &[i16],
+    ciel: &mut [Vzorka],
+) {
+    let mut t = [0i16; MAX_BLOK];
+    let t = &mut t[..ciel.len()];
+    zvislo_medzi_skalarne(riadky, koef, t);
+    predvolene_dve_skalarne(pred0, t, ciel, 2 * POSUN_MEDZI + 64, 7, 255);
+}
+
+/// Dve referencie, celočíselný vektor druhej: predSamplesL1 = vzorka << 6.
+pub(crate) fn cely_dve_skalarne(zdroj: &[Vzorka], pred0: &[i16], ciel: &mut [Vzorka]) {
+    let mut t = [0i16; MAX_BLOK];
+    let t = &mut t[..ciel.len()];
+    riadok_cely(zdroj, t, 6);
+    predvolene_dve_skalarne(pred0, t, ciel, 2 * POSUN_MEDZI + 64, 7, 255);
 }
 
 /// Explicitné váženie riadka jednej referencie: `Clip3(0, max, ((p · vaha + pridaj) >> shift) + posun)`.
@@ -964,7 +1142,7 @@ mod testy {
             let (r, mv) = p.r0.as_ref().or(p.r1.as_ref()).unwrap();
             let blok = Blok { x: p.x, y: p.y, w: p.w, h: p.h };
             let pred = &mut prac.pred[0][..p.w * p.h];
-            interpoluj_zlozku(p.jas, (r, *mv), blok, 8, pred, &mut prac.medzi, &mut prac.okraj);
+            interpoluj_zlozku(p.jas, (r, *mv), blok, 8, Ciel::Medzi(pred), &mut prac.medzi, &mut prac.okraj);
             for yl in 0..p.h {
                 for xl in 0..p.w {
                     let (xp, yp) = (p.x as i64 + xl as i64, p.y as i64 + yl as i64);
@@ -1067,7 +1245,8 @@ mod testy {
                         assert_eq!(rozhodca_vzorka(jas, &r, mv, x as i64, y as i64, 8), ocakavany);
                         let pred = &mut prac.pred[0][..w * h];
                         let blok = Blok { x, y, w, h };
-                        interpoluj_zlozku(jas, (&r, mv), blok, 8, pred, &mut prac.medzi, &mut prac.okraj);
+                        let ciel = Ciel::Medzi(&mut pred[..]);
+                        interpoluj_zlozku(jas, (&r, mv), blok, 8, ciel, &mut prac.medzi, &mut prac.okraj);
                         assert_eq!(
                             pred[0] as i64 + POSUN_MEDZI as i64,
                             ocakavany,
