@@ -5,6 +5,7 @@ name: Médiá – kontajnery, FLAC, rozhodca a dlhý fuzzer (LÝRA)
 #   bit po bite tie isté pakety (čas, kľúčovosť, veľkosť, MD5 obsahu),
 # - FLAC: MD5 dekódovania sa rovná MD5 v STREAMINFO (sada IETF CELLAR, kodéry flac a FFmpeg),
 # - značky a ReplayGain (ID3v1, ID3v2.2–2.4, APEv2, Vorbis comment, Matroska, MP4) proti ffprobe,
+# - samomeranie `media_meranie` (R6): cena dekódovania a rovnaký odtlačok výstupu na x86-64, AArch64, ARMv7, ARMv6,
 # - dlhý fuzzer čítačiek a dekodérov (R211) s viacerými semienkami.
 on:
   push:
@@ -136,6 +137,35 @@ jobs:
         run: |
           echo "### Médiá – FLAC (RFC 9639) bitovo presne" >> "$GITHUB_STEP_SUMMARY"
           python3 media/nastroje/over_flac.py target/release/examples/media_flac "$RUNNER_TEMP/flac-test-files" "$RUNNER_TEMP/flac" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  meranie:
+    name: Médiá – samomeranie media_meranie (R6) a rovnaký výstup na x86-64, AArch64, ARMv7, ARMv6 (R307)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Nástroje (FFmpeg len zapisuje skúšobné súbory a je rozhodcom dĺžky)
+        run: |
+          sh nastroje/balicky.sh ffmpeg qemu-user gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf
+          rustup toolchain install && rustup target add aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf arm-unknown-linux-musleabihf
+      - name: Zostavenie – staticky pre procesory kariet KLÍČA
+        run: |
+          cargo build --locked --release -p orchidea-media --example media_meranie
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
+            cargo build --locked --release -p orchidea-media --example media_meranie --target aarch64-unknown-linux-musl
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=arm-linux-gnueabihf-gcc \
+            cargo build --locked --release -p orchidea-media --example media_meranie --target armv7-unknown-linux-musleabihf
+          CARGO_TARGET_ARM_UNKNOWN_LINUX_MUSLEABIHF_LINKER=arm-linux-gnueabihf-gcc \
+            cargo build --locked --release -p orchidea-media --example media_meranie --target arm-unknown-linux-musleabihf
+          file target/*/release/examples/media_meranie
+      - name: Skúšobné súbory, meranie a odtlačok na všetkých procesoroch
+        shell: bash
+        run: |
+          echo "### Médiá – samomeranie dekódovania (media_meranie, R6)" >> "$GITHUB_STEP_SUMMARY"
+          r=target; e=release/examples/media_meranie
+          python3 media/nastroje/over_meranie.py "$RUNNER_TEMP/meranie" "$r/$e" \
+            "aarch64=qemu-aarch64 -cpu cortex-a53 $r/aarch64-unknown-linux-musl/$e" \
+            "armv7=qemu-arm -cpu cortex-a7 $r/armv7-unknown-linux-musleabihf/$e" \
+            "armv6=qemu-arm -cpu arm1176 $r/arm-unknown-linux-musleabihf/$e" | tee -a "$GITHUB_STEP_SUMMARY"
 
   fuzzer:
     name: Médiá – dlhý fuzzer čítačiek (R211)

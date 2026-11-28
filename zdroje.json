@@ -108,11 +108,11 @@
       "posudenie_charty": "systémové rozhrania; ORCHIDEA sa s nimi nezviaže pri preklade a funguje aj bez nich"
     },
     {
-      "meno": "QEMU (qemu-user) a krížový prekladač GNU pre ARMv7 (gcc-arm-linux-gnueabihf)",
+      "meno": "QEMU (qemu-user) a krížové prekladače GNU pre ARMv6/ARMv7 a AArch64 (gcc-arm-linux-gnueabihf, gcc-aarch64-linux-gnu)",
       "trieda": "B",
       "licencia": "GPL-2.0 (nástroje, nie súčasť programu)",
       "kde": "CI – skúšky pre 32-bitový ARM (Raspberry Pi)",
-      "ucel": "spustenie skúšok 32-bitovej zostavy na počítači CI; linker pre cieľ armv7",
+      "ucel": "spustenie skúšok 32-bitovej zostavy na počítači CI; linker pre cieľ armv7; samomeranie médií media_meranie na procesoroch kariet (R6, rovnaký odtlačok výstupu – R307)",
       "posudenie_charty": "nástroje zostavenia; do programu ORCHIDEA sa nič neprenáša"
     },
     {
@@ -292,8 +292,8 @@
       "meno": "rozhodcovia kontajnerov médií v CI: FFmpeg a ffprobe (s kodérmi x264, x265, libvpx, libaom, Opus, Vorbis, LAME) a MKVToolNix (mkvmerge)",
       "trieda": "B",
       "licencia": "FFmpeg LGPL-2.1-or-later / GPL-2.0-or-later (podľa zostavenia Ubuntu), MKVToolNix GPL-2.0-or-later",
-      "kde": "len CI – inštalujú sa z balíkov Ubuntu pri behu (media/nastroje/over_media.py); nie sú v repozitári ani v programe",
-      "ucel": "nezávislé overenie čítačiek kontajnerov balíka media (L1–L4): FFmpeg a mkvmerge zapíšu skúšobné súbory, ffprobe vypíše pakety (čas, trvanie, kľúčovosť, veľkosť, MD5) na porovnanie bit po bite",
+      "kde": "len CI – inštalujú sa z balíkov Ubuntu pri behu (media/nastroje/over_media.py, over_meranie.py); nie sú v repozitári ani v programe",
+      "ucel": "nezávislé overenie čítačiek kontajnerov balíka media (L1–L4): FFmpeg a mkvmerge zapíšu skúšobné súbory, ffprobe vypíše pakety (čas, trvanie, kľúčovosť, veľkosť, MD5) na porovnanie bit po bite; zápis skúšobných súborov samomerania (R6) a dĺžka ich dekódovania",
       "posudenie_charty": "slobodné nástroje použité len ako rozhodcovia správnosti; žiadny ich kód nie je v ORCHIDEI, čítačky sú písané podľa RFC 9559 a RFC 8794"
     },
     {
