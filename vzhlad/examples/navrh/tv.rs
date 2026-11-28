@@ -6,7 +6,7 @@ use crate::obrazky::{Obr, plagat};
 use crate::pohlad::logo_v;
 use orchidea_pismo::zmiesaj;
 use orchidea_vzhlad::ikony::Ikona;
-use orchidea_vzhlad::kreslic::{Kreslic, zakladna_v_strede};
+use orchidea_vzhlad::kreslic::{Kreslic, SmerPrechodu, zakladna_v_strede};
 use orchidea_vzhlad::miery::*;
 use orchidea_vzhlad::tema::Tema;
 
@@ -98,6 +98,10 @@ fn napoveda(k: &mut Kreslic, t: &Tema) {
         }
     }
     let y = H - TV_OKRAJ_Y - 40.0;
+    // nad plagátmi nemusí prechod stačiť – zvyšok clony sa dopočíta z obrázka pod nápovedou
+    let min = if t.vysoky_kontrast { 7.0 } else { 4.5 };
+    let a = k.potrebna_clona(0.0, y, W, 40.0, t.text_druhy, t.okolie, min);
+    k.clona_s_prechodom(0.0, y - 8.0, W, H - y + 8.0, t.okolie, a, 96.0, SmerPrechodu::Nahor);
     let mut x = W - TV_OKRAJ_X;
     for (kl, s) in [("Späť", "Domov"), ("šípky", "Pohyb"), ("OK", "Prehrať")] {
         let sw = k.sirka(s, TV_POPIS);
@@ -151,20 +155,44 @@ fn karta(
     }
 }
 
+/// Clony nad náhľadom pod textom – lišta hore (záložky, hodiny) a stĺpec s titulom a popisom vľavo. Krytie sa
+/// **dopočíta z obrázka** (`Kreslic::potrebna_clona`): najslabší text (`text_druhy`) musí mať 4,5 : 1 (v téme
+/// s vysokým kontrastom 7 : 1) voči každému bodu pod sebou – pri každom plagáte, aj vo svetlých témach.
+fn clony_pod_textom(k: &mut Kreslic, t: &Tema, stlpec_x: f32, stlpec_w: f32, stlpec_y: f32, stlpec_h: f32) {
+    let min = if t.vysoky_kontrast { 7.0 } else { 4.5 };
+    let lista = TV_OKRAJ_Y + 24.0 + TV_TEXT.velkost + 32.0;
+    let a = k.potrebna_clona(0.0, 0.0, W, lista, t.text_druhy, t.okolie, min);
+    k.clona_s_prechodom(0.0, 0.0, W, lista, t.okolie, a, 120.0, SmerPrechodu::Nadol);
+    let a = k.potrebna_clona(stlpec_x, stlpec_y, stlpec_w, stlpec_h, t.text_druhy, t.okolie, min);
+    k.clona_s_prechodom(
+        0.0,
+        0.0,
+        stlpec_x + stlpec_w + 24.0,
+        H * 0.72,
+        t.okolie,
+        a,
+        320.0,
+        SmerPrechodu::Doprava,
+    );
+}
+
 fn variant_a(k: &mut Kreslic, t: &Tema, foto: &Obr) {
     pozadie_s_nahladom(k, t, foto);
-    zalozky(k, t, 1);
     let x = TV_OKRAJ_X;
-    k.text("Svetlo nad jazerom", x, 316.0, TV_TITUL, t.text);
+    let titul = "Svetlo nad jazerom";
+    let popis =
+        ["Dvaja bratia sa po rokoch vrátia k horskému jazeru,", "kde ich otec postavil prvý most v doline."];
+    let sirka = popis.iter().map(|r| k.sirka(r, TV_POPIS)).fold(k.sirka(titul, TV_TITUL), f32::max);
+    clony_pod_textom(k, t, x, sirka, 316.0 - TV_TITUL.velkost - 8.0, 552.0 - 316.0 + TV_TITUL.velkost + 16.0);
+    zalozky(k, t, 1);
+    k.text(titul, x, 316.0, TV_TITUL, t.text);
     k.cisla("2024 · 1 h 52 min · 12+", x, 376.0, TV_POPIS, t.text_druhy);
     let mut sx = x;
     for s in ["1080p HEVC", "Dolby Digital 5.1", "Titulky SK"] {
         sx += stitok_tv(k, t, sx, 404.0, s) + 16.0;
     }
     let mut y = 508.0;
-    for r in
-        ["Dvaja bratia sa po rokoch vrátia k horskému jazeru,", "kde ich otec postavil prvý most v doline."]
-    {
+    for r in popis {
         k.text(r, x, y, TV_POPIS, t.text_druhy);
         y += 44.0;
     }

@@ -4,8 +4,49 @@
 //! rovnako v návrhu aj v programe.
 
 use crate::ikony::Ikona;
+use crate::kontrast::{linearne, pomer};
 use crate::miery::{Rez, TAH_IKONY};
 use orchidea_pismo::{Farba, Pismo, Platno, zmiesaj};
+use std::cell::Cell;
+
+thread_local! {
+    static MERAT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Zapne alebo vypne **meranie kontrastu nakresleného textu a ikôn** pre kresliče, ktoré sa potom vytvoria v tomto
+/// vlákne. Len pre skúšky a návrh – program ho nezapína (chladný systém: pri kreslení nič navyše).
+pub fn merat_kontrast(zapnute: bool) {
+    MERAT.with(|m| m.set(zapnute));
+}
+
+/// Nakreslený text alebo ikona a jeho kontrast podľa WCAG 2.2 voči tomu, **čo bolo naozaj pod ním** (plocha,
+/// fotka, plagát, farba z obalu, priesvitná clona) – nielen voči farbe z tabuľky témy.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Meranie {
+    /// text, pri ikone jej popis
+    pub co: String,
+    pub ikona: bool,
+    pub farba: Farba,
+    /// výška veľkého písmena v bodoch (pri ikone jej rozmer)
+    pub velkost: f32,
+    /// zmeraná plocha v bodoch: pri texte pás od základnej čiary po výšku veľkých písmen, pri ikone živá plocha
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// najhorší kontrast voči jednému obrazovému bodu pod textom
+    pub najmensi: f64,
+    /// kontrast, ktorý splní 98 % bodov pod textom (ukazuje, či je najhorší bod len okraj alebo celé pozadie)
+    pub percentil_2: f64,
+}
+
+/// Kam clona plynulo ubúda za svojím obdĺžnikom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmerPrechodu {
+    Doprava,
+    Nadol,
+    Nahor,
+}
 
 /// Kreslič s plátnom, písmom a mierkou.
 #[derive(Debug)]
@@ -13,13 +54,54 @@ pub struct Kreslic {
     pub p: Platno,
     pub pismo: Pismo,
     pub mierka: f32,
+    /// merania kontrastu (len ak bolo pri vytvorení zapnuté [`merat_kontrast`])
+    pub merania: Option<Vec<Meranie>>,
 }
 
 impl Kreslic {
     /// Plátno `w × h` bodov v mierke `mierka`, vyplnené farbou `f`.
     pub fn novy(w: f32, h: f32, mierka: f32, f: Farba) -> Kreslic {
         let (pw, ph) = ((w * mierka).round() as usize, (h * mierka).round() as usize);
-        Kreslic { p: Platno::nove(pw, ph, f), pismo: Pismo::stonka(), mierka }
+        let merania = MERAT.with(Cell::get).then(Vec::new);
+        Kreslic { p: Platno::nove(pw, ph, f), pismo: Pismo::stonka(), mierka, merania }
+    }
+
+    /// Zmeria kontrast farby `farba` voči bodom plátna v obdĺžniku (v bodoch) – volá sa **pred** nakreslením.
+    #[allow(clippy::too_many_arguments)]
+    fn zmeraj(&mut self, co: &str, ikona: bool, farba: Farba, velkost: f32, x: f32, y: f32, w: f32, h: f32) {
+        if self.merania.is_none() || w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let m = self.mierka;
+        let x0 = ((x * m).floor().max(0.0) as usize).min(self.p.sirka);
+        let x1 = (((x + w) * m).ceil().max(0.0) as usize).min(self.p.sirka);
+        let y0 = ((y * m).floor().max(0.0) as usize).min(self.p.vyska);
+        let y1 = (((y + h) * m).ceil().max(0.0) as usize).min(self.p.vyska);
+        let mut k: Vec<f64> = Vec::with_capacity((x1 - x0) * (y1 - y0));
+        for r in y0..y1 {
+            k.extend(
+                self.p.body[r * self.p.sirka + x0..r * self.p.sirka + x1].iter().map(|&b| pomer(farba, b)),
+            );
+        }
+        if k.is_empty() {
+            return;
+        }
+        k.sort_by(f64::total_cmp);
+        let zaznam = Meranie {
+            co: co.to_string(),
+            ikona,
+            farba,
+            velkost,
+            x,
+            y,
+            w,
+            h,
+            najmensi: k[0],
+            percentil_2: k[k.len() / 50],
+        };
+        if let Some(v) = self.merania.as_mut() {
+            v.push(zaznam);
+        }
     }
 
     /// Šírka a výška v bodoch.
@@ -146,6 +228,14 @@ impl Kreslic {
 
     /// Text na základnej čiare `zakladna`; vráti koniec textu (v bodoch).
     pub fn text(&mut self, t: &str, x: f32, zakladna: f32, rez: Rez, f: Farba) -> f32 {
+        if self.merania.is_some() && !t.trim().is_empty() {
+            let w = self.sirka(t, rez);
+            self.zmeraj(t, false, f, rez.velkost, x, zakladna - rez.velkost, w, rez.velkost);
+        }
+        self.text_bez_merania(t, x, zakladna, rez, f)
+    }
+
+    fn text_bez_merania(&mut self, t: &str, x: f32, zakladna: f32, rez: Rez, f: Farba) -> f32 {
         let m = self.mierka;
         let pismo = &self.pismo;
         self.p.text(pismo, t, x * m, zakladna * m, rez.velkost * m, rez.hrubka * m, f) / m
@@ -194,6 +284,10 @@ impl Kreslic {
 
     /// Text s číslicami rovnakej šírky (každá číslica v strede rovnako širokej bunky); vráti koniec.
     pub fn cisla(&mut self, t: &str, x: f32, zakladna: f32, rez: Rez, f: Farba) -> f32 {
+        if self.merania.is_some() && !t.trim().is_empty() {
+            let w = self.sirka_cisel(t, rez);
+            self.zmeraj(t, false, f, rez.velkost, x, zakladna - rez.velkost, w, rez.velkost);
+        }
         let c = self.sirka_cislice(rez);
         let mut pero = x;
         let mut znak = [0u8; 4];
@@ -202,10 +296,10 @@ impl Kreslic {
             let vlastna =
                 self.pismo.posun(z, rez.velkost * self.mierka, rez.hrubka * self.mierka) / self.mierka;
             if z.is_ascii_digit() {
-                self.text(s, pero + (c - vlastna) / 2.0, zakladna, rez, f);
+                self.text_bez_merania(s, pero + (c - vlastna) / 2.0, zakladna, rez, f);
                 pero += c;
             } else {
-                self.text(s, pero, zakladna, rez, f);
+                self.text_bez_merania(s, pero, zakladna, rez, f);
                 pero += vlastna;
             }
         }
@@ -220,6 +314,11 @@ impl Kreslic {
 
     /// Ikona veľkosti `s` bodov s ľavým horným rohom v (x, y).
     pub fn ikona(&mut self, ik: Ikona, x: f32, y: f32, s: f32, f: Farba) {
+        if self.merania.is_some() {
+            // živá plocha ikony: 2,5–17,5 z 20
+            let o = s * 2.5 / 20.0;
+            self.zmeraj(ik.meno(), true, f, s, x + o, y + o, s - 2.0 * o, s - 2.0 * o);
+        }
         let m = self.mierka;
         let k = s / 20.0 * m;
         let h = TAH_IKONY * s / 20.0 * m;
@@ -274,6 +373,108 @@ impl Kreslic {
         self.obdlznik_a(x, y, w, h, 0.0, f, a as f32);
     }
 
+    /// Najmenšie krytie clony farby `clona` (0–255), pri ktorom má `popredie` voči **každému** bodu obdĺžnika
+    /// (v bodoch) aspoň pomer `pomer_min` podľa WCAG 2.2. Clona pod textom nad obrázkom sa tak dopočíta kódom podľa
+    /// skutočného obrázka – plagát, obal či fotka sa menia za behu a pevné krytie by raz nestačilo. Počíta sa len pri
+    /// zmene obrázka. Ak nestačí ani plná clona, vráti 255.
+    #[allow(clippy::too_many_arguments)]
+    pub fn potrebna_clona(
+        &self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        popredie: Farba,
+        clona: Farba,
+        pomer_min: f64,
+    ) -> u8 {
+        let lin: [f64; 256] = std::array::from_fn(|c| linearne(c as u32));
+        let l = |f: Farba| {
+            0.2126 * lin[((f >> 16) & 0xFF) as usize]
+                + 0.7152 * lin[((f >> 8) & 0xFF) as usize]
+                + 0.0722 * lin[(f & 0xFF) as usize]
+        };
+        let lp = l(popredie);
+        let m = self.mierka;
+        let x0 = ((x * m).floor().max(0.0) as usize).min(self.p.sirka);
+        let x1 = (((x + w) * m).ceil().max(0.0) as usize).min(self.p.sirka);
+        let y0 = ((y * m).floor().max(0.0) as usize).min(self.p.vyska);
+        let y1 = (((y + h) * m).ceil().max(0.0) as usize).min(self.p.vyska);
+        let mut body: Vec<Farba> = Vec::with_capacity((x1 - x0) * (y1 - y0));
+        for r in y0..y1 {
+            body.extend_from_slice(&self.p.body[r * self.p.sirka + x0..r * self.p.sirka + x1]);
+        }
+        body.sort_unstable();
+        body.dedup();
+        let vyhovuje = |a: u8| {
+            body.iter().all(|&b| {
+                let lb = l(zmiesaj(b, clona, a));
+                (lp.max(lb) + 0.05) / (lp.min(lb) + 0.05) + 1e-9 >= pomer_min
+            })
+        };
+        if vyhovuje(0) {
+            return 0;
+        }
+        if !vyhovuje(255) {
+            return 255;
+        }
+        // delenie intervalu: `dole` nevyhovuje, `hore` vyhovuje
+        let (mut dole, mut hore) = (0u8, 255u8);
+        while hore - dole > 1 {
+            let stred = dole + (hore - dole) / 2;
+            if vyhovuje(stred) { hore = stred } else { dole = stred }
+        }
+        // zmiešanie po zložkách nemusí byť v svietivosti presne monotónne – istota
+        while hore < 255 && !vyhovuje(hore) {
+            hore += 1;
+        }
+        hore
+    }
+
+    /// Clona farby `f` s krytím `a` v obdĺžniku (v bodoch), za ním plynulý prechod do nuly na dĺžke `prechod`
+    /// v smere `smer` – bez viditeľnej hrany.
+    #[allow(clippy::too_many_arguments)]
+    pub fn clona_s_prechodom(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        f: Farba,
+        a: u8,
+        prechod: f32,
+        smer: SmerPrechodu,
+    ) {
+        if a == 0 {
+            return;
+        }
+        let m = self.mierka;
+        let (ox, oy, ow, oh) = match smer {
+            SmerPrechodu::Doprava => (x, y, w + prechod, h),
+            SmerPrechodu::Nadol => (x, y, w, h + prechod),
+            SmerPrechodu::Nahor => (x, y - prechod, w, h + prechod),
+        };
+        let x0 = ((ox * m).floor().max(0.0) as usize).min(self.p.sirka);
+        let x1 = (((ox + ow) * m).ceil().max(0.0) as usize).min(self.p.sirka);
+        let y0 = ((oy * m).floor().max(0.0) as usize).min(self.p.vyska);
+        let y1 = (((oy + oh) * m).ceil().max(0.0) as usize).min(self.p.vyska);
+        for py in y0..y1 {
+            let by = (py as f32 + 0.5) / m;
+            for px in x0..x1 {
+                let bx = (px as f32 + 0.5) / m;
+                let za = match smer {
+                    SmerPrechodu::Doprava => bx - (x + w),
+                    SmerPrechodu::Nadol => by - (y + h),
+                    SmerPrechodu::Nahor => y - by,
+                };
+                let v = (za / prechod.max(1e-3)).clamp(0.0, 1.0);
+                let k = 1.0 - v * v * (3.0 - 2.0 * v);
+                let i = py * self.p.sirka + px;
+                self.p.body[i] = zmiesaj(self.p.body[i], f, (a as f32 * k).round() as u8);
+            }
+        }
+    }
+
     /// Uloží plátno ako PNG.
     pub fn uloz_png(&self, cesta: &std::path::Path) -> std::io::Result<()> {
         std::fs::write(cesta, self.p.png())
@@ -307,6 +508,32 @@ mod skusky {
             let sive = riadok.iter().filter(|&&f| f != 0xFFFFFF && f != 0).count();
             assert_eq!((biele, sive), (m as usize, 0), "mierka {m}");
         }
+    }
+
+    #[test]
+    fn clona_sa_dopocita_podla_obrazka() {
+        // svetlý text na strednej sivej: bez clony nestačí, s dopočítanou clonou áno, s o 1 menšou nie
+        let mut k = Kreslic::novy(40.0, 20.0, 1.0, 0x808080);
+        k.obdlznik(20.0, 0.0, 20.0, 20.0, 0.0, 0x6A6A6A);
+        let a = k.potrebna_clona(0.0, 0.0, 40.0, 20.0, 0xE9EAEE, 0x131417, 4.5);
+        assert!(a > 0 && a < 255, "{a}");
+        let najhorsi = |a: u8| {
+            k.p.body.iter().map(|&b| pomer(0xE9EAEE, zmiesaj(b, 0x131417, a))).fold(f64::MAX, f64::min)
+        };
+        assert!(najhorsi(a) >= 4.5 && najhorsi(a - 1) < 4.5, "{a}: {} / {}", najhorsi(a), najhorsi(a - 1));
+        // tmavá plocha netreba nič
+        let k = Kreslic::novy(10.0, 10.0, 1.0, 0x131417);
+        assert_eq!(k.potrebna_clona(0.0, 0.0, 10.0, 10.0, 0xE9EAEE, 0x131417, 4.5), 0);
+    }
+
+    #[test]
+    fn clona_s_prechodom_nema_hranu() {
+        let mut k = Kreslic::novy(100.0, 1.0, 1.0, 0xFFFFFF);
+        k.clona_s_prechodom(0.0, 0.0, 40.0, 1.0, 0x000000, 200, 40.0, SmerPrechodu::Doprava);
+        let jas: Vec<u32> = k.p.body.iter().map(|&b| b & 0xFF).collect();
+        assert_eq!(jas[0], 255 - 200);
+        assert!(jas.windows(2).all(|d| d[1] >= d[0] && d[1] - d[0] <= 10), "{jas:?}");
+        assert_eq!(jas[99], 255);
     }
 
     #[test]

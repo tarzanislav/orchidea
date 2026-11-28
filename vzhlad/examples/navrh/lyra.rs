@@ -6,6 +6,7 @@ use crate::obrazky::{Obr, obal, priemer, stvorec};
 use crate::pohlad::logo;
 use orchidea_pismo::zmiesaj;
 use orchidea_vzhlad::ikony::Ikona;
+use orchidea_vzhlad::kontrast::{farba_so_svietivostou, najsilnejsie_vmiesanie, svietivost};
 use orchidea_vzhlad::kreslic::{Kreslic, zakladna_v_strede};
 use orchidea_vzhlad::miery::*;
 use orchidea_vzhlad::prvky::{self, Druh, Stav};
@@ -382,15 +383,24 @@ fn variant_b(k: &mut Kreslic, t: &Tema, foto: &Obr) {
 }
 
 fn variant_c(k: &mut Kreslic, t: &Tema, o: &Obr) {
-    let farba = priemer(o);
-    // pozadie: farba obalu jemne vmiešaná do okolia témy (text témy ostane čitateľný)
+    // pozadie: farba obalu vmiešaná do okolia témy – vo svetlej téme ako pastel so svietivosťou okolia (odtieň ostane,
+    // text nestratí kontrast); najsilnejšie vmiešanie sa aj tak dopočíta, aby text, druhý text a akcent v texte
+    // mali 4,5 : 1 (7 : 1) pri každom obale
+    let farba = if t.tmava { priemer(o) } else { farba_so_svietivostou(priemer(o), svietivost(t.okolie)) };
+    let min = if t.vysoky_kontrast { 7.0 } else { 4.5 };
+    let najviac = najsilnejsie_vmiesanie(
+        t.okolie,
+        farba,
+        if t.tmava { 70 } else { 55 },
+        &[t.text, t.text_druhy, t.akcent_v_texte],
+        min,
+    ) as f32;
     let (pw, ph) = (k.p.sirka, k.p.vyska);
     for y in 0..ph {
         let v = y as f32 / ph as f32;
         for x in 0..pw {
             let u = x as f32 / pw as f32;
-            let sila = ((1.0 - (u - 0.25).hypot(v - 0.45) * 1.3).clamp(0.0, 1.0)
-                * if t.tmava { 70.0 } else { 55.0 }) as u8;
+            let sila = ((1.0 - (u - 0.25).hypot(v - 0.45) * 1.3).clamp(0.0, 1.0) * najviac) as u8;
             k.p.body[y * pw + x] = zmiesaj(t.okolie, farba, sila);
         }
     }

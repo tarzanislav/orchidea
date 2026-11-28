@@ -32,7 +32,7 @@ fn ukazka(k: &mut Kreslic, t: &Tema, f: &Obr, x: f32, y: f32, w: f32) {
     k.kruh(x + 132.0 + (w - 144.0) * 0.6, y + 40.0, 4.0, t.akcent);
     k.ikona(Ikona::Hviezda, x + 132.0, y + 60.0, 16.0, t.hviezda);
     k.ikona(Ikona::Hviezda, x + 152.0, y + 60.0, 16.0, t.hviezda);
-    k.ikona(Ikona::Hviezda, x + 172.0, y + 60.0, 16.0, t.prvok_stlaceny);
+    k.ikona(Ikona::HviezdaPrazdna, x + 172.0, y + 60.0, 16.0, t.okraj_silny);
     let y = y + 108.0;
     let a =
         prvky::tlacidlo(k, t, Druh::Hlavne, Stav::Bezny, false, x, y, TLACIDLO_MALE, None, Some("Uložiť"));
@@ -286,7 +286,7 @@ pub fn ikony(m: f32) -> Kreslic {
         &mut k,
         t,
         "Ikony – jedna mriežka 20 × 20 bodov, jeden ťah 1,7 bodu",
-        "Živá plocha 2,5–17,5; okrúhle konce; vyplnené len Prehrať, hviezda a polovica témy. Popis je zároveň text bubliny.",
+        "Živá plocha 2,5–17,5; okrúhle konce; vyplnené len Prehrať, hviezda a polovica témy; neobsadená hviezda je obrys. Popis je zároveň text bubliny.",
     );
     let (stlpce, cw, ch) = (9, 150.0, 92.0);
     for (i, ik) in VSETKY.iter().enumerate() {

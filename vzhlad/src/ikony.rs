@@ -39,10 +39,12 @@ pub enum Ikona {
     Zoznam,
     Tema,
     Hviezda,
+    /// neobsadená hviezda hodnotenia – obrys (stav sa rozlíši tvarom, nielen farbou)
+    HviezdaPrazdna,
 }
 
 /// Všetky ikony (na list dizajnového systému a skúšky).
-pub const VSETKY: [Ikona; 34] = [
+pub const VSETKY: [Ikona; 35] = [
     Ikona::Otvorit,
     Ikona::OtocVlavo,
     Ikona::OtocVpravo,
@@ -77,6 +79,7 @@ pub const VSETKY: [Ikona; 34] = [
     Ikona::Zoznam,
     Ikona::Tema,
     Ikona::Hviezda,
+    Ikona::HviezdaPrazdna,
 ];
 
 /// Lomená čiara – body na mriežke 20 × 20.
@@ -95,6 +98,17 @@ pub fn obluk(cx: f32, cy: f32, r: f32, od: f32, po: f32) -> Tah {
 
 fn obdlznik(x0: f32, y0: f32, x1: f32, y1: f32) -> Tah {
     vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]
+}
+
+/// Päťcípa hviezda (vonkajší polomer 8, vnútorný 3,4; ťažisko opticky o 0,6 nižšie), zmenšená `k`-krát.
+fn hviezda(k: f32) -> Tah {
+    (0..10)
+        .map(|j| {
+            let u = (-90.0 + j as f32 * 36.0f32).to_radians();
+            let r = k * if j % 2 == 0 { 8.0 } else { 3.4 };
+            (10.0 + r * u.cos(), 10.6 + r * u.sin())
+        })
+        .collect()
 }
 
 /// Bodka (krátky ťah – okrúhly koniec spraví bod).
@@ -140,6 +154,7 @@ impl Ikona {
             Ikona::Zoznam => "Zoznam",
             Ikona::Tema => "Téma vzhľadu",
             Ikona::Hviezda => "Hodnotenie",
+            Ikona::HviezdaPrazdna => "Bez hodnotenia",
         }
     }
 
@@ -296,6 +311,12 @@ impl Ikona {
                 bodka(3.5, 14.5),
             ],
             Ikona::Tema => vec![obluk(10.0, 10.0, 7.5, 0.0, 360.0)],
+            // obrys o polovicu ťahu dnu – vonkajší okraj sedí s plnou hviezdou
+            Ikona::HviezdaPrazdna => {
+                let mut b = hviezda(1.0 - 0.85 / 8.0);
+                b.push(b[0]);
+                vec![b]
+            }
         }
     }
 
@@ -304,15 +325,7 @@ impl Ikona {
         match self {
             // trojuholník je o 0,8 bodu vpravo od geometrického stredu – opticky stojí v strede kruhu
             Ikona::Prehrat => Some(vec![(7.3, 4.5), (16.3, 10.0), (7.3, 15.5)]),
-            Ikona::Hviezda => Some(
-                (0..10)
-                    .map(|j| {
-                        let u = (-90.0 + j as f32 * 36.0f32).to_radians();
-                        let r = if j % 2 == 0 { 8.0 } else { 3.4 };
-                        (10.0 + r * u.cos(), 10.6 + r * u.sin())
-                    })
-                    .collect(),
-            ),
+            Ikona::Hviezda => Some(hviezda(1.0)),
             Ikona::Tema => Some(obluk(10.0, 10.0, 7.5, 90.0, 270.0)),
             _ => None,
         }

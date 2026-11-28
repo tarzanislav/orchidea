@@ -90,8 +90,10 @@ fn hlavicka_sekcie(k: &mut Kreslic, t: &Tema, s: &str, vpravo: Option<&str>, x: 
 
 fn hviezdy(k: &mut Kreslic, t: &Tema, x: f32, y: f32, pocet: usize) {
     for i in 0..5 {
-        let f = if i < pocet { t.hviezda } else { t.prvok_stlaceny };
-        k.ikona(Ikona::Hviezda, x + i as f32 * 28.0, y, 20.0, f);
+        // neobsadená = obrys v silnom okraji (3 : 1, tvar aj farba) – nie sivá plná hviezda
+        let (ik, f) =
+            if i < pocet { (Ikona::Hviezda, t.hviezda) } else { (Ikona::HviezdaPrazdna, t.okraj_silny) };
+        k.ikona(ik, x + i as f32 * 28.0, y, 20.0, f);
     }
 }
 

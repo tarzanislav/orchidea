@@ -8,7 +8,7 @@ use crate::tema::Tema;
 use orchidea_pismo::Farba;
 
 /// Zložka sRGB (0–255) prevedená do lineárneho svetla podľa WCAG 2.2.
-fn linearne(c: u32) -> f64 {
+pub(crate) fn linearne(c: u32) -> f64 {
     let c = c as f64 / 255.0;
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
@@ -22,6 +22,29 @@ pub fn svietivost(f: Farba) -> f64 {
 pub fn pomer(a: Farba, b: Farba) -> f64 {
     let (x, y) = (svietivost(a), svietivost(b));
     (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// Najsilnejšie vmiešanie farby `f` do pozadia `pozadie` (krytie 0 až `najviac`), pri ktorom majú všetky `texty`
+/// voči výsledku aspoň pomer `pomer_min` – napríklad farba z obalu albumu v LÝRE: obal sa mení za behu,
+/// čitateľnosť témy nie. Ak nevyhovie ani nulové vmiešanie, vráti 0.
+pub fn najsilnejsie_vmiesanie(pozadie: Farba, f: Farba, najviac: u8, texty: &[Farba], pomer_min: f64) -> u8 {
+    (0..=najviac)
+        .rev()
+        .find(|&s| {
+            let b = orchidea_pismo::zmiesaj(pozadie, f, s);
+            texty.iter().all(|&t| pomer(t, b) + 1e-9 >= pomer_min)
+        })
+        .unwrap_or(0)
+}
+
+/// Farba `f` posunutá k bielej alebo čiernej tak, aby mala relatívnu svietivosť čo najbližšie `l` – odtieň
+/// ostane, zmení sa svetlosť (napríklad pastel farby obalu pre svetlú tému: farba je vidieť, kontrast textu nie).
+pub fn farba_so_svietivostou(f: Farba, l: f64) -> Farba {
+    let k = if svietivost(f) < l { 0xFFFFFF } else { 0x000000 };
+    (0..=255u8)
+        .map(|a| orchidea_pismo::zmiesaj(f, k, a))
+        .min_by(|a, b| (svietivost(*a) - l).abs().total_cmp(&(svietivost(*b) - l).abs()))
+        .unwrap_or(f)
 }
 
 /// Čo musí pár farieb splniť.
@@ -117,6 +140,18 @@ pub fn kontrola(t: &Tema) -> Vec<Par> {
 #[cfg(test)]
 mod skusky {
     use super::*;
+
+    #[test]
+    fn farba_z_obalu_pre_svetlu_temu() {
+        // tmavá fialová z obalu → pastel so svietivosťou okolia témy Ľan; vmiešanie potom kontrast nezníži
+        let okolie = crate::tema::LAN.okolie;
+        let p = farba_so_svietivostou(0x4D3B63, svietivost(okolie));
+        assert!((svietivost(p) - svietivost(okolie)).abs() < 0.01, "#{p:06X}");
+        assert!((p & 0xFF) > ((p >> 8) & 0xFF), "odtieň ostal fialový: #{p:06X}");
+        let t = crate::tema::LAN;
+        assert_eq!(najsilnejsie_vmiesanie(okolie, p, 55, &[t.text, t.text_druhy, t.akcent_v_texte], 4.5), 55);
+        assert!(najsilnejsie_vmiesanie(okolie, 0x4D3B63, 55, &[t.text_druhy], 4.5) < 20);
+    }
     use crate::tema::TEMY;
 
     #[test]
