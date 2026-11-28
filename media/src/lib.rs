@@ -42,6 +42,7 @@ pub mod ogg;
 pub mod opus;
 pub mod paket;
 pub mod pcm;
+pub mod prehravanie;
 pub mod r5;
 pub mod ramce;
 pub mod stopa;
